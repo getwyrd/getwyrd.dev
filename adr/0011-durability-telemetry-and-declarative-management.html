@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0011. Durability telemetry and declarative management — Wyrd</title>
+<meta name="description" content="Date: design phase">
+<meta property="og:title" content="0011. Durability telemetry and declarative management — Wyrd">
+<meta property="og:description" content="Date: design phase">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture Decision Record</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>0011. Durability telemetry and declarative management</h1>
+<p>Date: design phase
+Status: Accepted</p>
+<h2>Context</h2>
+<p>A storage system's most important signals are not request metrics but durability
+metrics — and those are invisible unless designed in. A system silently below its
+redundancy floor reports all-green on the request plane. Separately, the
+dangerous operations (draining, upgrades, policy changes, recovery) are routine
+and stateful, and are most safely expressed as desired-state changes reconciled
+by background services rather than imperative commands issued in the right order.</p>
+<h2>Decision</h2>
+<p>Two architectural rules:</p>
+<ol>
+<li><strong>Custodians emit durability-plane telemetry as a first-class output</strong> —
+under-replicated chunk count, repair-queue depth, time-to-repair distribution,
+replication lag per zone pair, scrub coverage and corruption rate. Plus an
+append-only audit/event log of significant state transitions. Three planes:
+request, durability, capacity (section 8.3).</li>
+<li><strong>Management is declarative and self-reconciling</strong> — operators change desired
+state (in L2); custodians (L3/L4) reconcile reality toward it, the same
+control-loop pattern as Kubernetes, on the substrate already present.</li>
+</ol>
+<p>The hooks (metric emission, audit stream, desired-state API) exist from when
+custodians exist; polished dashboards/alerting are later and cheap to add once
+hooks emit.</p>
+<h2>Consequences</h2>
+<ul>
+<li>The durability guarantee is observable, not merely asserted.</li>
+<li>The management surface is small, safe, and auditable: read/write desired state
+<ul>
+<li>observe reconciliation.</li>
+</ul>
+</li>
+<li>&quot;Policy changed&quot; (recorded) and &quot;policy satisfied&quot; (replicas exist) are
+distinct, observable moments.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>

@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>6. Runtime view — Wyrd</title>
+<meta name="description" content="The headline scenario. Detailed step-by-step in section 5">
+<meta property="og:title" content="6. Runtime view — Wyrd">
+<meta property="og:description" content="The headline scenario. Detailed step-by-step in section 5">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>6. Runtime view</h1>
+<blockquote>
+<p>Living document. The scenarios that most define the system's behavior. See
+<code>diagrams/</code> for sequence diagrams.</p>
+</blockquote>
+<h2>6.1 Write path (the commit point)</h2>
+<p>The headline scenario. Detailed step-by-step in section 5 (L4 write protocol)
+and normatively in the commit-protocol spec. The essential property: the file
+does not exist until step 3's single atomic metadata mutation, and fully exists
+after it. Bulk data (steps 2) flows directly from client to D servers, crossing
+no shared component — this is the basis of the throughput-scaling claim.</p>
+<h2>6.2 Read path</h2>
+<ol>
+<li>Client fetches file metadata (chunk list, fragment locations, EC scheme) from
+the metadata store (cached after first read).</li>
+<li>Client reads fragments directly from D servers. Because it holds the EC
+logic, it needs only <em>k</em> of <em>n</em> fragments and reconstructs from whichever <em>k</em>
+arrive first — turning erasure coding into a tail-latency <em>advantage</em>: a slow
+or dead disk does not slow the read.</li>
+<li>Client verifies checksums on every fragment, catching bit rot at read time;
+re-reads elsewhere on failure.</li>
+</ol>
+<h2>6.3 Repair (self-healing, intra-zone)</h2>
+<p>Driven by custodians (L4):</p>
+<ol>
+<li><strong>Scrub</strong> — continuously read fragments, verify checksums against metadata,
+detect bit rot <em>before</em> the data is needed.</li>
+<li><strong>Reconstruct</strong> — on D-server loss or failed checksum, read any <em>k</em> surviving
+fragments, recompute the missing ones, place them on healthy servers in
+correct failure domains, and update the chunk's location via a single atomic
+metadata mutation — the same commit-point pattern as a write.</li>
+<li><strong>Rebalance</strong> — proactively move data off draining/hot servers, preserving
+failure-domain invariants.</li>
+</ol>
+<p>Every recovery action is itself commit-point-atomic. A crashed repair job leaves
+garbage (collected later), never corruption.</p>
+<p>The metric that matters: <strong>time-to-repair vs. failure rate</strong>. Durability (&quot;the
+nines&quot;) is essentially the probability that more than <em>m</em> fragments fail within
+one repair window. Fast, parallel repair matters more than wide encoding. This
+is why repair-queue depth and time-to-repair are first-class telemetry
+(ADR-0011), not vanity metrics.</p>
+<h2>6.4 Cross-zone replication and zone-loss recovery</h2>
+<ul>
+<li><strong>Replication</strong> (L3): after a home-zone commit, replication workers copy
+chunks to other zones per policy. The remote replica becomes readable only
+when its record commits in L2 — never mid-copy.</li>
+<li><strong>Zone loss</strong> (L3 global custodians): detect the dead zone, find every file
+now below its policy replica count, re-replicate from survivors. Effective
+geographic durability is bounded by cross-region bandwidth and rebuild
+parallelism — the same repair-time principle at planetary scale.</li>
+</ul>
+<h2>6.5 Disaster recovery ordering</h2>
+<p>After a real disaster, restore in dependency order:</p>
+<ol>
+<li><strong>L5 coordination</strong> first — so components can find each other and elect
+leaders.</li>
+<li><strong>L2 / L4 metadata</strong> next — so the map to the bytes exists. Restored from
+out-of-band backups that do <strong>not</strong> depend on the system being restored.</li>
+<li><strong>L3 replica verification and re-replication</strong> — so the bytes are protected
+again.</li>
+</ol>
+<p>Restoring bytes before the map is useless; restoring the map before coordination
+cannot even start. This ordering is a runbook section and must be written and
+drilled before it is needed.</p>
+<h2>6.6 Consistency at runtime</h2>
+<p>See section 8 (the consistency contract). In brief: the namespace is globally
+strongly consistent; a file's writes are linearizable at its home zone;
+per-session read-your-writes and monotonic reads are provided (v1: by routing
+consistency-sensitive reads to the home zone); stale-tolerant reads may be
+served from a lagging replica; cross-session visibility of a remote write is
+eventually consistent, bounded by replication lag.</p>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>

@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proposal: Milestone 0 — the walking skeleton (implementation plan) — Wyrd</title>
+<meta name="description" content="Milestone 0 proves the commit protocol — the entire differentiator — end to">
+<meta property="og:title" content="Proposal: Milestone 0 — the walking skeleton (implementation plan) — Wyrd">
+<meta property="og:description" content="Milestone 0 proves the commit protocol — the entire differentiator — end to">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Enhancement Proposal</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>Proposal: Milestone 0 — the walking skeleton (implementation plan)</h1>
+<ul>
+<li>Status: draft</li>
+<li>Author(s): Eduard Ralph</li>
+<li>Created: 2026-06-13</li>
+<li>Tracking issue: TBD</li>
+</ul>
+<blockquote>
+<p>This is the bootstrap proposal: the implementation plan for the project's
+first vertical slice. It is filed as a proposal because the template fields map
+cleanly onto an implementation plan and the process is deliberately lightweight
+this early (see <code>../README.md</code>). It records <em>how</em> M0 is built; the <em>why</em> of the
+architecture lives in the ADRs it references.</p>
+</blockquote>
+<h2>Motivation</h2>
+<p>Milestone 0 proves the <strong>commit protocol — the entire differentiator</strong> — end to
+end in a single process: one atomic write and one read, with the commit shown
+atomic under fault injection in simulation. Per the build strategy
+(<a href="/architecture/04-solution-strategy.html">architecture §4.2</a>, <a href="/architecture/09-build-order-and-roadmap.html">§9</a>) this is a <strong>vertical slice</strong>, not bottom-up:
+the layers that matter for one real operation, wired thinly, then widened by
+risk in later milestones.</p>
+<p>Building this slice first de-risks the project's central claim before any
+breadth (erasure coding, networked storage, custodians, multi-zone) is added,
+and it establishes the trait seams and the DST harness that everything after it
+attaches to.</p>
+<h2>Design</h2>
+<h3>Scope boundary</h3>
+<p>In scope: S3 PUT/GET (minimal) → client library (chunk + commit) → embedded
+metadata store (redb) → filesystem chunk store → in-memory coordination, plus
+the <code>testkit</code> DST harness and the commit-protocol property tests.</p>
+<p>Explicitly <strong>out</strong> of M0 (deferred to the risk-ordered widening in <a href="/architecture/09-build-order-and-roadmap.html">§9</a>):
+erasure coding (<code>replication(1)</code>/<code>none</code> only), networked gRPC D servers,
+custodians, TiKV, and every cross-zone layer (L2/L3). Their <em>hooks</em> are
+respected where retrofitting is expensive (see Backward compatibility).</p>
+<h3>Workspace and crate scaffold (coarse start, <a href="/adr/0016-monorepo-and-crate-structure.html">ADR-0016</a>)</h3>
+<p>A Cargo workspace, starting <strong>coarse</strong> and splitting later. Trait boundaries
+exist from day one even where crate boundaries do not. <code>Cargo.lock</code> is committed
+(this is an application).</p>
+<table>
+<thead>
+<tr>
+<th>Crate</th>
+<th>M0 contents</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>chunk-format</code></td>
+<td>Fragment header encode/decode against <a href="/specs/chunk-format/v1.html">the spec</a></td>
+<td>Dependency-light; spec-first (<a href="/adr/0002-spec-first-on-disk-format-only.html">ADR-0002</a>)</td>
+</tr>
+<tr>
+<td><code>proto</code></td>
+<td>Minimal protobuf/prost message shapes (commit, chunk put/get)</td>
+<td>gRPC <em>transport</em> deferred to widening step 2; shapes defined now</td>
+</tr>
+<tr>
+<td><code>traits</code></td>
+<td><code>ChunkStore</code>, <code>MetadataStore</code>, <code>Coordination</code> definitions only</td>
+<td>The keystone — consumers/impls depend here, never on concretes (<a href="/adr/0010-pluggable-deployment-substrate.html">ADR-0010</a>)</td>
+</tr>
+<tr>
+<td><code>core</code></td>
+<td>Client library, commit protocol, redb <code>MetadataStore</code>, filesystem <code>ChunkStore</code>, in-memory <code>Coordination</code></td>
+<td>Combined crate; split as boundaries firm up (<a href="/adr/0016-monorepo-and-crate-structure.html">ADR-0016</a>)</td>
+</tr>
+<tr>
+<td><code>testkit</code></td>
+<td>Abstract time/disk; deterministic seed-driven runner; fault-injection hooks</td>
+<td>First-class, not a helper (<a href="/adr/0009-deterministic-simulation-testing.html">ADR-0009</a>)</td>
+</tr>
+<tr>
+<td><code>server</code></td>
+<td>The binary; wires concretes; hosts minimal S3 PUT/GET</td>
+<td>Only crate that knows concrete backends</td>
+</tr>
+<tr>
+<td><code>xtask</code></td>
+<td>Codegen, conformance-vector run</td>
+<td><code>cargo xtask &lt;thing&gt;</code>; no <code>make</code> (<a href="/adr/0016-monorepo-and-crate-structure.html">ADR-0016</a>)</td>
+</tr>
+</tbody>
+</table>
+<p>CI adds <code>cargo build/test/fmt/clippy</code>; the <code>adr-immutability</code> check already
+exists.</p>
+<h3>Metadata model — redb behind <code>MetadataStore</code> (<a href="/architecture/05-building-block-view.html">§5 L4</a>)</h3>
+<p>Hierarchical <strong>inode + dirent</strong>, not path-as-key, so create writes inode +
+dirent atomically and rename is a single dirent mutation:</p>
+<ul>
+<li><code>inode:&lt;id&gt;</code> → attributes, chunk map (or inline data for small files), state,
+version.</li>
+<li><code>dirent:&lt;parent_id&gt;/&lt;name&gt;</code> → child inode id.</li>
+<li><code>pending:&lt;chunk_id&gt;</code> → lease/expiry — the pending-chunk GC ledger.</li>
+<li><code>meta:version</code> counter <strong>reserved now</strong> for the <a href="/adr/0015-consistency-contract.html">ADR-0015</a> consistency
+fence (not yet enforced).</li>
+</ul>
+<p>The atomic commit is a <strong>single redb write transaction</strong> spanning these keys.
+That transaction <em>is</em> the commit point.</p>
+<h3>Chunk / fragment format (<code>chunk-format</code> + <a href="/specs/chunk-format/v1.html">the spec</a>)</h3>
+<p>Implement the v1-draft header: magic, format version, EC-scheme id +
+fragment-index-in-stripe, chunk id, payload checksum (algorithm id), payload
+length. For M0 the EC scheme is <code>replication(1)</code>/<code>none</code> (no real EC yet), but the
+scheme id is recorded per chunk so later mixed-era data reads correctly. The
+<code>[TO BE SPECIFIED]</code> byte layout, endianness, checksum algorithm, and scheme ids
+are <strong>decided during M0 and written back into <a href="/specs/chunk-format/v1.html">the spec</a> in the same PR</strong>;
+seed conformance vectors land in <code>specs/conformance/</code>. The format stays <strong>v0 /
+unstable</strong> — <code>v1</code> is stamped only after a second reader or a sustained
+fault-injection run validates it (per the spec's own rule).</p>
+<h3>Write / commit protocol (the differentiator) — <a href="/architecture/05-building-block-view.html">§5</a></h3>
+<p>Implement all four phases:</p>
+<ol>
+<li><strong>Intent</strong> — client registers chunk ids in the pending ledger with a lease.
+The chunks exist nowhere in the namespace.</li>
+<li><strong>Data path</strong> — client writes fragment(s) to the filesystem <code>ChunkStore</code>,
+which verifies checksums. Failures here are harmless garbage.</li>
+<li><strong>Commit</strong> — one atomic redb transaction writes the chunk map, sets state
+<code>COMMITTED</code>, and bumps the version <strong>conditional on the prior version</strong>.
+Concurrent writers conflict here; exactly one wins. <strong>This is the atomicity.</strong></li>
+<li><strong>Release</strong> — delete the ledger entries.</li>
+</ol>
+<p>Crash between 3 and 4 leaves ledger entries for a sweep; crash before 3 leaves
+leased garbage. M0 has no custodians, so a <strong>minimal ledger-sweep function</strong>
+(invoked by tests, not a running service) stands in; the full custodian is a
+later milestone. Readers never consult the ledger — they see the old version or
+the new one, never a hybrid.</p>
+<h3>Access (L1) and coordination (L5), minimal</h3>
+<ul>
+<li><strong>S3 PUT/GET</strong> in <code>server</code>: PUT object → client write path; GET → read path
+(single fragment, since <code>replication(1)</code>). Just enough for an end-to-end test;
+full S3 semantics are deferred.</li>
+<li><strong>In-memory <code>Coordination</code></strong> behind the trait: discovery / leader election /
+locks are trivial in one process, but the trait shape is fixed now so etcd
+drops in later as a composition change.</li>
+</ul>
+<h3>DST harness + property tests — attach at M0 (<a href="/adr/0009-deterministic-simulation-testing.html">ADR-0009</a>)</h3>
+<p><code>testkit</code> provides abstract time/disk and a single-threaded, seed-reproducible
+runner. The commit-protocol property tests assert the core invariants:</p>
+<ul>
+<li>Concurrent writers to the same inode: <strong>exactly one commit wins</strong>; the loser
+observes the version conflict.</li>
+<li>A reader sees either the pre-commit or post-commit version, <strong>never a hybrid</strong>.</li>
+<li><strong>Fault injection</strong>: crash between phases 3 and 4 → the file is either fully
+visible or not at all, and no committed chunk-map entry references a fragment
+the sweep would reclaim.</li>
+</ul>
+<h2>Alternatives considered</h2>
+<ul>
+<li><strong>Bottom-up</strong> (all D servers / EC first): rejected by <a href="/architecture/04-solution-strategy.html">§4.2</a> / <a href="/adr/0009-deterministic-simulation-testing.html">ADR-0009</a>
+— a vertical slice proves the differentiator sooner and gives every layer a
+trivial-then-real path.</li>
+<li><strong>Fine-grained crates from day one</strong>: rejected by <a href="/adr/0016-monorepo-and-crate-structure.html">ADR-0016</a> (premature
+Cargo plumbing and visibility friction); a combined <code>core</code> now, split later.</li>
+<li><strong>Networked gRPC D servers in M0</strong>: deferred to widening step 2 — the in-process
+filesystem store proves the commit protocol with far less surface; the
+<code>ChunkStore</code> trait means the swap is composition, not refactor.</li>
+<li><strong>Full S3 compatibility in M0</strong>: deferred — minimal PUT/GET is enough to drive
+the slice end to end.</li>
+</ul>
+<h2>Graduation criteria (definition of done)</h2>
+<ul>
+<li>A file written via S3 PUT is read back via GET <strong>byte-identical</strong>.</li>
+<li>The commit is <strong>proven atomic under fault injection in simulation</strong>, reproducible
+from a seed.</li>
+<li>Commit-protocol property tests are green; <code>fmt</code>/<code>clippy</code> clean; <code>Cargo.lock</code>
+committed.</li>
+<li>The chunk-format byte layout is recorded in <a href="/specs/chunk-format/v1.html">the spec</a> with at least one
+conformance vector the reference reader accepts.</li>
+</ul>
+<h3>Suggested PR sequence (each with its own definition of done)</h3>
+<ol>
+<li>Workspace scaffold + <code>traits</code> + <code>testkit</code> skeleton + CI.</li>
+<li><code>chunk-format</code> encode/decode + conformance vector + spec byte-layout filled in.</li>
+<li>redb <code>MetadataStore</code> (inode / dirent / ledger) behind the trait.</li>
+<li>Filesystem <code>ChunkStore</code> behind the trait.</li>
+<li>Client library: chunk → write fragment → four-phase commit.</li>
+<li>In-memory <code>Coordination</code>.</li>
+<li>Minimal S3 PUT/GET in <code>server</code> + end-to-end write/read test.</li>
+<li>DST commit-protocol property tests + crash-between-3-and-4 fault injection.</li>
+</ol>
+<h2>Backward compatibility</h2>
+<ul>
+<li><strong>On-disk format</strong>: M0 fixes the chunk-format byte layout but it remains
+<strong>v0 / unstable</strong>; no stability promise until <code>v1</code> is stamped. No existing data
+to migrate.</li>
+<li><strong>Deferred-with-reserved-seats</strong> honored now because retrofitting is expensive
+(<a href="/architecture/09-build-order-and-roadmap.html">§9</a>): append/CAS/watch primitives (<a href="/adr/0007-reserve-append-cas-watch.html">ADR-0007</a>) accommodated by the
+ledger + schema shape; the <code>meta:version</code> fence counter reserved
+(<a href="/adr/0015-consistency-contract.html">ADR-0015</a>); trait seams for etcd/TiKV/openraft.</li>
+<li><strong>API / deployments</strong>: none yet, so nothing to stay compatible with.</li>
+</ul>
+<h2>Open questions</h2>
+<ul>
+<li>Checksum algorithm for the fragment header (crc32c vs blake3) and exact field
+widths / endianness — <strong>[TO BE SPECIFIED]</strong> during step 2.</li>
+<li>Small-file <strong>inline threshold</strong> (<a href="/architecture/05-building-block-view.html">§5</a> mentions inlining): implement in M0
+or defer to the EC widening step?</li>
+<li>Does the minimal S3 surface stay in <code>server</code> for M0, or warrant a <code>gateway-s3</code>
+crate immediately?</li>
+<li>redb key encoding (byte order of <code>&lt;id&gt;</code>, dirent name normalization).</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>

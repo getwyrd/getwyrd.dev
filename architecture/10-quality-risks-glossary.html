@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>10–12. Quality, risks, and glossary — Wyrd</title>
+<meta name="description" content="Concrete, measurable scenarios that operationalize the quality goals (section">
+<meta property="og:title" content="10–12. Quality, risks, and glossary — Wyrd">
+<meta property="og:description" content="Concrete, measurable scenarios that operationalize the quality goals (section">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>10–12. Quality, risks, and glossary</h1>
+<blockquote>
+<p>Living document. Combines arc42 sections 10 (quality scenarios), 11 (risks and
+technical debt), and 12 (glossary), trimmed to what earns its maintenance.</p>
+</blockquote>
+<h2>10. Quality scenarios</h2>
+<p>Concrete, measurable scenarios that operationalize the quality goals (section
+1.3). Numbers are targets to be set during implementation; the <em>shape</em> is fixed.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Scenario</th>
+<th>Measure</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Q1</td>
+<td>A D server is lost from a zone</td>
+<td>All affected chunks return to full redundancy within time-to-repair budget T, with no read errors during repair (reads reconstruct from survivors)</td>
+</tr>
+<tr>
+<td>Q2</td>
+<td>Silent bit rot corrupts a fragment</td>
+<td>Scrubber detects it within scrub-cycle period P, before the data is needed; reconstruction follows</td>
+</tr>
+<tr>
+<td>Q3</td>
+<td>A write is interrupted at any point</td>
+<td>No torn state observable; either the old version or the new, never a hybrid; orphaned fragments collected by GC</td>
+</tr>
+<tr>
+<td>Q4</td>
+<td>A zone is lost entirely</td>
+<td>Under-replicated files re-replicated from survivors within budget; bounded by cross-region bandwidth</td>
+</tr>
+<tr>
+<td>Q5</td>
+<td>Concurrent writers to the same file</td>
+<td>Exactly one commit wins (version conflict); the other retries or fails cleanly</td>
+</tr>
+<tr>
+<td>Q6</td>
+<td>Aggregate write throughput vs. cluster size</td>
+<td>Scales close to linearly with D-server count, divided by EC amplification (~1.5× for RS(6,3))</td>
+</tr>
+<tr>
+<td>Q7</td>
+<td>Small-file (sub-threshold) workload</td>
+<td>Dominated by metadata-op rate, not byte rate; served by the inline path; scales with the metadata tier</td>
+</tr>
+<tr>
+<td>Q8</td>
+<td>Rolling upgrade across a version-skewed fleet</td>
+<td>No downtime, no data errors, neighbors interoperate across one version gap</td>
+</tr>
+<tr>
+<td>Q9</td>
+<td>Operator drains a D server</td>
+<td>Data evacuated while maintaining redundancy and failure-domain invariants throughout; resumable; observable progress</td>
+</tr>
+</tbody>
+</table>
+<p>These belong in CI as load/fault tests where feasible (Q1–Q3, Q5–Q7) and in the
+DR runbook drills otherwise (Q4, Q8, Q9).</p>
+<h2>11. Risks and technical debt</h2>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Nature</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Correctness bugs in the client library and custodians</td>
+<td>These are where most correctness risk concentrates (the thick client, the repair loops); bugs here are silent corruption, not crashes</td>
+<td>DST from day one; Jepsen runs; conformance vectors; Rust's type system in exactly this code</td>
+</tr>
+<tr>
+<td>Small-file performance</td>
+<td>A Drive workload is millions of small files; without the inline path it hammers the metadata tier and never reaches data-path scaling</td>
+<td>Inline-data path below a size threshold (parameter <strong>[OPEN]</strong>); metadata-tier sharding</td>
+</tr>
+<tr>
+<td>Multi-language client divergence</td>
+<td>A non-Rust client re-implementing the thick logic incorrectly breaks atomicity or readability</td>
+<td>Spec + conformance suite; consider a Rust core with FFI bindings rather than reimplementation</td>
+</tr>
+<tr>
+<td>Contributor on-ramp (Rust)</td>
+<td>Smaller drive-by-contributor pool; steeper ramp</td>
+<td>Excellent CONTRIBUTING; good-first-issues in non-hot-path crates; coarse-to-fine crate split so newcomers aren't lost in plumbing</td>
+</tr>
+<tr>
+<td>Compile times on a large workspace</td>
+<td>Slows iteration</td>
+<td>Disciplined crate split (the trait boundaries are also compile-unit boundaries); start coarser, split as needed</td>
+</tr>
+<tr>
+<td>Treating etcd as a database</td>
+<td>The classic L5 failure mode; etcd is wonderful until used as a store</td>
+<td>Architectural rule: nothing data-proportional in L5; sized in kilobytes</td>
+</tr>
+<tr>
+<td>Spanner-class store operational weight</td>
+<td>CockroachDB/TiDB are heavy for L2</td>
+<td>Justified because L2 is small and off the data path; revisit only if it proves a bottleneck</td>
+</tr>
+</tbody>
+</table>
+<h3>Conscious exclusions (not debt — decisions)</h3>
+<ul>
+<li>Cross-provider / untrusted federation (ADR-0005) — reversible, with stated
+cost.</li>
+<li>Full POSIX semantics over EC storage (FUSE is second-class).</li>
+<li>Single-binary as a production tier (ADR-0014).</li>
+</ul>
+<h2>12. Glossary</h2>
+<table>
+<thead>
+<tr>
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Commit point</td>
+<td>The single linearizable metadata mutation that makes a write visible. The locus of the atomicity guarantee.</td>
+</tr>
+<tr>
+<td>Zone</td>
+<td>One datacenter/region's complete L4+L5 stack. The unit of atomicity and intra-provider federation.</td>
+</tr>
+<tr>
+<td>D server</td>
+<td>A &quot;dumb&quot; storage server: stores and returns fragments by chunk ID, verifies checksums; no placement or metadata logic.</td>
+</tr>
+<tr>
+<td>Custodian</td>
+<td>A background maintenance service: GC, scrub, reconstruction, rebalancing (L4) or cross-zone re-replication (L3).</td>
+</tr>
+<tr>
+<td>Chunk</td>
+<td>The unit of placement and erasure coding; a file is split into chunks.</td>
+</tr>
+<tr>
+<td>Fragment</td>
+<td>One erasure-coded piece of a chunk; <em>n</em> fragments produced, any <em>k</em> reconstruct.</td>
+</tr>
+<tr>
+<td>Inode / dirent</td>
+<td>Metadata records: the inode is &quot;what this thing is&quot; (+ chunk map); the dirent is &quot;what it is called and where it lives in the tree&quot;.</td>
+</tr>
+<tr>
+<td>Inline data</td>
+<td>Small-file optimization: data stored directly in the metadata record, skipping chunking and EC.</td>
+</tr>
+<tr>
+<td>Home zone</td>
+<td>The authoritative zone for a file; where its writes linearize.</td>
+</tr>
+<tr>
+<td>Pending-chunk ledger</td>
+<td>The GC table tracking leased, not-yet-committed chunks so failed writes become collectable garbage.</td>
+</tr>
+<tr>
+<td>DST</td>
+<td>Deterministic simulation testing: running the whole system in a simulated world where every bug reproduces from a seed.</td>
+</tr>
+<tr>
+<td>EC</td>
+<td>Erasure coding (Reed-Solomon). RS(k,m): <em>k</em> data + <em>m</em> parity fragments.</td>
+</tr>
+<tr>
+<td>Wyrd</td>
+<td>The project, and the name for the system's total woven state: committed + in-flight + owed, seen as one consistent whole. <em>The Norns weave the Wyrd.</em> See ADR-0017.</td>
+</tr>
+<tr>
+<td>Urth</td>
+<td>The Norn of &quot;what has become&quot;; names the durable committed record (metadata store + on-disk truth).</td>
+</tr>
+<tr>
+<td>Verdandi</td>
+<td>The Norn of &quot;what is becoming&quot;; names the write/commit path (client library + commit protocol).</td>
+</tr>
+<tr>
+<td>Skuld</td>
+<td>The Norn of &quot;what is owed / what shall be&quot;; names pending work and reconciliation (replication queue, repair backlog, unsatisfied policy).</td>
+</tr>
+<tr>
+<td>The Norns</td>
+<td>Collective label for the three conceptually load-bearing components (Urth, Verdandi, Skuld). Lower-level mechanical parts keep plain descriptive names.</td>
+</tr>
+</tbody>
+</table>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>

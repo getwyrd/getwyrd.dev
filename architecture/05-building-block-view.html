@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>5. Building block view — Wyrd</title>
+<meta name="description" content="The system is organized into five layers. L4 and L5 operate within a single">
+<meta property="og:title" content="5. Building block view — Wyrd">
+<meta property="og:description" content="The system is organized into five layers. L4 and L5 operate within a single">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>5. Building block view</h1>
+<blockquote>
+<p>Living document. This is the layer model (L1–L5) and the components within
+each layer. See <code>diagrams/c4-container.mermaid</code> for the container diagram and
+<code>diagrams/layer-stack.mermaid</code> for the layer stack.</p>
+</blockquote>
+<p>The system is organized into five layers. L4 and L5 operate within a single
+zone (one datacenter) and are unaware that other zones exist. L1, L2, and L3 are
+the layers that span zones. The decisive property throughout: <strong>the layer with
+global scope (L2) holds only small, slow-changing, high-value truth, so it can
+afford global consensus without becoming a bottleneck</strong>, while bulk data flows
+directly between client and storage servers, crossing no shared component.</p>
+<pre><code>L1  Access layer            S3 / FUSE / WebDAV / SDK gateways      (stateless)
+L2  Global control plane     namespace, placement, ACLs, registry   (global consensus)
+L3  Cross-zone replication    async chunk copy, global custodians    (off the data path)
+L4  Zonal file system         metadata store, D servers, custodians, client library
+L5  Bootstrap &amp; coordination  service discovery, leader election, locks, config
+</code></pre>
+<hr />
+<h2>L1 — Access layer</h2>
+<p>Stateless protocol translators. They hold no durable state, scale horizontally,
+authenticate the caller, and embed the client library (L4) to do the actual
+storage work. All consistency logic lives below them.</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Technology</th>
+<th>Responsibility</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>S3 gateway</td>
+<td>Rust, <code>gateway-s3</code> crate</td>
+<td>Primary integration surface; object semantics over the file system</td>
+</tr>
+<tr>
+<td>FUSE / NFS</td>
+<td><code>fuser</code> crate; NFS-Ganesha</td>
+<td>POSIX-ish access; deliberately second-class</td>
+</tr>
+<tr>
+<td>WebDAV / Drive</td>
+<td>Rust</td>
+<td>The consumer Drive surface: sync, sharing links, web UI</td>
+</tr>
+<tr>
+<td>Native SDK</td>
+<td>gRPC + prost</td>
+<td>The real interface; streaming reads, atomic commit, append, CAS</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>L2 — Global control plane</h2>
+<p>The brain of the multi-zone system: the one component with a global,
+authoritative view of what exists and where it should live. It controls by
+<em>deciding and recording</em>; it distributes by <em>routing actors to the right zones</em>,
+never by carrying the payload itself.</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Technology</th>
+<th>Responsibility</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Global namespace DB</td>
+<td>CockroachDB or TiDB (Spanner-class)</td>
+<td>Directory tree, file→home-zone mapping, ACLs, sharing, quotas. Synchronously consensus-replicated.</td>
+</tr>
+<tr>
+<td>Placement service</td>
+<td>Rust, policy engine</td>
+<td>Decides home zone and replica set per file from policy (residency, replication factor, cost tier, capacity)</td>
+</tr>
+<tr>
+<td>Zone registry</td>
+<td>in the namespace DB</td>
+<td>Every zone: region, capacity, utilization, health, capabilities</td>
+</tr>
+<tr>
+<td>Identity &amp; auth</td>
+<td>OIDC for users; internal mTLS PKI for services</td>
+<td>Trust fabric (single-provider, so internal PKI not cross-org)</td>
+</tr>
+</tbody>
+</table>
+<p>Holds <em>metadata about metadata</em> — kilobytes per file. Consulted on namespace and
+placement operations (create, rename, share, delete, &quot;where do I read this&quot;),
+which are rare relative to data operations and ideally cached by clients.</p>
+<hr />
+<h2>L3 — Cross-zone replication</h2>
+<p>Turns independent single-datacenter systems into one geographically distributed
+system, without ever sitting on the foreground write path.</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Technology</th>
+<th>Responsibility</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Replication workers</td>
+<td>Rust; NATS JetStream queue</td>
+<td>Copy committed chunks between zones per policy; sync within a region, async across continents</td>
+</tr>
+<tr>
+<td>Replica catalog</td>
+<td>in L2's DB</td>
+<td>Tracks which zones hold valid replicas; a replica exists only once its record commits</td>
+</tr>
+<tr>
+<td>Global custodians</td>
+<td>Rust</td>
+<td>Disaster recovery: detect zone loss, find under-replicated files, schedule re-replication from survivors</td>
+</tr>
+</tbody>
+</table>
+<p>Default replication is <strong>async</strong> (home-zone commit acknowledges immediately).
+<strong>Sync N-zone</strong> replication is a per-tenant opt-in that eliminates the data-loss
+window at the cost of cross-region write latency.</p>
+<hr />
+<h2>L4 — Zonal file system (the Colossus analog, one per datacenter)</h2>
+<p>Where atomicity lives and where the bulk of correctness risk concentrates.</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Technology</th>
+<th>Responsibility</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Metadata store</td>
+<td><code>redb</code> (embedded) / TiKV (prod), behind <code>MetadataStore</code> trait</td>
+<td>Inodes, dirents, chunk maps, the pending-chunk GC ledger, version counters. Hosts the single atomic mutation that <em>is</em> the commit point.</td>
+</tr>
+<tr>
+<td>D servers</td>
+<td>Rust, <code>dserver</code> crate; <code>ChunkStore</code> trait (local / filesystem / S3)</td>
+<td>Store/retrieve EC fragments by chunk ID, verify checksums, report health. Deliberately dumb — no placement logic, no metadata.</td>
+</tr>
+<tr>
+<td>Custodians</td>
+<td>Rust, <code>custodian</code> crate</td>
+<td>GC (expired pending chunks, orphans), scrubbing (checksum verification → bit-rot detection), reconstruction (rebuild lost fragments from survivors), rebalancing. Emit durability telemetry.</td>
+</tr>
+<tr>
+<td>Client library</td>
+<td>Rust, <code>client</code> crate; <code>reed-solomon-simd</code></td>
+<td>Chunk → erasure-code → direct parallel fragment writes → atomic commit. Small-file inlining. Append/CAS. Read reconstruction from any <em>k</em> of <em>n</em> fragments.</td>
+</tr>
+</tbody>
+</table>
+<p>A zone is the unit of atomicity and the unit of (intra-provider) federation.</p>
+<h3>The metadata model</h3>
+<p>Hierarchical: <strong>inode + dirent</strong>, not path-as-key.</p>
+<ul>
+<li><code>inode:&lt;id&gt;</code> → attributes, chunk map (or inline data for small files), state,
+version.</li>
+<li><code>dirent:&lt;parent_id&gt;/&lt;name&gt;</code> → child inode id.</li>
+</ul>
+<p>This makes rename a single dirent mutation (atomic under the same mechanism as a
+write) instead of a mass key rewrite, and makes cross-zone sharing expressible
+(a dirent pointing at an inode owned elsewhere). It is the strongest concrete
+driver of the TiKV-over-HBase choice, because file creation must atomically
+write both the inode and its dirent — a multi-key transaction. See section 6 and
+ADR-0008.</p>
+<h3>The write protocol (the commit point)</h3>
+<ol>
+<li><strong>Intent</strong> — client registers chunk IDs in the pending-chunk ledger with a
+lease. The chunks exist nowhere in the namespace.</li>
+<li><strong>Data path</strong> — client erasure-codes and writes fragments directly to D
+servers, which verify checksums. Failures here are harmless garbage.</li>
+<li><strong>Commit</strong> — one atomic metadata mutation writes the chunk map + sets state
+<code>COMMITTED</code> + bumps the version, conditional on the prior version. <strong>This is
+the atomicity.</strong> Concurrent writers conflict here; exactly one wins.</li>
+<li><strong>Release</strong> — delete the ledger entries. Crash between 3 and 4 leaves the
+ledger to a custodian sweep; crash before 3 leaves leased garbage for GC.</li>
+</ol>
+<p>Readers never consult the ledger; they see the old version or the new one, never
+a hybrid.</p>
+<hr />
+<h2>L5 — Bootstrap and coordination</h2>
+<p>The smallest layer by data volume and the one everything else depends on. It
+answers the questions a distributed system must answer before it can do any real
+work. Stores kilobytes; never on the data path.</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Technology</th>
+<th>Responsibility</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Coordination service</td>
+<td>etcd (prod) / in-memory (dev), behind <code>Coordination</code> trait</td>
+<td>Service discovery (leased registration), leader election (single active custodian), distributed locks with fencing tokens, zone-wide config with change notification</td>
+</tr>
+<tr>
+<td>Deployment substrate</td>
+<td>systemd / docker-compose / Kubernetes operator</td>
+<td>Process lifecycle. Pluggable; the binary never couples to orchestrator APIs (ADR-0010).</td>
+</tr>
+</tbody>
+</table>
+<p>The Colossus-style bootstrap recursion bottoms out here: etcd depends on nothing
+above it. Losing L5 loses no data; established connections keep working from
+cached state. What is lost is the ability to <em>react</em> — failovers, elections,
+topology changes — until coordination returns.</p>
+<p><strong>openraft</strong> is reserved as a future embedded coordination backend (a
+no-external-dependency production mode) behind the same trait, validated by the
+existing DST harness once the trait semantics are pinned by two implementations.
+Not built for v1 (ADR-0006).</p>
+<hr />
+<h2>Cross-cutting components</h2>
+<table>
+<thead>
+<tr>
+<th>Concern</th>
+<th>Technology</th>
+<th>Crate / location</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Wire contracts</td>
+<td>protobuf + prost</td>
+<td><code>proto</code></td>
+</tr>
+<tr>
+<td>On-disk format</td>
+<td>versioned, spec-first</td>
+<td><code>chunk-format</code> + <code>specs/chunk-format/</code></td>
+</tr>
+<tr>
+<td>Pluggability seams</td>
+<td>trait definitions, no impls</td>
+<td><code>traits</code> (<code>ChunkStore</code>, <code>MetadataStore</code>, <code>Coordination</code>)</td>
+</tr>
+<tr>
+<td>Telemetry</td>
+<td>OpenTelemetry (OTLP)</td>
+<td><code>telemetry</code> (ADR-0012)</td>
+</tr>
+<tr>
+<td>Simulation testing</td>
+<td>madsim / turmoil</td>
+<td><code>testkit</code> (ADR-0009)</td>
+</tr>
+<tr>
+<td>Composition / the binary</td>
+<td>wires all concretes</td>
+<td><code>server</code></td>
+</tr>
+</tbody>
+</table>
+<p>The dependency rule (ADR-0010): implementations and consumers depend on
+<code>traits</code>, never on each other's concretes. Only <code>server</code> knows the concrete
+backends, which is what makes &quot;swap redb for TiKV&quot; or &quot;in-memory for etcd&quot; a
+composition change rather than a refactor.</p>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>

@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0004. Rust as the implementation language — Wyrd</title>
+<meta name="description" content="Date: design phase">
+<meta property="og:title" content="0004. Rust as the implementation language — Wyrd">
+<meta property="og:description" content="Date: design phase">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture Decision Record</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>0004. Rust as the implementation language</h1>
+<p>Date: design phase
+Status: Accepted</p>
+<h2>Context</h2>
+<p>The realistic choice was Go or Rust; both have shipped systems of exactly this
+class (Go: SeaweedFS, MinIO, CubeFS, CockroachDB's Pebble; Rust: TiKV, Garage).
+Go offers a larger infrastructure contributor pool, faster ramp-up, excellent
+operational legibility for the Kubernetes-shaped target audience, and faster
+iteration for a small team. Rust offers no GC tail latencies in the data path,
+compile-time guarantees in exactly the code where bugs are silent corruption
+rather than crashes, io_uring headroom, TiKV-ecosystem affinity, and access to
+the deterministic-simulation-testing culture.</p>
+<p>The project's stated differentiator is correctness: a provably-atomic commit
+protocol with a conformance suite.</p>
+<h2>Decision</h2>
+<p>Implement in <strong>Rust</strong>, for all components, for v1. Language choices fail on
+people, not benchmarks; the founding contributors' fluency and the
+correctness-as-differentiator positioning point to Rust.</p>
+<h2>Consequences</h2>
+<ul>
+<li>Memory safety in the client library and custodians, where bugs are silent
+corruption.</li>
+<li>Access to deterministic simulation testing (ADR-0009) — a credibility engine
+for the atomicity claim, where the Rust ecosystem leads.</li>
+<li>Smaller drive-by-contributor pool and steeper on-ramp — mitigated by excellent
+CONTRIBUTING docs and good-first-issues in non-hot-path crates.</li>
+<li>Slower compile cycles on a large workspace — mitigated by a disciplined crate
+split (ADR-0016).</li>
+<li>Lost conveniences, each re-solved: no pure-Go klauspost/reedsolomon (use
+<code>reed-solomon-simd</code>); no embedded etcd (use an in-memory coordination backend
+for the dev profile — ADR-0006).</li>
+<li>The D server sits behind a gRPC <code>ChunkStore</code> contract, so a future Rust-vs-
+performance question is settled by the CI benchmark suite, and any component
+could in principle be reimplemented behind its protobuf contract.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>

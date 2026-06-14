@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0008. TiKV metadata store and pluggable backends — Wyrd</title>
+<meta name="description" content="Date: design phase">
+<meta property="og:title" content="0008. TiKV metadata store and pluggable backends — Wyrd">
+<meta property="og:description" content="Date: design phase">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture Decision Record</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>0008. TiKV metadata store and pluggable backends</h1>
+<p>Date: design phase
+Status: Accepted</p>
+<h2>Context</h2>
+<p>The metadata model is hierarchical (inode + dirent) to make rename a single
+atomic mutation and to express cross-zone sharing (section 5). File creation must
+atomically write both an inode and its dirent — a multi-key operation. HBase
+offers only single-row atomicity, which would force either denormalization
+(re-introducing a rename/scale problem) or a write-ahead intent log — the exact
+contortion Tectonic's authors describe regretting. TiKV offers native multi-key
+transactions, Raft replication, region-aware placement, and a first-class Rust
+client. Separately, the single-binary profile cannot run TiKV's multi-node
+minimum on NAS-class hardware.</p>
+<h2>Decision</h2>
+<p>Define a narrow <code>MetadataStore</code> trait (<code>Get</code>/<code>Put</code>/<code>Scan</code>/<code>AtomicCommit</code> with
+multi-key conditions). Ship two backends: <strong>redb</strong> (pure-Rust embedded,
+single-process) for dev/small and the Synology profile; <strong>TiKV</strong> for production.
+Make durability scheme configurable per zone (<code>none</code> / <code>replication(n)</code> /
+<code>rs(k,m)</code>), recorded per chunk in the on-disk format so a zone can grow from
+replication into EC with mixed-era data.</p>
+<h2>Consequences</h2>
+<ul>
+<li>Atomic multi-key directory operations without intent-log gymnastics.</li>
+<li>The trait keeps the metadata layer honest about which KV features it actually
+depends on, preserving the option to swap stores.</li>
+<li>redb avoids a C++ build dependency (RocksDB) for the embedded profile, easing
+cross-compilation for NAS targets; RocksDB remains a fallback behind the trait.</li>
+<li>Backend choice becomes a composition concern in <code>server</code>, not a refactor.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>

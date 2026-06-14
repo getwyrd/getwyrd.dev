@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1. Introduction and goals — Wyrd</title>
+<meta name="description" content="the substrate on which a cloud provider can build a worldwide, horizontally">
+<meta property="og:title" content="1. Introduction and goals — Wyrd">
+<meta property="og:description" content="the substrate on which a cloud provider can build a worldwide, horizontally">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>1. Introduction and goals</h1>
+<blockquote>
+<p>Status: living document. Reflects decisions through the initial design phase.
+Open questions are marked <strong>[OPEN]</strong> inline.</p>
+</blockquote>
+<h2>1.1 What this is</h2>
+<p><strong>Wyrd</strong> is an open-source foundation for globally scalable, distributed file storage —
+the substrate on which a cloud provider can build a worldwide, horizontally
+scalable storage product (a Drive-like service, an object store, or the backend
+for collaborative document editing).</p>
+<p>The design follows the architecture of Google's Colossus stack rather than its
+predecessor GFS: metadata in a scalable transactional store, dumb storage
+servers, intelligence concentrated in the client library and background
+maintenance services, and a separate global control plane for multi-region
+behavior.</p>
+<h2>1.2 The headline guarantee</h2>
+<p><strong>Writes are atomic from the user's perspective.</strong> A write is invisible until a
+single linearizable operation makes it fully visible; that operation either
+happens completely or not at all. There is never a torn or half-written state
+observable by any reader.</p>
+<p>Crucially, this does <em>not</em> require co-locating metadata and blob data. Atomicity
+requires a single linearization point, not physical co-location. Data fragments
+are written first (unreferenced and invisible), and a single metadata commit
+makes the file exist. This is the central design insight and the project's
+primary differentiator: a <strong>specified, provably-atomic commit protocol</strong>.</p>
+<h2>1.3 Quality goals</h2>
+<p>In priority order:</p>
+<ol>
+<li><strong>Correctness / durability.</strong> The system must not lose or corrupt data, and
+its atomicity guarantee must be specifiable and testable. This is the
+project's reason to exist; it outranks performance and features.</li>
+<li><strong>Horizontal scalability.</strong> Aggregate throughput scales close to linearly
+with hardware on the data path, because bulk data never crosses a shared
+component. Both the data tier and the metadata tier scale independently.</li>
+<li><strong>Operability.</strong> The durability state of the system must be observable, and
+the dangerous-but-routine operations (draining, upgrades, recovery) must be
+safe, resumable, and observable.</li>
+<li><strong>Scale range.</strong> The same codebase runs as a single binary for development
+and spans a multi-region provider fleet in production.</li>
+<li><strong>Replaceability.</strong> Underlying storage, metadata store, and coordination
+service are all pluggable behind narrow interfaces.</li>
+</ol>
+<h2>1.4 Stakeholders and target users</h2>
+<ul>
+<li><strong>Primary:</strong> mid-sized cloud providers deploying the system as the foundation
+of a storage product across their own regions.</li>
+<li><strong>Secondary:</strong> application teams building on top — Drive-like document storage
+today, collaborative editors (Google-Docs-style) later.</li>
+<li><strong>Tertiary:</strong> developers and evaluators running the single-binary profile to
+learn, develop against, or assess the system.</li>
+</ul>
+<h2>1.5 Scope boundaries</h2>
+<ul>
+<li><strong>Single-provider federation only.</strong> Regions and nodes cooperate <em>within one
+provider</em>. There is no cross-provider or untrusted-operator operation. This is
+a deliberate exclusion that removes a large amount of protocol surface (see
+ADR-0005); it is reversible if cross-provider federation is ever required.</li>
+<li><strong>The single-binary / NAS-class profile is for development and evaluation
+only</strong>, not a supported production tier (ADR-0014). Production durability
+begins at the real multi-node backends with proper failure-domain separation.</li>
+<li>The system provides storage primitives. Application-level concerns
+(collaborative-editing merge logic, OT/CRDT engines) are out of scope, though
+the storage primitives needed to support them (atomic append, compare-and-set,
+change notification) are reserved from the start (ADR-0007).</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>

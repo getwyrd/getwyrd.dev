@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Conformance vectors — Wyrd</title>
+<meta name="description" content="Test vectors that any implementation of the on-disk format">
+<meta property="og:title" content="Conformance vectors — Wyrd">
+<meta property="og:description" content="Test vectors that any implementation of the on-disk format">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Specification</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>Conformance vectors</h1>
+<blockquote>
+<p><strong>Status: DRAFT — normative; tracks chunk-format v1 (v0, unstable).</strong>
+Uses <a href="https://www.rfc-editor.org/rfc/rfc2119">RFC 2119</a> keywords: MUST, SHOULD, MAY.</p>
+</blockquote>
+<p>Test vectors that any implementation of the on-disk format
+(<code>../chunk-format/v1.md</code>) MUST satisfy. They live <em>with</em> the spec, in the
+repository, so the spec and the reference implementation stay honest with each
+other mechanically: the <code>chunk-format</code> crate is run against these vectors in CI
+(<code>cargo xtask conformance</code>).</p>
+<h2>Layout (to be populated during Milestone 0–1)</h2>
+<pre><code>conformance/
+  vectors/
+    v1/
+      &lt;name&gt;.fragment      # raw bytes of a valid fragment
+      &lt;name&gt;.expected.json # the parsed, verified interpretation a conforming reader must produce
+  invalid/
+    v1/
+      &lt;name&gt;.fragment      # malformed fragments a conforming reader MUST reject
+      &lt;name&gt;.reason.txt    # why it must be rejected
+</code></pre>
+<h2>Rules</h2>
+<ul>
+<li>A conforming <strong>reader</strong> MUST parse and verify every vector under <code>vectors/</code> to
+match its <code>.expected.json</code>, and MUST reject every fragment under <code>invalid/</code>.</li>
+<li>A conforming <strong>writer</strong> MUST produce fragments the reference reader accepts.</li>
+<li>Adding or changing a vector is part of the strict spec change process (a format
+version bump). Vectors are append-only within a format version.</li>
+</ul>
+<p>These vectors are also how a future non-Rust client (ADR-0002, architecture
+section 8.6) proves it reads and writes data compatibly, rather than relying on
+reverse-engineering the reference code.</p>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>

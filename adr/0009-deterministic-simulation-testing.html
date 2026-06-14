@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0009. Deterministic simulation testing as first-class — Wyrd</title>
+<meta name="description" content="Date: design phase">
+<meta property="og:title" content="0009. Deterministic simulation testing as first-class — Wyrd">
+<meta property="og:description" content="Date: design phase">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture Decision Record</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>0009. Deterministic simulation testing as first-class</h1>
+<p>Date: design phase
+Status: Accepted</p>
+<h2>Context</h2>
+<p>The project's pitch is a provably-atomic commit protocol. The credibility engine
+for that claim is the FoundationDB-style methodology: run the entire zone —
+metadata, D servers, custodians, faults, clock skew — in a single-threaded
+simulated world where every bug reproduces from a seed. The Rust ecosystem
+(madsim, turmoil) supports this well. The constraint it imposes — components
+written against abstract time/network/disk traits — is nearly impossible to
+retrofit.</p>
+<h2>Decision</h2>
+<p>Treat deterministic simulation testing (DST) as a first-class architectural
+principle, not a test-time afterthought. Components are written against abstract
+time/network/disk abstractions in a <code>testkit</code> crate that the others test
+<em>against</em>. The DST harness and the commit-protocol property tests attach at
+Milestone 0 and grow with the system. Jepsen-style fault injection begins as
+soon as there is a networked path.</p>
+<h2>Consequences</h2>
+<ul>
+<li>The atomicity claim is backed by reproducible, seed-driven fault tests.</li>
+<li>Interface shapes are constrained from day one (must be simulatable) — accepted,
+because retrofitting is impractical.</li>
+<li><code>testkit</code> is a real dependency, not a helper, so DST does not rot as code
+grows.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>

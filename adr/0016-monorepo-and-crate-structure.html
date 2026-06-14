@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0016. Monorepo and evolving crate structure — Wyrd</title>
+<meta name="description" content="Date: design phase">
+<meta property="og:title" content="0016. Monorepo and evolving crate structure — Wyrd">
+<meta property="og:description" content="Date: design phase">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture Decision Record</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>0016. Monorepo and evolving crate structure</h1>
+<p>Date: design phase
+Status: Accepted</p>
+<h2>Context</h2>
+<p>The crates evolve together, conformance vectors must sit beside the spec they
+verify, and docs must be reviewable in the same PR as the code they describe.
+Multi-repo's only real win — independent release cadence across teams — is not a
+need for a small team and imposes a coordination tax. Separately, premature
+fine-grained crate splitting has a real cost (Cargo plumbing, cross-crate
+visibility friction), while trait boundaries are cheap to define and expensive to
+retrofit.</p>
+<h2>Decision</h2>
+<p>A <strong>monorepo</strong> (Cargo workspace). The mature structure is the
+<code>crates/</code> + <code>docs/</code> + <code>deploy/</code> layout in the architecture overview, with the
+dependency rule: implementations and consumers depend on the <code>traits</code> crate,
+never on each other's concretes; only the <code>server</code> binary wires concretes
+together. <code>chunk-format</code> and <code>proto</code> are dependency-light foundation crates;
+<code>testkit</code> is first-class (ADR-0009).</p>
+<p>The structure is allowed to <strong>evolve</strong>: start coarser (e.g. <code>chunk-format</code>,
+<code>proto</code>, <code>traits</code>, a combined <code>core</code>, and <code>server</code>) and split as boundaries firm
+up and compile times demand. <strong>Trait boundaries exist from day one even where
+crate boundaries do not yet.</strong> Commit <code>Cargo.lock</code> (this is an application).
+Automation lives in an <code>xtask</code> crate (codegen, release, conformance run).</p>
+<h2>Consequences</h2>
+<ul>
+<li>Conformance vectors, docs, and code stay synchronized in single PRs.</li>
+<li>The trait keystone makes backend swaps composition changes, not refactors.</li>
+<li>Coarse-to-fine evolution avoids premature plumbing while preserving the
+important (trait) boundaries.</li>
+<li>Contributors on any OS run <code>cargo xtask &lt;thing&gt;</code> without a working <code>make</code>.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>

@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2. Constraints — Wyrd</title>
+<meta name="description" content="components for the genuinely hard distributed-systems primitives (consensus,">
+<meta property="og:title" content="2. Constraints — Wyrd">
+<meta property="og:description" content="components for the genuinely hard distributed-systems primitives (consensus,">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>2. Constraints</h1>
+<blockquote>
+<p>Living document.</p>
+</blockquote>
+<h2>2.1 Technical constraints</h2>
+<table>
+<thead>
+<tr>
+<th>Constraint</th>
+<th>Source</th>
+<th>Consequence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Implementation language is Rust</td>
+<td>ADR-0004</td>
+<td>Correctness-as-differentiator; access to deterministic simulation testing; no embedded-etcd convenience</td>
+</tr>
+<tr>
+<td>License is Apache 2.0</td>
+<td>ADR-0003</td>
+<td>Permissive; suitable for an infrastructure standard adopted by commercial providers</td>
+</tr>
+<tr>
+<td>Single binary must run on NAS-class hardware (e.g. Synology)</td>
+<td>Requirement</td>
+<td>Metadata store, chunk store, and coordination must all have embeddable, single-process backends</td>
+</tr>
+<tr>
+<td>Must scale to a multi-region provider fleet</td>
+<td>Requirement</td>
+<td>Same components must have distributed backends behind the same interfaces</td>
+</tr>
+<tr>
+<td>On-disk format must be stable across software versions</td>
+<td>ADR-0002</td>
+<td>The chunk/fragment format is spec-first and versioned; data carries its format version</td>
+</tr>
+<tr>
+<td>Components must tolerate version skew with neighbors</td>
+<td>Operability</td>
+<td>A half-upgraded fleet is the normal state during a rolling upgrade; wire interfaces are versioned protobuf</td>
+</tr>
+</tbody>
+</table>
+<h2>2.2 Organizational constraints</h2>
+<ul>
+<li><strong>Small founding team.</strong> Favors a monorepo, a single language, off-the-shelf
+components for the genuinely hard distributed-systems primitives (consensus,
+transactions, coordination), and a build order that produces a working system
+early.</li>
+<li><strong>Open-source, contributor-dependent.</strong> Favors excellent onboarding docs,
+well-marked good-first-issues in non-hot-path code, and a clear contribution
+roadmap (the build order in section 9).</li>
+<li><strong>Provenance via DCO</strong>, not a CLA (ADR-0003). Every commit is signed off.</li>
+</ul>
+<h2>2.3 Conventions</h2>
+<ul>
+<li>Diagrams as code (Mermaid / D2), reviewed in PRs.</li>
+<li>Documentation lives in-repo and is reviewed alongside code.</li>
+<li>Architectural decisions are recorded as ADRs at the time they are made.</li>
+<li>The deterministic-simulation-testing harness is a first-class dependency, not
+a test-time afterthought (see ADR-0009).</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>

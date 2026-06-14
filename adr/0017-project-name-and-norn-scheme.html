@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0017. Project name and the Norn component scheme — Wyrd</title>
+<meta name="description" content="Date: design phase">
+<meta property="og:title" content="0017. Project name and the Norn component scheme — Wyrd">
+<meta property="og:description" content="Date: design phase">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture Decision Record</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>0017. Project name and the Norn component scheme</h1>
+<p>Date: design phase
+Status: Accepted</p>
+<h2>Context</h2>
+<p>The project needed a name. The constraints that emerged: a Germanic root (for
+etymological consistency across any component-naming scheme), a meaning that
+fits a durable storage system, a short and hard-edged word that types cleanly as
+a binary/crate/identifier, and — the binding practical constraint — availability
+across the namespaces that matter (GitHub org, <a href="http://crates.io">crates.io</a>, a domain).</p>
+<p>A long search ruled out many evocative candidates precisely because the good
+ones were already claimed (Aleph → Aleph Alpha; Vellum → <a href="http://vellum.ai">vellum.ai</a>; Argus →
+multiple monitoring projects; Yggdrasil → the IPv6 mesh network; Tholos → a
+crypto-custody company; Angreal → an existing Rust/Python tool). The bare word
+<code>wyrd</code> itself was taken on the GitHub org, the <code>.io</code> domain, and <a href="http://crates.io">crates.io</a>.</p>
+<h2>Decision</h2>
+<p>The project is named <strong>Wyrd</strong> (Old English, &quot;fate — the woven web of what has
+been, what is, and what is owed&quot;; same Proto-Germanic root <em>wurðiz</em> as Old Norse
+<em>Urðr</em>). Wyrd names the system as a whole <em>and</em> the concept of its total woven
+state: committed data + in-flight writes + outstanding obligations, seen as one
+consistent picture. <em>The Norns weave the Wyrd.</em></p>
+<p>The conceptually load-bearing components are named for the three Norns, mapped
+onto the system's relationship with time:</p>
+<ul>
+<li><strong>Urth</strong> (<em>Urðr</em>, &quot;what has become&quot;) — the durable committed record: the
+metadata store and on-disk truth.</li>
+<li><strong>Verdandi</strong> (<em>Verðandi</em>, &quot;what is becoming&quot;) — the write and commit path: the
+client library and commit protocol.</li>
+<li><strong>Skuld</strong> (<em>Skuld</em>, &quot;what is owed / what shall be&quot;) — pending work and
+reconciliation: the replication queue, repair backlog, and unsatisfied policy.
+Skuld's name literally means <em>debt</em>, which is exactly what this layer tracks —
+the system's outstanding obligations.</li>
+</ul>
+<p>Lower-level mechanical parts (D servers, gateways, etc.) keep plain descriptive
+names. The Norn scheme marks the conceptually load-bearing parts only; it is a
+clarifying map, not decoration, and <strong>Wyrd must not become a single &quot;god&quot;
+component</strong> — it is the name of the system and its total state, while the actual
+work is done by the Norns and the mechanical layers.</p>
+<h3>Namespace identity</h3>
+<p><code>wyrd</code> was unavailable as a bare GitHub org, <code>.io</code> domain, and crate. The
+resolved identity keeps the project name &quot;Wyrd&quot; everywhere it is spoken or read,
+using the product-style <code>get-</code> handle only in the URL:</p>
+<ul>
+<li>Project name: <strong>Wyrd</strong></li>
+<li>GitHub org: <code>github.com/getwyrd</code></li>
+<li>Repository: <code>github.com/getwyrd/wyrd</code> (the repo itself is named <code>wyrd</code>)</li>
+<li>Domain: <code>getwyrd.dev</code></li>
+<li>Primary crate: <code>wyrd-core</code> (the bare <code>wyrd</code> crate being taken); additional
+crates follow <code>wyrd-*</code> per the workspace split in ADR-0016.</li>
+</ul>
+<h2>Consequences</h2>
+<ul>
+<li>The name satisfies every constraint: Germanic root, fitting meaning (a keeper
+of what has been woven and laid down), short and hard-edged, and now available
+across org/domain/crate via the <code>getwyrd</code> handle and <code>wyrd-*</code> crate names.</li>
+<li>The Norn scheme gives the codebase a coherent, self-explaining naming
+convention: each component name states its relationship to time and the data
+lifecycle, and the scheme is etymologically consistent (all Germanic; Wyrd and
+Urth are the same root down the English and Norse branches).</li>
+<li>The name is, deliberately, a homophone of <em>weird</em> — embraced, given the
+failure modes one encounters operating distributed storage at scale.</li>
+<li>&quot;Wyrd&quot; reads as a typo of &quot;weird&quot; to those who do not know the etymology; the
+README origin note addresses this directly rather than hiding it.</li>
+<li>The <code>get-</code> prefix appears only in the URL; the binary, the documentation, and
+everyday reference all use &quot;Wyrd,&quot; so the single-word identity is preserved.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>

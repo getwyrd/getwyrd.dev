@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>C4 Container — Wyrd</title>
+<meta name="description" content="C4 Level 2 — Containers (the layer model)">
+<meta property="og:title" content="C4 Container — Wyrd">
+<meta property="og:description" content="C4 Level 2 — Containers (the layer model)">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Diagram</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>C4 Container</h1>
+<p>C4 Level 2 — Containers (the layer model)</p>
+<div class="mermaid">
+%% C4 Level 2 — Containers (the layer model)
+%% Diagrams as code. Render with any Mermaid renderer.
+graph TB
+    client([&quot;Application&quot;])
+
+    subgraph L1[&quot;L1 — Access layer (stateless)&quot;]
+        s3[&quot;S3 gateway&quot;]
+        other[&quot;FUSE / WebDAV / SDK&quot;]
+    end
+
+    subgraph L2[&quot;L2 — Global control plane (global consensus)&quot;]
+        ns[&quot;Namespace DB&lt;br/&gt;(CockroachDB / TiDB)&quot;]
+        place[&quot;Placement service&quot;]
+        reg[&quot;Zone registry&quot;]
+    end
+
+    subgraph L3[&quot;L3 — Cross-zone replication (off the data path)&quot;]
+        repl[&quot;Replication workers&lt;br/&gt;(NATS JetStream)&quot;]
+        gcust[&quot;Global custodians&quot;]
+    end
+
+    subgraph L4[&quot;L4 — Zonal file system (per datacenter)&quot;]
+        meta[&quot;Metadata store&lt;br/&gt;(redb / TiKV)&quot;]
+        dserv[&quot;D servers&lt;br/&gt;(dumb chunk storage)&quot;]
+        cust[&quot;Custodians&lt;br/&gt;(GC / scrub / repair)&quot;]
+        lib[&quot;Client library&lt;br/&gt;(EC, commit) — embedded in L1&quot;]
+    end
+
+    subgraph L5[&quot;L5 — Bootstrap &amp; coordination&quot;]
+        etcd[&quot;Coordination&lt;br/&gt;(etcd / in-memory)&quot;]
+    end
+
+    client --&gt;|&quot;request&quot;| s3
+    s3 -.-&gt;|&quot;embeds&quot;| lib
+    s3 --&gt;|&quot;namespace / placement&quot;| place
+    place --&gt; ns
+    place --&gt; reg
+    lib --&gt;|&quot;metadata commit&quot;| meta
+    lib --&gt;|&quot;direct fragment writes (bulk data)&quot;| dserv
+    cust --&gt; meta
+    cust --&gt; dserv
+    repl --&gt;|&quot;copy chunks between zones&quot;| dserv
+    gcust --&gt; ns
+    s3 -.-&gt;|&quot;discovery&quot;| etcd
+    cust -.-&gt;|&quot;leader election, locks&quot;| etcd
+    dserv -.-&gt;|&quot;registration&quot;| etcd</div>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+<script src="/assets/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true,theme:"neutral"});</script>
+</body>
+</html>
