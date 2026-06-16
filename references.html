@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prior art &amp; foundations — Wyrd</title>
+<meta name="description" content="The lineage, prior art, and commodity foundations Wyrd descends from, was designed against, and builds on.">
+<meta property="og:title" content="Prior art &amp; foundations — Wyrd">
+<meta property="og:description" content="The lineage, prior art, and commodity foundations Wyrd descends from, was designed against, and builds on.">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>Prior art &amp; foundations</h1>
+<p>Wyrd did not appear from nowhere. Its shape descends from a known lineage of distributed storage systems, it was designed in deliberate contrast to its closest open-source sibling, and it consumes well-solved commodity primitives rather than reinventing them. The sources below are grouped by the role each played.</p>
+<h2>Architectural lineage</h2>
+<p>The systems whose architecture Wyrd follows: metadata and bulk data kept separate, dumb storage servers, intelligence in a thick client and background maintenance services, a single metadata commit as the point of atomicity.</p>
+  <ul>
+    <li><a href="https://cloud.google.com/blog/products/storage-data-transfer/a-peek-behind-colossus-googles-file-system">Colossus — Google's file system</a> — The canonical public description of the architecture Wyrd descends from: a horizontally scalable metadata service (Curators), dumb “D” file servers, client-side erasure coding, and a direct client-to-server data path.</li>
+    <li><a href="https://cloud.google.com/blog/products/storage-data-transfer/how-colossus-optimizes-data-placement-for-performance">Colossus — data placement</a> — The companion post on how Colossus places and tiers data across storage media for performance and cost.</li>
+    <li><a href="https://www.usenix.org/conference/fast21/presentation/pan">Tectonic — Meta's exabyte-scale filesystem (FAST '21)</a> — The strongest single influence on Wyrd's metadata model. Its layered metadata schema and the authors' account of what they would do differently directly informed the inode/dirent design and the choice of a multi-key-transactional metadata store (see <a href="/adr/0008-tikv-metadata-and-pluggable-backends.html">ADR-0008</a>).</li>
+    <li><a href="https://www.usenix.org/system/files/fast21-pan.pdf">Tectonic — paper (PDF)</a> — The full paper.</li>
+  </ul>
+<h2>Prior art we studied</h2>
+<p>Systems we engaged with seriously — the closest sibling, and the incumbents the “why not just harden the existing thing?” question must be answered against.</p>
+  <ul>
+    <li><a href="https://garagehq.deuxfleurs.fr/">Garage / Deuxfleurs</a> — The most mission-aligned open-source sibling: Rust, sovereign, self-hostable, geo-distributed, publicly funded. Garage makes the <em>opposite</em> core trade-offs — eventual consistency with CRDTs and whole-copy replication, by deliberate design — where Wyrd chooses strong consistency, a linearizable commit point, and erasure coding. Kindred in values, complementary in design.</li>
+    <li><a href="https://garagehq.deuxfleurs.fr/documentation/design/goals/">Garage — design goals</a> — Their goals page, which states the no-erasure-coding, no-POSIX, eventual-consistency non-goals explicitly — the clearest evidence of where Wyrd's design center diverges.</li>
+    <li><a href="https://git.deuxfleurs.fr/Deuxfleurs/garage">Garage — source</a></li>
+    <li><a href="https://nlnet.nl/project/Garage/">Garage — NLnet/NGI grant</a> — A model for the European sovereign-infrastructure funding path.</li>
+  </ul>
+<h2>Conceptual influences</h2>
+<p>Ideas, not systems, that shaped specific decisions.</p>
+  <ul>
+    <li><a href="https://people.eecs.berkeley.edu/~matei/papers/2020/vldb_delta_lake.pdf">Delta Lake</a> — The commit-point idea in a different domain: a single linearizable metadata operation makes a write visible, with data staged invisibly beforehand — the conceptual ancestor of Wyrd's atomic commit.</li>
+  </ul>
+<h2>Foundations we build on</h2>
+<p>The hard, well-solved commodity primitives Wyrd consumes rather than rebuilds. The novelty budget is spent on the commit protocol, not on re-solving consensus or transactional storage.</p>
+  <ul>
+    <li><a href="https://etcd.io/">etcd</a> — Coordination: service discovery, leader election, locks with fencing (see <a href="/adr/0006-etcd-for-coordination.html">ADR-0006</a>).</li>
+    <li><a href="https://tikv.org/">TiKV</a> — The production metadata backend, behind the <code>MetadataStore</code> trait; native multi-key transactions are the reason it was chosen over an HBase-style store (see <a href="/adr/0008-tikv-metadata-and-pluggable-backends.html">ADR-0008</a>).</li>
+    <li><a href="https://www.cockroachlabs.com/">CockroachDB</a> — A Spanner-class option for the L2 global control plane.</li>
+    <li><a href="https://opentelemetry.io/">OpenTelemetry</a> — The single instrumentation commitment; storage and visualization backends stay the operator's choice (see <a href="/adr/0012-opentelemetry-instrumentation.html">ADR-0012</a>).</li>
+    <li><a href="https://github.com/madsim-rs/madsim">madsim</a> — Deterministic simulation testing for async Rust (see <a href="/adr/0009-deterministic-simulation-testing.html">ADR-0009</a>).</li>
+    <li><a href="https://github.com/tokio-rs/turmoil">turmoil</a> — Deterministic network simulation for testing (see <a href="/adr/0009-deterministic-simulation-testing.html">ADR-0009</a>).</li>
+    <li><a href="https://crates.io/crates/reed-solomon-simd">reed-solomon-simd</a> — The erasure-coding library used in the client data path (see <a href="/adr/0004-rust-as-implementation-language.html">ADR-0004</a>).</li>
+  </ul>
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>
