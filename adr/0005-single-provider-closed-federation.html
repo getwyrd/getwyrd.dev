@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>0005. Single-provider, closed federation — Wyrd</title>
-<meta name="description" content="Date: design phase">
+<meta name="description" content="Regions and nodes cooperate within one provider; there is no cross-provider or untrusted-operator operation. A trust model spectrum exists from &quot;cooperating operators&quot; to &quot;verif...">
 <meta property="og:title" content="0005. Single-provider, closed federation — Wyrd">
-<meta property="og:description" content="Date: design phase">
+<meta property="og:description" content="Regions and nodes cooperate within one provider; there is no cross-provider or untrusted-operator operation. A trust model spectrum exists from &quot;cooperating operators&quot; to &quot;verif...">
 <meta property="og:type" content="article">
 <link rel="stylesheet" href="/assets/style.css">
 </head>
@@ -28,6 +28,7 @@
 <div class="wrap">
   <header class="doc-header">
     <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Proposed · 13.06.2026 11:57</p>
   </header>
 </div>
 
@@ -36,29 +37,15 @@
     <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
     <article class="prose">
 <h1>0005. Single-provider, closed federation</h1>
-<p>Date: design phase
-Status: Accepted</p>
 <h2>Context</h2>
-<p>Regions and nodes cooperate within one provider; there is no cross-provider or
-untrusted-operator operation. A trust model spectrum exists from &quot;cooperating
-operators&quot; (mutual TLS, contracts) to &quot;verify everything&quot; (proof-of-storage
-challenges, as in decentralized storage networks).</p>
+<p>Regions and nodes cooperate within one provider; there is no cross-provider or untrusted-operator operation. A trust model spectrum exists from &quot;cooperating operators&quot; (mutual TLS, contracts) to &quot;verify everything&quot; (proof-of-storage challenges, as in decentralized storage networks).</p>
 <h2>Decision</h2>
-<p>Adopt a <strong>closed, single-provider federation</strong> trust model. Zones authenticate
-with mTLS under a provider-operated CA (SPIFFE/SPIRE as internal PKI). Zone
-health is self-reported and trusted. No proof-of-storage protocols. Per-tenant
-envelope encryption is an optional feature, not a structural necessity.</p>
+<p>Adopt a <strong>closed, single-provider federation</strong> trust model. Zones authenticate with mTLS under a provider-operated CA (SPIFFE/SPIRE as internal PKI). Zone health is self-reported and trusted. No proof-of-storage protocols. Per-tenant envelope encryption is an optional feature, not a structural necessity.</p>
 <h2>Consequences</h2>
 <ul>
-<li>A large amount of protocol surface is removed: no zone-challenge scrubbing
-across distrusting parties, no proof-of-storage, simpler admission.</li>
+<li>A large amount of protocol surface is removed: no zone-challenge scrubbing across distrusting parties, no proof-of-storage, simpler admission.</li>
 <li>The mTLS fabric is an internal PKI, not a cross-organization trust system.</li>
-<li>This is a conscious exclusion, and someone will later propose cross-provider
-federation. The cost to reverse: wire protocols would need spec-first
-promotion (ADR-0002), the admission and scrubbing designs would need
-verify-everything variants, and envelope encryption would likely become
-mandatory. Recorded here so the exclusion is explicit and the re-entry cost is
-known.</li>
+<li>This is a conscious exclusion, and someone will later propose cross-provider federation. The cost to reverse: wire protocols would need spec-first promotion (ADR-0002), the admission and scrubbing designs would need verify-everything variants, and envelope encryption would likely become mandatory. Recorded here so the exclusion is explicit and the re-entry cost is known.</li>
 </ul>
 
     </article>

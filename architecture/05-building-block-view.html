@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>5. Building block view — Wyrd</title>
-<meta name="description" content="The system is organized into five layers. L4 and L5 operate within a single">
+<meta name="description" content="The system is organized into five layers. L4 and L5 operate within a single zone and are unaware that other zones exist. L1, L2, and L3 are the layers that span zones. The decis...">
 <meta property="og:title" content="5. Building block view — Wyrd">
-<meta property="og:description" content="The system is organized into five layers. L4 and L5 operate within a single">
+<meta property="og:description" content="The system is organized into five layers. L4 and L5 operate within a single zone and are unaware that other zones exist. L1, L2, and L3 are the layers that span zones. The decis...">
 <meta property="og:type" content="article">
 <link rel="stylesheet" href="/assets/style.css">
 </head>
@@ -28,6 +28,7 @@
 <div class="wrap">
   <header class="doc-header">
     <p class="doc-class">Architecture</p>
+    <p class="doc-meta">Status: living · 13.06.2026 11:57</p>
   </header>
 </div>
 
@@ -37,16 +38,9 @@
     <article class="prose">
 <h1>5. Building block view</h1>
 <blockquote>
-<p>Living document. This is the layer model (L1–L5) and the components within
-each layer. See <code>diagrams/c4-container.mermaid</code> for the container diagram and
-<code>diagrams/layer-stack.mermaid</code> for the layer stack.</p>
+<p>Living document. This is the layer model (L1–L5) and the components within each layer. See <code>diagrams/c4-container.mermaid</code> for the container diagram and <code>diagrams/layer-stack.mermaid</code> for the layer stack.</p>
 </blockquote>
-<p>The system is organized into five layers. L4 and L5 operate within a single
-zone (one datacenter) and are unaware that other zones exist. L1, L2, and L3 are
-the layers that span zones. The decisive property throughout: <strong>the layer with
-global scope (L2) holds only small, slow-changing, high-value truth, so it can
-afford global consensus without becoming a bottleneck</strong>, while bulk data flows
-directly between client and storage servers, crossing no shared component.</p>
+<p>The system is organized into five layers. L4 and L5 operate within a single zone (one datacenter) and are unaware that other zones exist. L1, L2, and L3 are the layers that span zones. The decisive property throughout: <strong>the layer with global scope (L2) holds only small, slow-changing, high-value truth, so it can afford global consensus without becoming a bottleneck</strong>, while bulk data flows directly between client and storage servers, crossing no shared component.</p>
 <pre><code>L1  Access layer            S3 / FUSE / WebDAV / SDK gateways      (stateless)
 L2  Global control plane     namespace, placement, ACLs, registry   (global consensus)
 L3  Cross-zone replication    async chunk copy, global custodians    (off the data path)
@@ -55,9 +49,7 @@ L5  Bootstrap &amp; coordination  service discovery, leader election, locks, con
 </code></pre>
 <hr />
 <h2>L1 — Access layer</h2>
-<p>Stateless protocol translators. They hold no durable state, scale horizontally,
-authenticate the caller, and embed the client library (L4) to do the actual
-storage work. All consistency logic lives below them.</p>
+<p>Stateless protocol translators. They hold no durable state, scale horizontally, authenticate the caller, and embed the client library (L4) to do the actual storage work. All consistency logic lives below them.</p>
 <table>
 <thead>
 <tr>
@@ -91,10 +83,7 @@ storage work. All consistency logic lives below them.</p>
 </table>
 <hr />
 <h2>L2 — Global control plane</h2>
-<p>The brain of the multi-zone system: the one component with a global,
-authoritative view of what exists and where it should live. It controls by
-<em>deciding and recording</em>; it distributes by <em>routing actors to the right zones</em>,
-never by carrying the payload itself.</p>
+<p>The brain of the multi-zone system: the one component with a global, authoritative view of what exists and where it should live. It controls by <em>deciding and recording</em>; it distributes by <em>routing actors to the right zones</em>, never by carrying the payload itself.</p>
 <table>
 <thead>
 <tr>
@@ -126,13 +115,10 @@ never by carrying the payload itself.</p>
 </tr>
 </tbody>
 </table>
-<p>Holds <em>metadata about metadata</em> — kilobytes per file. Consulted on namespace and
-placement operations (create, rename, share, delete, &quot;where do I read this&quot;),
-which are rare relative to data operations and ideally cached by clients.</p>
+<p>Holds <em>metadata about metadata</em> — kilobytes per file. Consulted on namespace and placement operations (create, rename, share, delete, &quot;where do I read this&quot;), which are rare relative to data operations and ideally cached by clients.</p>
 <hr />
 <h2>L3 — Cross-zone replication</h2>
-<p>Turns independent single-datacenter systems into one geographically distributed
-system, without ever sitting on the foreground write path.</p>
+<p>Turns independent single-datacenter systems into one geographically distributed system, without ever sitting on the foreground write path.</p>
 <table>
 <thead>
 <tr>
@@ -159,9 +145,7 @@ system, without ever sitting on the foreground write path.</p>
 </tr>
 </tbody>
 </table>
-<p>Default replication is <strong>async</strong> (home-zone commit acknowledges immediately).
-<strong>Sync N-zone</strong> replication is a per-tenant opt-in that eliminates the data-loss
-window at the cost of cross-region write latency.</p>
+<p>Default replication is <strong>async</strong> (home-zone commit acknowledges immediately). <strong>Sync N-zone</strong> replication is a per-tenant opt-in that eliminates the data-loss window at the cost of cross-region write latency.</p>
 <hr />
 <h2>L4 — Zonal file system (the Colossus analog, one per datacenter)</h2>
 <p>Where atomicity lives and where the bulk of correctness risk concentrates.</p>
@@ -200,35 +184,21 @@ window at the cost of cross-region write latency.</p>
 <h3>The metadata model</h3>
 <p>Hierarchical: <strong>inode + dirent</strong>, not path-as-key.</p>
 <ul>
-<li><code>inode:&lt;id&gt;</code> → attributes, chunk map (or inline data for small files), state,
-version.</li>
+<li><code>inode:&lt;id&gt;</code> → attributes, chunk map (or inline data for small files), state, version.</li>
 <li><code>dirent:&lt;parent_id&gt;/&lt;name&gt;</code> → child inode id.</li>
 </ul>
-<p>This makes rename a single dirent mutation (atomic under the same mechanism as a
-write) instead of a mass key rewrite, and makes cross-zone sharing expressible
-(a dirent pointing at an inode owned elsewhere). It is the strongest concrete
-driver of the TiKV-over-HBase choice, because file creation must atomically
-write both the inode and its dirent — a multi-key transaction. See section 6 and
-ADR-0008.</p>
+<p>This makes rename a single dirent mutation (atomic under the same mechanism as a write) instead of a mass key rewrite, and makes cross-zone sharing expressible (a dirent pointing at an inode owned elsewhere). It is the strongest concrete driver of the TiKV-over-HBase choice, because file creation must atomically write both the inode and its dirent — a multi-key transaction. See section 6 and ADR-0008.</p>
 <h3>The write protocol (the commit point)</h3>
 <ol>
-<li><strong>Intent</strong> — client registers chunk IDs in the pending-chunk ledger with a
-lease. The chunks exist nowhere in the namespace.</li>
-<li><strong>Data path</strong> — client erasure-codes and writes fragments directly to D
-servers, which verify checksums. Failures here are harmless garbage.</li>
-<li><strong>Commit</strong> — one atomic metadata mutation writes the chunk map + sets state
-<code>COMMITTED</code> + bumps the version, conditional on the prior version. <strong>This is
-the atomicity.</strong> Concurrent writers conflict here; exactly one wins.</li>
-<li><strong>Release</strong> — delete the ledger entries. Crash between 3 and 4 leaves the
-ledger to a custodian sweep; crash before 3 leaves leased garbage for GC.</li>
+<li><strong>Intent</strong> — client registers chunk IDs in the pending-chunk ledger with a lease. The chunks exist nowhere in the namespace.</li>
+<li><strong>Data path</strong> — client erasure-codes and writes fragments directly to D servers, which verify checksums. Failures here are harmless garbage.</li>
+<li><strong>Commit</strong> — one atomic metadata mutation writes the chunk map + sets state <code>COMMITTED</code> + bumps the version, conditional on the prior version. <strong>This is the atomicity.</strong> Concurrent writers conflict here; exactly one wins.</li>
+<li><strong>Release</strong> — delete the ledger entries. Crash between 3 and 4 leaves the ledger to a custodian sweep; crash before 3 leaves leased garbage for GC.</li>
 </ol>
-<p>Readers never consult the ledger; they see the old version or the new one, never
-a hybrid.</p>
+<p>Readers never consult the ledger; they see the old version or the new one, never a hybrid.</p>
 <hr />
 <h2>L5 — Bootstrap and coordination</h2>
-<p>The smallest layer by data volume and the one everything else depends on. It
-answers the questions a distributed system must answer before it can do any real
-work. Stores kilobytes; never on the data path.</p>
+<p>The smallest layer by data volume and the one everything else depends on. It answers the questions a distributed system must answer before it can do any real work. Stores kilobytes; never on the data path.</p>
 <table>
 <thead>
 <tr>
@@ -250,14 +220,8 @@ work. Stores kilobytes; never on the data path.</p>
 </tr>
 </tbody>
 </table>
-<p>The Colossus-style bootstrap recursion bottoms out here: etcd depends on nothing
-above it. Losing L5 loses no data; established connections keep working from
-cached state. What is lost is the ability to <em>react</em> — failovers, elections,
-topology changes — until coordination returns.</p>
-<p><strong>openraft</strong> is reserved as a future embedded coordination backend (a
-no-external-dependency production mode) behind the same trait, validated by the
-existing DST harness once the trait semantics are pinned by two implementations.
-Not built for v1 (ADR-0006).</p>
+<p>The Colossus-style bootstrap recursion bottoms out here: etcd depends on nothing above it. Losing L5 loses no data; established connections keep working from cached state. What is lost is the ability to <em>react</em> — failovers, elections, topology changes — until coordination returns.</p>
+<p><strong>openraft</strong> is reserved as a future embedded coordination backend (a no-external-dependency production mode) behind the same trait, validated by the existing DST harness once the trait semantics are pinned by two implementations. Not built for v1 (ADR-0006).</p>
 <hr />
 <h2>Cross-cutting components</h2>
 <table>
@@ -301,10 +265,7 @@ Not built for v1 (ADR-0006).</p>
 </tr>
 </tbody>
 </table>
-<p>The dependency rule (ADR-0010): implementations and consumers depend on
-<code>traits</code>, never on each other's concretes. Only <code>server</code> knows the concrete
-backends, which is what makes &quot;swap redb for TiKV&quot; or &quot;in-memory for etcd&quot; a
-composition change rather than a refactor.</p>
+<p>The dependency rule (ADR-0010): implementations and consumers depend on <code>traits</code>, never on each other's concretes. Only <code>server</code> knows the concrete backends, which is what makes &quot;swap redb for TiKV&quot; or &quot;in-memory for etcd&quot; a composition change rather than a refactor.</p>
 
     </article>
   </main>

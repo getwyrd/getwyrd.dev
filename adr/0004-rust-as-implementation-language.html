@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>0004. Rust as the implementation language — Wyrd</title>
-<meta name="description" content="Date: design phase">
+<meta name="description" content="The realistic choice was Go or Rust; both have shipped systems of exactly this class . Go offers a larger infrastructure contributor pool, faster ramp-up, excellent operational ...">
 <meta property="og:title" content="0004. Rust as the implementation language — Wyrd">
-<meta property="og:description" content="Date: design phase">
+<meta property="og:description" content="The realistic choice was Go or Rust; both have shipped systems of exactly this class . Go offers a larger infrastructure contributor pool, faster ramp-up, excellent operational ...">
 <meta property="og:type" content="article">
 <link rel="stylesheet" href="/assets/style.css">
 </head>
@@ -28,6 +28,7 @@
 <div class="wrap">
   <header class="doc-header">
     <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Proposed · 13.06.2026 11:57</p>
   </header>
 </div>
 
@@ -36,39 +37,19 @@
     <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
     <article class="prose">
 <h1>0004. Rust as the implementation language</h1>
-<p>Date: design phase
-Status: Accepted</p>
 <h2>Context</h2>
-<p>The realistic choice was Go or Rust; both have shipped systems of exactly this
-class (Go: SeaweedFS, MinIO, CubeFS, CockroachDB's Pebble; Rust: TiKV, Garage).
-Go offers a larger infrastructure contributor pool, faster ramp-up, excellent
-operational legibility for the Kubernetes-shaped target audience, and faster
-iteration for a small team. Rust offers no GC tail latencies in the data path,
-compile-time guarantees in exactly the code where bugs are silent corruption
-rather than crashes, io_uring headroom, TiKV-ecosystem affinity, and access to
-the deterministic-simulation-testing culture.</p>
-<p>The project's stated differentiator is correctness: a provably-atomic commit
-protocol with a conformance suite.</p>
+<p>The realistic choice was Go or Rust; both have shipped systems of exactly this class (Go: SeaweedFS, MinIO, CubeFS, CockroachDB's Pebble; Rust: TiKV, Garage). Go offers a larger infrastructure contributor pool, faster ramp-up, excellent operational legibility for the Kubernetes-shaped target audience, and faster iteration for a small team. Rust offers no GC tail latencies in the data path, compile-time guarantees in exactly the code where bugs are silent corruption rather than crashes, io_uring headroom, TiKV-ecosystem affinity, and access to the deterministic-simulation-testing culture.</p>
+<p>The project's stated differentiator is correctness: a provably-atomic commit protocol with a conformance suite.</p>
 <h2>Decision</h2>
-<p>Implement in <strong>Rust</strong>, for all components, for v1. Language choices fail on
-people, not benchmarks; the founding contributors' fluency and the
-correctness-as-differentiator positioning point to Rust.</p>
+<p>Implement in <strong>Rust</strong>, for all components, for v1. Language choices fail on people, not benchmarks; the founding contributors' fluency and the correctness-as-differentiator positioning point to Rust.</p>
 <h2>Consequences</h2>
 <ul>
-<li>Memory safety in the client library and custodians, where bugs are silent
-corruption.</li>
-<li>Access to deterministic simulation testing (ADR-0009) — a credibility engine
-for the atomicity claim, where the Rust ecosystem leads.</li>
-<li>Smaller drive-by-contributor pool and steeper on-ramp — mitigated by excellent
-CONTRIBUTING docs and good-first-issues in non-hot-path crates.</li>
-<li>Slower compile cycles on a large workspace — mitigated by a disciplined crate
-split (ADR-0016).</li>
-<li>Lost conveniences, each re-solved: no pure-Go klauspost/reedsolomon (use
-<code>reed-solomon-simd</code>); no embedded etcd (use an in-memory coordination backend
-for the dev profile — ADR-0006).</li>
-<li>The D server sits behind a gRPC <code>ChunkStore</code> contract, so a future Rust-vs-
-performance question is settled by the CI benchmark suite, and any component
-could in principle be reimplemented behind its protobuf contract.</li>
+<li>Memory safety in the client library and custodians, where bugs are silent corruption.</li>
+<li>Access to deterministic simulation testing (ADR-0009) — a credibility engine for the atomicity claim, where the Rust ecosystem leads.</li>
+<li>Smaller drive-by-contributor pool and steeper on-ramp — mitigated by excellent CONTRIBUTING docs and good-first-issues in non-hot-path crates.</li>
+<li>Slower compile cycles on a large workspace — mitigated by a disciplined crate split (ADR-0016).</li>
+<li>Lost conveniences, each re-solved: no pure-Go klauspost/reedsolomon (use <code>reed-solomon-simd</code>); no embedded etcd (use an in-memory coordination backend for the dev profile — ADR-0006).</li>
+<li>The D server sits behind a gRPC <code>ChunkStore</code> contract, so a future Rust-vs- performance question is settled by the CI benchmark suite, and any component could in principle be reimplemented behind its protobuf contract.</li>
 </ul>
 
     </article>

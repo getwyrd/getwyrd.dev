@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>0013. API-first management surface — Wyrd</title>
-<meta name="description" content="Date: design phase">
+<meta name="description" content="The management surface could be CLI-first, API-first, or UI-first. Given the declarative-reconciliation model and a Kubernetes-shaped audience, the authoritative interface shoul...">
 <meta property="og:title" content="0013. API-first management surface — Wyrd">
-<meta property="og:description" content="Date: design phase">
+<meta property="og:description" content="The management surface could be CLI-first, API-first, or UI-first. Given the declarative-reconciliation model and a Kubernetes-shaped audience, the authoritative interface shoul...">
 <meta property="og:type" content="article">
 <link rel="stylesheet" href="/assets/style.css">
 </head>
@@ -28,6 +28,7 @@
 <div class="wrap">
   <header class="doc-header">
     <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Proposed · 13.06.2026 11:57</p>
   </header>
 </div>
 
@@ -36,25 +37,15 @@
     <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
     <article class="prose">
 <h1>0013. API-first management surface</h1>
-<p>Date: design phase
-Status: Accepted</p>
 <h2>Context</h2>
-<p>The management surface could be CLI-first, API-first, or UI-first. Given the
-declarative-reconciliation model (ADR-0011) and a Kubernetes-shaped audience, the
-authoritative interface should be a clean programmatic one, with other surfaces
-as consumers.</p>
+<p>The management surface could be CLI-first, API-first, or UI-first. Given the declarative-reconciliation model (ADR-0011) and a Kubernetes-shaped audience, the authoritative interface should be a clean programmatic one, with other surfaces as consumers.</p>
 <h2>Decision</h2>
-<p><strong>API-first.</strong> A clean gRPC/REST management API is the source of truth for
-desired state and reconciliation status. Ship a thin CLI over it for v1. Defer a
-web UI. The API is the authoritative interface; CLI, dashboards, and any future
-UI are consumers of it.</p>
+<p><strong>API-first.</strong> A clean gRPC/REST management API is the source of truth for desired state and reconciliation status. Ship a thin CLI over it for v1. Defer a web UI. The API is the authoritative interface; CLI, dashboards, and any future UI are consumers of it.</p>
 <h2>Consequences</h2>
 <ul>
-<li>Automation-friendly and scriptable from day one; meets the target audience
-where they are.</li>
+<li>Automation-friendly and scriptable from day one; meets the target audience where they are.</li>
 <li>The web UI can be added later without re-architecting management.</li>
-<li>Aligns with OTel-first observability (ADR-0012): two open-standard seams the
-project controls, with vendor tools as replaceable consumers.</li>
+<li>Aligns with OTel-first observability (ADR-0012): two open-standard seams the project controls, with vendor tools as replaceable consumers.</li>
 </ul>
 
     </article>

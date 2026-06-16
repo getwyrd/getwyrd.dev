@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Wyrd — design documentation — Wyrd</title>
-<meta name="description" content="The design documentation is organized into four distinct classes, each with its">
+<meta name="description" content="The design documentation is organized into four distinct classes, each with its own purpose, audience, and change process. The distinction matters because parts of this document...">
 <meta property="og:title" content="Wyrd — design documentation — Wyrd">
-<meta property="og:description" content="The design documentation is organized into four distinct classes, each with its">
+<meta property="og:description" content="The design documentation is organized into four distinct classes, each with its own purpose, audience, and change process. The distinction matters because parts of this document...">
 <meta property="og:type" content="article">
 <link rel="stylesheet" href="/assets/style.css">
 </head>
@@ -32,12 +32,7 @@
     <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
     <article class="prose">
 <h1>Wyrd — design documentation</h1>
-<p>The design documentation is organized into four distinct classes, each with its
-own purpose, audience, and change process. The distinction matters because parts
-of this documentation are not merely <em>descriptive</em> — they are <em>normative</em>. An
-independent implementation of the on-disk format must conform to a written
-specification, so that class of document carries a stricter change process than
-the rest.</p>
+<p>The design documentation is organized into four distinct classes, each with its own purpose, audience, and change process. The distinction matters because parts of this documentation are not merely <em>descriptive</em> — they are <em>normative</em>. An independent implementation of the on-disk format must conform to a written specification, so that class of document carries a stricter change process than the rest.</p>
 <h2>The four document classes</h2>
 <table>
 <thead>
@@ -76,48 +71,26 @@ the rest.</p>
 </tbody>
 </table>
 <h3>1. Specifications (<code>specs/</code>)</h3>
-<p>The normative core. Currently this is the on-disk chunk/fragment format — the
-one artifact that must remain stable because <strong>data outlives software</strong>. A
-provider with petabytes written under format <code>v1</code> must be able to read it with
-software written years later. Specs use RFC 2119 language (MUST / SHOULD / MAY)
-and ship with conformance test vectors in <code>specs/conformance/</code>.</p>
-<p>Everything else (wire protocols, component interfaces) is implementation-first
-with versioned protobuf, not spec-first. See ADR-0002 for the reasoning.</p>
+<p>The normative core. Currently this is the on-disk chunk/fragment format — the one artifact that must remain stable because <strong>data outlives software</strong>. A provider with petabytes written under format <code>v1</code> must be able to read it with software written years later. Specs use RFC 2119 language (MUST / SHOULD / MAY) and ship with conformance test vectors in <code>specs/conformance/</code>.</p>
+<p>Everything else (wire protocols, component interfaces) is implementation-first with versioned protobuf, not spec-first. See ADR-0002 for the reasoning.</p>
 <h3>2. Architecture overview (<code>architecture/</code>)</h3>
-<p>A trimmed <a href="https://arc42.org/">arc42</a>-derived structure plus
-<a href="https://c4model.com/">C4</a> diagrams. This is the living description of the
-system as it currently is. It is edited continuously and should never lag the
-code; &quot;update the architecture doc&quot; is a legitimate merge requirement on a PR
-that changes structure.</p>
+<p>A trimmed <a href="https://arc42.org/">arc42</a>-derived structure plus <a href="https://c4model.com/">C4</a> diagrams. This is the living description of the system as it currently is. It is edited continuously and should never lag the code; &quot;update the architecture doc&quot; is a legitimate merge requirement on a PR that changes structure.</p>
 <h3>3. Architecture Decision Records (<code>adr/</code>)</h3>
-<p>Short, numbered, immutable records of <em>why</em> a decision was made. They exist so
-the same debate (&quot;why not Ceph?&quot;, &quot;why client-side erasure coding?&quot;) is not
-relitigated in every new issue. An ADR is never edited after acceptance; it is
-superseded by a later ADR that references it. Format: a lightweight
-<a href="https://cognitect.com/blog/2011/11/15/documenting-architecture-decisions">Nygard-style</a>
-template. See <code>adr/0001-record-architecture-decisions.md</code>.</p>
+<p>Short, numbered, immutable records of <em>why</em> a decision was made. They exist so the same debate (&quot;why not Ceph?&quot;, &quot;why client-side erasure coding?&quot;) is not relitigated in every new issue. An ADR is never edited after acceptance; it is superseded by a later ADR that references it. Format: a lightweight <a href="https://cognitect.com/blog/2011/11/15/documenting-architecture-decisions">Nygard-style</a> template. See <code>adr/0001-record-architecture-decisions.md</code>.</p>
 <h3>4. Enhancement proposals (<code>proposals/</code>)</h3>
-<p>Once something is implemented, architectural change flows through proposals
-(modeled on Kubernetes KEPs and Rust RFCs). A proposal moves from <code>draft/</code> to
-<code>accepted/</code> and carries motivation, design, alternatives, and graduation
-criteria. Use <code>proposals/template.md</code> to start one. Early in the project this is
-deliberately lightweight; the discipline matters more than the ceremony.</p>
+<p>Once something is implemented, architectural change flows through proposals (modeled on Kubernetes KEPs and Rust RFCs). A proposal moves from <code>draft/</code> to <code>accepted/</code> and carries motivation, design, alternatives, and graduation criteria. Use <code>templates/proposal.md</code> to start one. Early in the project this is deliberately lightweight; the discipline matters more than the ceremony.</p>
+<p>Starting any of these documents? The fill-in templates for ADRs, proposals, and architecture sections live in <code>templates/</code>.</p>
 <h2>Conventions</h2>
 <ul>
-<li><strong>Diagrams as code.</strong> All diagrams live in <code>architecture/diagrams/</code> as
-Mermaid or D2 source, never as binary exports. Diagrams must be diffable and
-changeable in a PR. Exported images from drawing tools rot within months.</li>
-<li><strong>Docs live with code.</strong> Documentation is in the same repository as the code
-it describes and is reviewed in the same pull requests.</li>
-<li><strong>ADR-first habit.</strong> When a design question is settled, the output artifact is
-an ADR, not a wiki paragraph or a Slack message.</li>
+<li><strong>Diagrams as code.</strong> All diagrams live in <code>architecture/diagrams/</code> as Mermaid or D2 source, never as binary exports. Diagrams must be diffable and changeable in a PR. Exported images from drawing tools rot within months.</li>
+<li><strong>Docs live with code.</strong> Documentation is in the same repository as the code it describes and is reviewed in the same pull requests.</li>
+<li><strong>ADR-first habit.</strong> When a design question is settled, the output artifact is an ADR, not a wiki paragraph or a Slack message.</li>
 </ul>
 <h2>Reading order for newcomers</h2>
 <ol>
 <li><code>architecture/01-introduction-and-goals.md</code> — what this is and why.</li>
 <li><code>architecture/05-building-block-view.md</code> — the layer model (L1–L5).</li>
-<li><code>adr/</code> — skim the index below; the early ADRs capture the foundational
-decisions and are the fastest way to understand the <em>why</em> behind the system.</li>
+<li><code>adr/</code> — skim the index below; the early ADRs capture the foundational decisions and are the fastest way to understand the <em>why</em> behind the system.</li>
 <li><code>architecture/09-build-order-and-roadmap.md</code> — where to start contributing.</li>
 </ol>
 <p>See <code>adr/README.md</code> for the full ADR index.</p>

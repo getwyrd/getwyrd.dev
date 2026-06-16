@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>0001. Record architecture decisions — Wyrd</title>
-<meta name="description" content="Date: design phase">
+<meta name="description" content="This is an open-source infrastructure project built initially by a small team and dependent on outside contributors. Architectural questions will recur in every new issue thread...">
 <meta property="og:title" content="0001. Record architecture decisions — Wyrd">
-<meta property="og:description" content="Date: design phase">
+<meta property="og:description" content="This is an open-source infrastructure project built initially by a small team and dependent on outside contributors. Architectural questions will recur in every new issue thread...">
 <meta property="og:type" content="article">
 <link rel="stylesheet" href="/assets/style.css">
 </head>
@@ -28,6 +28,7 @@
 <div class="wrap">
   <header class="doc-header">
     <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Proposed · 13.06.2026 11:57</p>
   </header>
 </div>
 
@@ -36,41 +37,47 @@
     <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
     <article class="prose">
 <h1>0001. Record architecture decisions</h1>
-<p>Date: design phase
-Status: Accepted</p>
 <h2>Context</h2>
-<p>This is an open-source infrastructure project built initially by a small team
-and dependent on outside contributors. Architectural questions (&quot;why not Ceph?&quot;,
-&quot;why client-side erasure coding?&quot;, &quot;why is metadata never erasure-coded?&quot;) will
-recur in every new issue thread and pull request unless the reasoning is captured
-once, durably, where contributors can find it.</p>
-<p>We also use a deliberately trimmed arc42 for the living architecture overview,
-which has a gravitational pull toward documentation theater — sections filled in
-because the template has them. We want a record of <em>why the overview is trimmed
-the way it is</em>, and more generally of every decision that shapes the system.</p>
+<p>This is an open-source infrastructure project built initially by a small team and dependent on outside contributors. Architectural questions (&quot;why not Ceph?&quot;, &quot;why client-side erasure coding?&quot;, &quot;why is metadata never erasure-coded?&quot;) will recur in every new issue thread and pull request unless the reasoning is captured once, durably, where contributors can find it.</p>
+<p>We also use a deliberately trimmed arc42 for the living architecture overview, which has a gravitational pull toward documentation theater — sections filled in because the template has them. We want a record of <em>why the overview is trimmed the way it is</em>, and more generally of every decision that shapes the system.</p>
 <h2>Decision</h2>
-<p>We record architecture decisions as ADRs: short, numbered, immutable Markdown
-files in <code>docs/adr/</code>, following the Nygard template (Context, Decision,
-Consequences, Status). An ADR is never edited after acceptance; when a decision
-changes, a new ADR supersedes the old one and references it.</p>
-<p>When a design question is settled — in discussion, in review, anywhere — the
-output artifact is an ADR, not a wiki paragraph or a chat message.</p>
-<p>We deliberately trim arc42 to the ~10 sections that earn their maintenance cost
-rather than completing all 12, and we state that here so nobody later
-&quot;helpfully&quot; completes the template.</p>
+<p>We record architecture decisions as ADRs: short, numbered, append-only Markdown files in <code>docs/design/adr/</code>, one decision per file, following the Nygard template (Context, Decision, Consequences), with <code>created</code> / <code>type</code> / <code>status</code> / <code>tags</code> carried in YAML frontmatter (the project's Zettelkasten-style metadata). When a design question is settled — in discussion, in review, anywhere — the output artifact is an ADR, not a wiki paragraph or a chat message.</p>
+<p>This is the meta-decision, and the process below governs the <strong>ADR class only</strong>. The other authored classes document their own process in their own folders — enhancement proposals in <code>../proposals/</code> (a <code>draft/</code> → <code>accepted/</code> flow) and specifications in <code>../specs/</code> (normative and versioned) — while the living architecture overview in <code>../architecture/</code> is descriptive and not part of any acceptance flow.</p>
+<h3>Numbering and location</h3>
+<p>ADRs live in <code>docs/design/adr/</code> and are named <code>NNNN-kebab-title.md</code>, where <code>NNNN</code> is the next free zero-padded number. Numbers are assigned monotonically and <strong>never reused</strong>, even after an ADR is superseded. Every ADR is listed, with its current status, in the index at <code>docs/design/adr/README.md</code>.</p>
+<h3>Lifecycle</h3>
+<p>The <code>Status:</code> field in an ADR's header is the source of truth for its state. An ADR moves through:</p>
+<ul>
+<li><strong>Proposed</strong> — written up but not yet ratified. A Proposed ADR is a working draft: it may be edited freely while discussion continues (normally in the pull request that introduces it).</li>
+<li><strong>Accepted</strong> — ratified. An ADR is moved to Accepted by a deliberate edit to its <code>Status:</code> line once the decision is agreed in review. <strong>This transition is the act of acceptance; it is intentional, not an automatic consequence of merging.</strong> From this point the ADR is immutable (see below).</li>
+<li><strong>Superseded</strong> — a later ADR has replaced the decision; recorded as <code>Superseded by ADR-NNNN</code> (see &quot;Immutability&quot;).</li>
+</ul>
+<p>During the initial design phase the whole foundational set is deliberately held at <strong>Proposed</strong> until it has been reviewed and ratified together — being too quick to mark decisions Accepted is itself a mistake this process guards against.</p>
+<h3>Immutability, and how a decision changes</h3>
+<p>Once <strong>Accepted</strong>, an ADR is never rewritten — that is exactly what makes &quot;see ADR-NNNN&quot; a durable, trustworthy reference. When a decision changes we do <strong>not</strong> edit the old record. Instead we write a <strong>new</strong> ADR that explains what changed and names the one it replaces (<code>Supersedes ADR-NNNN</code>), and we mark the old entry <code>Superseded by ADR-NNNN</code> in the index. The superseded ADR's own file is left untouched, so the history reads in order.</p>
+<p>This is enforced mechanically: the <code>adr-immutability</code> CI check (<code>.github/workflows/adr-immutability.yml</code>) fails any pull request that modifies, deletes, or renames an Accepted ADR. The check is status-aware — it reads each ADR's <code>status</code> from the pull request's base version, so a Proposed draft may still be edited freely and the Proposed → Accepted transition itself is allowed, with the record frozen only from the point it is Accepted.</p>
+<h3>Scope of arc42</h3>
+<p>We deliberately trim arc42 to the ~10 sections that earn their maintenance cost rather than completing all 12, and we state that here so nobody later &quot;helpfully&quot; completes the template.</p>
+<h3>Starting a new ADR</h3>
+<p>Copy <code>../templates/adr.md</code>, give it the next free number, fill in Context / Decision / Consequences, open it as <strong>Proposed</strong>, and add a row to the index (<code>docs/design/adr/README.md</code>).</p>
 <h2>Consequences</h2>
 <ul>
 <li>Newcomers can read the ADR set to understand the <em>why</em> of the system quickly.</li>
 <li>The same debates are not relitigated; objections are met with &quot;see ADR-NNNN&quot;.</li>
 <li>There is a small ongoing discipline cost: decisions must be written up.</li>
-<li>The ADR set is append-only history, distinct from the living overview in
-<code>docs/architecture/</code>, which always describes the current system.</li>
+<li>The ADR set is append-only history, distinct from the living overview in <code>docs/design/architecture/</code>, which always describes the current system.</li>
+<li>The Proposed → Accepted → Superseded lifecycle and its CI enforcement are specified here, so the state of any decision — and whether it may still be edited — is unambiguous.</li>
 </ul>
 <h2>Template for new ADRs</h2>
-<pre><code># NNNN. Title
-
-Date:
-Status: Proposed | Accepted | Superseded by ADR-XXXX
+<p>The same skeleton is kept as a copy-paste file at <code>../templates/adr.md</code>.</p>
+<pre><code>---
+created: &lt;DD.MM.YYYY HH:MM&gt;
+type: adr
+status: Proposed   # Proposed | Accepted | Superseded by ADR-NNNN
+tags:
+  - adr
+---
+# NNNN. Title
 
 ## Context
 What is the issue and the forces at play?

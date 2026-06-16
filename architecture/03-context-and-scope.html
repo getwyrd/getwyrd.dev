@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>3. Context and scope — Wyrd</title>
-<meta name="description" content="The system sits between the applications that consume storage and the physical">
+<meta name="description" content="The system sits between the applications that consume storage and the physical infrastructure a provider operates. It depends on external operational tooling but couples tightly...">
 <meta property="og:title" content="3. Context and scope — Wyrd">
-<meta property="og:description" content="The system sits between the applications that consume storage and the physical">
+<meta property="og:description" content="The system sits between the applications that consume storage and the physical infrastructure a provider operates. It depends on external operational tooling but couples tightly...">
 <meta property="og:type" content="article">
 <link rel="stylesheet" href="/assets/style.css">
 </head>
@@ -28,6 +28,7 @@
 <div class="wrap">
   <header class="doc-header">
     <p class="doc-class">Architecture</p>
+    <p class="doc-meta">Status: living · 13.06.2026 11:57</p>
   </header>
 </div>
 
@@ -40,22 +41,12 @@
 <p>Living document.</p>
 </blockquote>
 <h2>3.1 System context (C4 level 1)</h2>
-<p>The system sits between the applications that consume storage and the physical
-infrastructure a provider operates. It depends on external operational tooling
-(an observability backend, a coordination service in production) but couples
-tightly to none of them.</p>
+<p>The system sits between the applications that consume storage and the physical infrastructure a provider operates. It depends on external operational tooling (an observability backend, a coordination service in production) but couples tightly to none of them.</p>
 <p>See <code>diagrams/c4-context.mermaid</code> for the diagram. In prose:</p>
 <ul>
-<li><strong>Applications</strong> (a Drive-like product, an S3 client, a future collaborative
-editor) talk to the system through the <strong>access layer</strong> — primarily an
-S3-compatible API, with FUSE/WebDAV/native-SDK surfaces.</li>
-<li><strong>Operators</strong> manage the system through an <strong>API-first management surface</strong>
-(ADR-0013) and observe it through an <strong>OpenTelemetry</strong>-based telemetry
-pipeline (ADR-0012).</li>
-<li>The system runs on the provider's <strong>compute and storage hardware</strong>, organized
-into <strong>zones</strong> (one per datacenter/region), and uses a <strong>coordination
-service</strong> (etcd in production) and a <strong>global control-plane database</strong>
-(a Spanner-class SQL store) as dependencies.</li>
+<li><strong>Applications</strong> (a Drive-like product, an S3 client, a future collaborative editor) talk to the system through the <strong>access layer</strong> — primarily an S3-compatible API, with FUSE/WebDAV/native-SDK surfaces.</li>
+<li><strong>Operators</strong> manage the system through an <strong>API-first management surface</strong> (ADR-0013) and observe it through an <strong>OpenTelemetry</strong>-based telemetry pipeline (ADR-0012).</li>
+<li>The system runs on the provider's <strong>compute and storage hardware</strong>, organized into <strong>zones</strong> (one per datacenter/region), and uses a <strong>coordination service</strong> (etcd in production) and a <strong>global control-plane database</strong> (a Spanner-class SQL store) as dependencies.</li>
 </ul>
 <h2>3.2 External interfaces</h2>
 <table>
@@ -116,8 +107,7 @@ service</strong> (etcd in production) and a <strong>global control-plane databas
 <ul>
 <li>Cross-provider or untrusted-operator federation (ADR-0005).</li>
 <li>Application-level collaborative-editing logic (storage primitives only).</li>
-<li>The observability storage/visualization stack — recommended and shipped as a
-reference, but not a dependency the binary is aware of (ADR-0012).</li>
+<li>The observability storage/visualization stack — recommended and shipped as a reference, but not a dependency the binary is aware of (ADR-0012).</li>
 </ul>
 
     </article>

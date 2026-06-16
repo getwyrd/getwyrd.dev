@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>9. Build order and roadmap — Wyrd</title>
-<meta name="description" content="The strategy : not bottom-up. A vertical slice">
+<meta name="description" content="The strategy : not bottom-up. A vertical slice through the layers that matter for one operation, then widen by risk. Trait boundaries exist from day one even where crate boundar...">
 <meta property="og:title" content="9. Build order and roadmap — Wyrd">
-<meta property="og:description" content="The strategy : not bottom-up. A vertical slice">
+<meta property="og:description" content="The strategy : not bottom-up. A vertical slice through the layers that matter for one operation, then widen by risk. Trait boundaries exist from day one even where crate boundar...">
 <meta property="og:type" content="article">
 <link rel="stylesheet" href="/assets/style.css">
 </head>
@@ -28,6 +28,7 @@
 <div class="wrap">
   <header class="doc-header">
     <p class="doc-class">Architecture</p>
+    <p class="doc-meta">Status: living · 13.06.2026 11:57</p>
   </header>
 </div>
 
@@ -37,57 +38,32 @@
     <article class="prose">
 <h1>9. Build order and roadmap</h1>
 <blockquote>
-<p>Living document. For an open-source project the build order <em>is</em> the
-contribution roadmap — it is how newcomers know where to start.</p>
+<p>Living document. For an open-source project the build order <em>is</em> the contribution roadmap — it is how newcomers know where to start.</p>
 </blockquote>
-<p>The strategy (ADR-0009, section 4.2): <strong>not bottom-up</strong>. A vertical slice
-through the layers that matter for one operation, then widen by risk. Trait
-boundaries exist from day one even where crate boundaries do not yet; traits are
-cheap to define and expensive to retrofit, crate splits are the reverse.</p>
+<p>The strategy (ADR-0009, section 4.2): <strong>not bottom-up</strong>. A vertical slice through the layers that matter for one operation, then widen by risk. Trait boundaries exist from day one even where crate boundaries do not yet; traits are cheap to define and expensive to retrofit, crate splits are the reverse.</p>
 <h2>Milestone 0 — the walking skeleton</h2>
-<p>One atomic write and read, end to end, in a single process. Proves the commit
-protocol — the entire differentiator.</p>
+<p>One atomic write and read, end to end, in a single process. Proves the commit protocol — the entire differentiator.</p>
 <ul>
-<li>S3 PUT/GET (minimal L1) → client library (chunk + commit) → embedded metadata
-store (redb) → filesystem chunk store → in-memory coordination.</li>
-<li>No EC yet (<code>replication(1)</code> or <code>none</code>), no custodians, no second zone, no
-global plane.</li>
-<li>DST harness (<code>testkit</code>) and the commit-protocol property tests attach here and
-grow with the system. Jepsen-style fault injection begins as soon as there is
-a networked path.</li>
-<li>Definition of done: a file written and read back, with the commit proven
-atomic under fault injection in simulation.</li>
+<li>S3 PUT/GET (minimal L1) → client library (chunk + commit) → embedded metadata store (redb) → filesystem chunk store → in-memory coordination.</li>
+<li>No EC yet (<code>replication(1)</code> or <code>none</code>), no custodians, no second zone, no global plane.</li>
+<li>DST harness (<code>testkit</code>) and the commit-protocol property tests attach here and grow with the system. Jepsen-style fault injection begins as soon as there is a networked path.</li>
+<li>Definition of done: a file written and read back, with the commit proven atomic under fault injection in simulation.</li>
 </ul>
 <h2>Widening, in risk order</h2>
 <ol>
-<li><strong>Erasure coding</strong> — real Reed-Solomon in the client (the hottest, riskiest
-loop), validated against the working slice. Benchmarks in CI from here.</li>
-<li><strong>Networked D servers</strong> — replace the in-process filesystem store with the
-gRPC <code>ChunkStore</code>, proving the direct-write data path.</li>
-<li><strong>Custodians</strong> — GC, scrub, repair, rebalance (the second home of correctness
-risk), now with real data to maintain. Durability telemetry emitted from
-their first commit.</li>
-<li><strong>Production metadata backend</strong> — swap redb for TiKV behind the
-<code>MetadataStore</code> trait, proving pluggability.</li>
-<li><strong>Cross-zone layers</strong> — L3 replication and L2 global namespace, last, because
-multi-zone is meaningless until single-zone is solid and the requirements
-(single-provider, single useful zone) give the most slack here.</li>
+<li><strong>Erasure coding</strong> — real Reed-Solomon in the client (the hottest, riskiest loop), validated against the working slice. Benchmarks in CI from here.</li>
+<li><strong>Networked D servers</strong> — replace the in-process filesystem store with the gRPC <code>ChunkStore</code>, proving the direct-write data path.</li>
+<li><strong>Custodians</strong> — GC, scrub, repair, rebalance (the second home of correctness risk), now with real data to maintain. Durability telemetry emitted from their first commit.</li>
+<li><strong>Production metadata backend</strong> — swap redb for TiKV behind the <code>MetadataStore</code> trait, proving pluggability.</li>
+<li><strong>Cross-zone layers</strong> — L3 replication and L2 global namespace, last, because multi-zone is meaningless until single-zone is solid and the requirements (single-provider, single useful zone) give the most slack here.</li>
 </ol>
-<p>Each step has a natural definition of done and a place to attach tests. A single
-zone of this design is already a useful product — a self-hostable, EC-efficient,
-atomically-consistent object store — which earns adoption and contributors long
-before the global federation exists.</p>
+<p>Each step has a natural definition of done and a place to attach tests. A single zone of this design is already a useful product — a self-hostable, EC-efficient, atomically-consistent object store — which earns adoption and contributors long before the global federation exists.</p>
 <h2>Deferred-with-reserved-seats</h2>
-<p>These are not built early, but their <em>hooks</em> must exist from the relevant
-milestone because they are expensive to retrofit:</p>
+<p>These are not built early, but their <em>hooks</em> must exist from the relevant milestone because they are expensive to retrofit:</p>
 <ul>
-<li>Append / CAS / watch storage primitives (ADR-0007) — the commit protocol and
-metadata schema must accommodate them from the start.</li>
-<li>The version-fence for Option C consistency (ADR-0015) — the <code>meta:version</code>
-counter is reserved now.</li>
-<li>Observability hooks (metric emission points, audit event stream, desired-state
-API) — emitted from when custodians exist; dashboards are cheap to add later
-(ADR-0011).</li>
+<li>Append / CAS / watch storage primitives (ADR-0007) — the commit protocol and metadata schema must accommodate them from the start.</li>
+<li>The version-fence for Option C consistency (ADR-0015) — the <code>meta:version</code> counter is reserved now.</li>
+<li>Observability hooks (metric emission points, audit event stream, desired-state API) — emitted from when custodians exist; dashboards are cheap to add later (ADR-0011).</li>
 <li>openraft embedded coordination backend (ADR-0006).</li>
 <li>Web management UI — API-first now (ADR-0013), UI deferred.</li>
 </ul>

@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>0003. Apache 2.0 license and DCO sign-off — Wyrd</title>
-<meta name="description" content="Date: design phase">
+<meta name="description" content="The target users are mid-sized cloud providers — commercial entities that must be legally able to deploy, modify, and build products on the system. AGPL squeezes exactly these u...">
 <meta property="og:title" content="0003. Apache 2.0 license and DCO sign-off — Wyrd">
-<meta property="og:description" content="Date: design phase">
+<meta property="og:description" content="The target users are mid-sized cloud providers — commercial entities that must be legally able to deploy, modify, and build products on the system. AGPL squeezes exactly these u...">
 <meta property="og:type" content="article">
 <link rel="stylesheet" href="/assets/style.css">
 </head>
@@ -28,6 +28,7 @@
 <div class="wrap">
   <header class="doc-header">
     <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Proposed · 13.06.2026 11:57</p>
   </header>
 </div>
 
@@ -36,28 +37,17 @@
     <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
     <article class="prose">
 <h1>0003. Apache 2.0 license and DCO sign-off</h1>
-<p>Date: design phase
-Status: Accepted</p>
 <h2>Context</h2>
-<p>The target users are mid-sized cloud providers — commercial entities that must
-be legally able to deploy, modify, and build products on the system. AGPL (the
-MinIO path) squeezes exactly these users and triggers fork-and-flee dynamics. An
-infrastructure foundation intended for broad adoption needs a permissive license.</p>
-<p>Contribution provenance must be tracked, but a full CLA imposes friction that
-deters drive-by contributors.</p>
+<p>The target users are mid-sized cloud providers — commercial entities that must be legally able to deploy, modify, and build products on the system. AGPL (the MinIO path) squeezes exactly these users and triggers fork-and-flee dynamics. An infrastructure foundation intended for broad adoption needs a permissive license.</p>
+<p>Contribution provenance must be tracked, but a full CLA imposes friction that deters drive-by contributors.</p>
 <h2>Decision</h2>
-<p>License under <strong>Apache 2.0</strong>. Track provenance with <strong>DCO</strong> (Developer
-Certificate of Origin) sign-offs on every commit, not a CLA. Ship <code>LICENSE</code>,
-<code>NOTICE</code>, and a <code>SECURITY.md</code> from the first commit.</p>
+<p>License under <strong>Apache 2.0</strong>. Track provenance with <strong>DCO</strong> (Developer Certificate of Origin) sign-offs on every commit, not a CLA. Ship <code>LICENSE</code>, <code>NOTICE</code>, and a <code>SECURITY.md</code> from the first commit.</p>
 <h2>Consequences</h2>
 <ul>
 <li>Commercial providers can adopt without legal friction; patent grant included.</li>
-<li>Lower contribution friction than a CLA, sufficient provenance for an
-Apache-2.0 project.</li>
-<li>The MinIO community (wounded by AGPL + feature-stripping) becomes an
-addressable audience.</li>
-<li>Trademark/governance (project vs. foundation trajectory) is deferred; the
-license is not.</li>
+<li>Lower contribution friction than a CLA, sufficient provenance for an Apache-2.0 project.</li>
+<li>The MinIO community (wounded by AGPL + feature-stripping) becomes an addressable audience.</li>
+<li>Trademark/governance (project vs. foundation trajectory) is deferred; the license is not.</li>
 </ul>
 
     </article>

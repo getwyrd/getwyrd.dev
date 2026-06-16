@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Architecture Decision Records — Wyrd</title>
-<meta name="description" content="Numbered, immutable records of significant decisions and why they were made">
+<meta name="description" content="Numbered, immutable records of significant decisions and why they were made. An ADR is never edited after acceptance; it is superseded by a later ADR that references it. Format ...">
 <meta property="og:title" content="Architecture Decision Records — Wyrd">
-<meta property="og:description" content="Numbered, immutable records of significant decisions and why they were made">
+<meta property="og:description" content="Numbered, immutable records of significant decisions and why they were made. An ADR is never edited after acceptance; it is superseded by a later ADR that references it. Format ...">
 <meta property="og:type" content="article">
 <link rel="stylesheet" href="/assets/style.css">
 </head>
@@ -32,9 +32,7 @@
     <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
     <article class="prose">
 <h1>Architecture Decision Records</h1>
-<p>Numbered, immutable records of significant decisions and <em>why</em> they were made.
-An ADR is never edited after acceptance; it is superseded by a later ADR that
-references it. Format follows the lightweight Nygard template (see ADR-0001).</p>
+<p>Numbered, immutable records of significant decisions and <em>why</em> they were made. An ADR is never edited after acceptance; it is superseded by a later ADR that references it. Format follows the lightweight Nygard template (see ADR-0001).</p>
 <h2>Index</h2>
 <table>
 <thead>
@@ -48,99 +46,97 @@ references it. Format follows the lightweight Nygard template (see ADR-0001).</p
 <tr>
 <td><a href="/adr/0001-record-architecture-decisions.html">0001</a></td>
 <td>Record architecture decisions</td>
-<td>Accepted</td>
+<td>Proposed</td>
 </tr>
 <tr>
 <td><a href="/adr/0002-spec-first-on-disk-format-only.html">0002</a></td>
 <td>Spec-first for the on-disk format only</td>
-<td>Accepted</td>
+<td>Proposed</td>
 </tr>
 <tr>
 <td><a href="/adr/0003-apache-2-license-and-dco.html">0003</a></td>
 <td>Apache 2.0 license and DCO sign-off</td>
-<td>Accepted</td>
+<td>Proposed</td>
 </tr>
 <tr>
 <td><a href="/adr/0004-rust-as-implementation-language.html">0004</a></td>
 <td>Rust as the implementation language</td>
-<td>Accepted</td>
+<td>Proposed</td>
 </tr>
 <tr>
 <td><a href="/adr/0005-single-provider-closed-federation.html">0005</a></td>
 <td>Single-provider, closed federation</td>
-<td>Accepted</td>
+<td>Proposed</td>
 </tr>
 <tr>
 <td><a href="/adr/0006-etcd-for-coordination.html">0006</a></td>
 <td>etcd for coordination; openraft reserved</td>
-<td>Accepted</td>
+<td>Proposed</td>
 </tr>
 <tr>
 <td><a href="/adr/0007-reserve-append-cas-watch.html">0007</a></td>
 <td>Reserve append / CAS / watch primitives</td>
-<td>Accepted</td>
+<td>Proposed</td>
 </tr>
 <tr>
 <td><a href="/adr/0008-tikv-metadata-and-pluggable-backends.html">0008</a></td>
 <td>TiKV metadata store and pluggable backends</td>
-<td>Accepted</td>
+<td>Proposed</td>
 </tr>
 <tr>
 <td><a href="/adr/0009-deterministic-simulation-testing.html">0009</a></td>
 <td>Deterministic simulation testing as first-class</td>
-<td>Accepted</td>
+<td>Proposed</td>
 </tr>
 <tr>
 <td><a href="/adr/0010-pluggable-deployment-substrate.html">0010</a></td>
 <td>Pluggable deployment substrate; Kubernetes optional</td>
-<td>Accepted</td>
+<td>Proposed</td>
 </tr>
 <tr>
 <td><a href="/adr/0011-durability-telemetry-and-declarative-management.html">0011</a></td>
 <td>Durability telemetry and declarative management</td>
-<td>Accepted</td>
+<td>Proposed</td>
 </tr>
 <tr>
 <td><a href="/adr/0012-opentelemetry-instrumentation.html">0012</a></td>
 <td>OpenTelemetry instrumentation; storage/viz agnostic</td>
-<td>Accepted</td>
+<td>Proposed</td>
 </tr>
 <tr>
 <td><a href="/adr/0013-api-first-management.html">0013</a></td>
 <td>API-first management surface</td>
-<td>Accepted</td>
+<td>Proposed</td>
 </tr>
 <tr>
 <td><a href="/adr/0014-single-binary-dev-only.html">0014</a></td>
 <td>Single-binary profile is dev/eval only</td>
-<td>Accepted</td>
+<td>Proposed</td>
 </tr>
 <tr>
 <td><a href="/adr/0015-consistency-contract.html">0015</a></td>
 <td>Consistency contract: home-zone authority, version-fence reserved</td>
-<td>Accepted</td>
+<td>Proposed</td>
 </tr>
 <tr>
 <td><a href="/adr/0016-monorepo-and-crate-structure.html">0016</a></td>
 <td>Monorepo and evolving crate structure</td>
-<td>Accepted</td>
+<td>Proposed</td>
 </tr>
 <tr>
 <td><a href="/adr/0017-project-name-and-norn-scheme.html">0017</a></td>
 <td>Project name (Wyrd) and the Norn component scheme</td>
-<td>Accepted</td>
+<td>Proposed</td>
 </tr>
 <tr>
 <td><a href="/adr/0018-reserve-hooks-for-hyperscale-identity-consumer.html">0018</a></td>
 <td>Reserve hooks for a hyperscale identity consumer</td>
-<td>Accepted</td>
+<td>Proposed</td>
 </tr>
 </tbody>
 </table>
 <h2>Why not ... ?</h2>
-<p>ADR-0002 and the architecture overview's section 11 cover the major &quot;why not&quot;
-questions (why not fork SeaweedFS, why not Ceph, why not MinIO). A dedicated
-comparison ADR can be added when the project's public positioning needs it.</p>
+<p>ADR-0002 and the architecture overview's section 11 cover the major &quot;why not&quot; questions (why not fork SeaweedFS, why not Ceph, why not MinIO). A dedicated comparison ADR can be added when the project's public positioning needs it.</p>
 
     </article>
   </main>

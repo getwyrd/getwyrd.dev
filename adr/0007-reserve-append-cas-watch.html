@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>0007. Reserve append / CAS / watch primitives — Wyrd</title>
-<meta name="description" content="Date: design phase">
+<meta name="description" content="A Drive-like product reads and writes whole files. A future collaborative editor streams small operations against shared documents and needs change notification. Building the co...">
 <meta property="og:title" content="0007. Reserve append / CAS / watch primitives — Wyrd">
-<meta property="og:description" content="Date: design phase">
+<meta property="og:description" content="A Drive-like product reads and writes whole files. A future collaborative editor streams small operations against shared documents and needs change notification. Building the co...">
 <meta property="og:type" content="article">
 <link rel="stylesheet" href="/assets/style.css">
 </head>
@@ -28,6 +28,7 @@
 <div class="wrap">
   <header class="doc-header">
     <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Proposed · 13.06.2026 11:57</p>
   </header>
 </div>
 
@@ -36,33 +37,20 @@
     <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
     <article class="prose">
 <h1>0007. Reserve append / CAS / watch primitives</h1>
-<p>Date: design phase
-Status: Accepted</p>
 <h2>Context</h2>
-<p>A Drive-like product reads and writes whole files. A future collaborative editor
-streams small operations against shared documents and needs change notification.
-Building the collaboration layer is out of scope, but three storage primitives
-decide whether one <em>can</em> be built on top, and they are cheap to design in now and
-expensive to retrofit.</p>
+<p>A Drive-like product reads and writes whole files. A future collaborative editor streams small operations against shared documents and needs change notification. Building the collaboration layer is out of scope, but three storage primitives decide whether one <em>can</em> be built on top, and they are cheap to design in now and expensive to retrofit.</p>
 <h2>Decision</h2>
-<p>Reserve three primitives in the commit protocol and metadata schema from the
-start, as non-goals-with-reserved-seats (not built early, but accommodated):</p>
+<p>Reserve three primitives in the commit protocol and metadata schema from the start, as non-goals-with-reserved-seats (not built early, but accommodated):</p>
 <ol>
-<li><strong>Atomic append</strong> — commit &quot;extend file with this data iff current length is
-L&quot; (a conditional mutation the commit protocol already supports).</li>
-<li><strong>Compare-and-set</strong> — commit iff version matches (the <code>meta:version</code> counter
-already present for optimistic concurrency).</li>
-<li><strong>Watch / notify</strong> — &quot;tell me when anything under this directory changes,&quot; as
-a metadata-layer event stream. The hook must exist in v1; notification
-fan-out at scale can come later.</li>
+<li><strong>Atomic append</strong> — commit &quot;extend file with this data iff current length is L&quot; (a conditional mutation the commit protocol already supports).</li>
+<li><strong>Compare-and-set</strong> — commit iff version matches (the <code>meta:version</code> counter already present for optimistic concurrency).</li>
+<li><strong>Watch / notify</strong> — &quot;tell me when anything under this directory changes,&quot; as a metadata-layer event stream. The hook must exist in v1; notification fan-out at scale can come later.</li>
 </ol>
 <h2>Consequences</h2>
 <ul>
 <li>The collaborative-editor future is buildable without re-architecting storage.</li>
-<li>Watch also serves Drive sync clients, so it earns its place even before any
-editor exists.</li>
-<li>The commit protocol and schema must accommodate these from Milestone 0
-(section 9), even though the features ship later.</li>
+<li>Watch also serves Drive sync clients, so it earns its place even before any editor exists.</li>
+<li>The commit protocol and schema must accommodate these from Milestone 0 (section 9), even though the features ship later.</li>
 </ul>
 
     </article>

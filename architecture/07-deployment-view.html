@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>7. Deployment view — Wyrd</title>
-<meta name="description" content="The same codebase, composed differently. The composition lives in the server">
+<meta name="description" content="The same codebase, composed differently. The composition lives in the server crate; switching profiles swaps backends behind the ChunkStore, MetadataStore, and Coordination traits">
 <meta property="og:title" content="7. Deployment view — Wyrd">
-<meta property="og:description" content="The same codebase, composed differently. The composition lives in the server">
+<meta property="og:description" content="The same codebase, composed differently. The composition lives in the server crate; switching profiles swaps backends behind the ChunkStore, MetadataStore, and Coordination traits">
 <meta property="og:type" content="article">
 <link rel="stylesheet" href="/assets/style.css">
 </head>
@@ -28,6 +28,7 @@
 <div class="wrap">
   <header class="doc-header">
     <p class="doc-class">Architecture</p>
+    <p class="doc-meta">Status: living · 13.06.2026 11:57</p>
   </header>
 </div>
 
@@ -40,9 +41,7 @@
 <p>Living document.</p>
 </blockquote>
 <h2>7.1 The three deployment profiles</h2>
-<p>The same codebase, composed differently. The composition lives in the <code>server</code>
-crate; switching profiles swaps backends behind the <code>ChunkStore</code>,
-<code>MetadataStore</code>, and <code>Coordination</code> traits.</p>
+<p>The same codebase, composed differently. The composition lives in the <code>server</code> crate; switching profiles swaps backends behind the <code>ChunkStore</code>, <code>MetadataStore</code>, and <code>Coordination</code> traits.</p>
 <table>
 <thead>
 <tr>
@@ -81,32 +80,16 @@ crate; switching profiles swaps backends behind the <code>ChunkStore</code>,
 </tr>
 </tbody>
 </table>
-<p>The single-binary profile collapses all components into one process: gateway,
-embedded metadata, one logical D server, custodians, in-memory coordination. It
-exists for development and evaluation and carries <strong>no production durability
-promise</strong> — a single chassis cannot deliver independent failure domains.</p>
+<p>The single-binary profile collapses all components into one process: gateway, embedded metadata, one logical D server, custodians, in-memory coordination. It exists for development and evaluation and carries <strong>no production durability promise</strong> — a single chassis cannot deliver independent failure domains.</p>
 <h2>7.2 Deployment substrate (pluggable)</h2>
 <p>Kubernetes is <em>available but never required</em> (ADR-0010):</p>
 <ul>
-<li><strong>Stateless components</strong> (gateways, replication workers, leader-elected
-custodians) are Kubernetes-friendly: a Deployment behind a Service, or
-systemd units, or compose.</li>
-<li><strong>Stateful components</strong> (D servers; self-hosted metadata/etcd) want node
-affinity to their disks. On Kubernetes: StatefulSets with local persistent
-volumes and strict anti-rescheduling, managed by an operator that understands
-the custodians own placement. Off Kubernetes: systemd on the storage hosts.</li>
+<li><strong>Stateless components</strong> (gateways, replication workers, leader-elected custodians) are Kubernetes-friendly: a Deployment behind a Service, or systemd units, or compose.</li>
+<li><strong>Stateful components</strong> (D servers; self-hosted metadata/etcd) want node affinity to their disks. On Kubernetes: StatefulSets with local persistent volumes and strict anti-rescheduling, managed by an operator that understands the custodians own placement. Off Kubernetes: systemd on the storage hosts.</li>
 </ul>
-<p>What is shipped, in priority order: a single static binary (primary), an OCI
-image (same binary), a docker-compose (small multi-node), and later a Helm chart
-and operator (<code>deploy/</code>). <strong>No code knows it is on Kubernetes</strong> — peers are
-discovered through L5, never through orchestrator APIs. The system must come up
-identically whether launched by systemd, compose, or a Kubernetes pod.</p>
+<p>What is shipped, in priority order: a single static binary (primary), an OCI image (same binary), a docker-compose (small multi-node), and later a Helm chart and operator (<code>deploy/</code>). <strong>No code knows it is on Kubernetes</strong> — peers are discovered through L5, never through orchestrator APIs. The system must come up identically whether launched by systemd, compose, or a Kubernetes pod.</p>
 <h2>7.3 Failure domains</h2>
-<p>Durability math depends on fragments landing in independent failure domains
-(rack, power, switch). The placement service (L2) and custodians (L4) enforce
-domain spread for the configured EC scheme. A leading-indicator capacity metric
-is per-failure-domain utilization: running out of room <em>in a specific domain</em>
-blocks new EC writes before total capacity is exhausted.</p>
+<p>Durability math depends on fragments landing in independent failure domains (rack, power, switch). The placement service (L2) and custodians (L4) enforce domain spread for the configured EC scheme. A leading-indicator capacity metric is per-failure-domain utilization: running out of room <em>in a specific domain</em> blocks new EC writes before total capacity is exhausted.</p>
 
     </article>
   </main>

@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>0012. OpenTelemetry instrumentation; storage/visualization agnostic — Wyrd</title>
-<meta name="description" content="Date: design phase">
+<meta name="description" content="OpenTelemetry, Prometheus, and Grafana are not alternatives — they are three layers . The only true lock-in decision is the instrumentation layer, because it touches the code. T...">
 <meta property="og:title" content="0012. OpenTelemetry instrumentation; storage/visualization agnostic — Wyrd">
-<meta property="og:description" content="Date: design phase">
+<meta property="og:description" content="OpenTelemetry, Prometheus, and Grafana are not alternatives — they are three layers . The only true lock-in decision is the instrumentation layer, because it touches the code. T...">
 <meta property="og:type" content="article">
 <link rel="stylesheet" href="/assets/style.css">
 </head>
@@ -28,6 +28,7 @@
 <div class="wrap">
   <header class="doc-header">
     <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Proposed · 13.06.2026 11:57</p>
   </header>
 </div>
 
@@ -36,33 +37,19 @@
     <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
     <article class="prose">
 <h1>0012. OpenTelemetry instrumentation; storage/visualization agnostic</h1>
-<p>Date: design phase
-Status: Accepted</p>
 <h2>Context</h2>
-<p>OpenTelemetry, Prometheus, and Grafana are not alternatives — they are three
-layers (instrumentation, storage, visualization). The only true lock-in decision
-is the instrumentation layer, because it touches the code. The target audience
-already runs the CNCF observability stack.</p>
+<p>OpenTelemetry, Prometheus, and Grafana are not alternatives — they are three layers (instrumentation, storage, visualization). The only true lock-in decision is the instrumentation layer, because it touches the code. The target audience already runs the CNCF observability stack.</p>
 <h2>Decision</h2>
 <ul>
-<li><strong>Instrument with OpenTelemetry (OTLP)</strong> via <code>tracing</code> +
-<code>tracing-opentelemetry</code>. Expose <strong>both</strong> a Prometheus-scrapeable endpoint
-(zero-dependency, great for the dev profile) <strong>and</strong> OTLP push (scales in
-production). The binary hardcodes no storage backend.</li>
-<li><strong>Recommend and ship as reference</strong> Prometheus + Loki + Tempo for storage, but
-depend on none of them.</li>
-<li><strong>Provide curated Grafana dashboards</strong> (durability, capacity, request) as
-version-controlled artifacts in <code>deploy/grafana/</code> — a gift, not a gate.</li>
+<li><strong>Instrument with OpenTelemetry (OTLP)</strong> via <code>tracing</code> + <code>tracing-opentelemetry</code>. Expose <strong>both</strong> a Prometheus-scrapeable endpoint (zero-dependency, great for the dev profile) <strong>and</strong> OTLP push (scales in production). The binary hardcodes no storage backend.</li>
+<li><strong>Recommend and ship as reference</strong> Prometheus + Loki + Tempo for storage, but depend on none of them.</li>
+<li><strong>Provide curated Grafana dashboards</strong> (durability, capacity, request) as version-controlled artifacts in <code>deploy/grafana/</code> — a gift, not a gate.</li>
 </ul>
 <h2>Consequences</h2>
 <ul>
-<li>Same instrumentation decision yields the dev profile (curl a metrics
-endpoint), the production profile (full OTLP pipeline), and the
-bring-your-own profile (provider's existing stack).</li>
-<li>OTel is the only telemetry commitment; everything downstream is the operator's
-swappable choice — the same pluggability principle as the storage backends.</li>
-<li>Consistent with API-first management (ADR-0013): the management API is the
-system of record; Grafana is one consumer.</li>
+<li>Same instrumentation decision yields the dev profile (curl a metrics endpoint), the production profile (full OTLP pipeline), and the bring-your-own profile (provider's existing stack).</li>
+<li>OTel is the only telemetry commitment; everything downstream is the operator's swappable choice — the same pluggability principle as the storage backends.</li>
+<li>Consistent with API-first management (ADR-0013): the management API is the system of record; Grafana is one consumer.</li>
 </ul>
 
     </article>

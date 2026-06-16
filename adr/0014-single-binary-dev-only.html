@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>0014. Single-binary profile is dev/eval only — Wyrd</title>
-<meta name="description" content="Date: design phase">
+<meta name="description" content="The single-binary / NAS-class profile is essential for development velocity and evaluation. The question is whether it is also a supported production tier — e.g. a homelab user&#x27;...">
 <meta property="og:title" content="0014. Single-binary profile is dev/eval only — Wyrd">
-<meta property="og:description" content="Date: design phase">
+<meta property="og:description" content="The single-binary / NAS-class profile is essential for development velocity and evaluation. The question is whether it is also a supported production tier — e.g. a homelab user&#x27;...">
 <meta property="og:type" content="article">
 <link rel="stylesheet" href="/assets/style.css">
 </head>
@@ -28,6 +28,7 @@
 <div class="wrap">
   <header class="doc-header">
     <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Proposed · 13.06.2026 11:57</p>
   </header>
 </div>
 
@@ -36,28 +37,15 @@
     <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
     <article class="prose">
 <h1>0014. Single-binary profile is dev/eval only</h1>
-<p>Date: design phase
-Status: Accepted</p>
 <h2>Context</h2>
-<p>The single-binary / NAS-class profile (in-memory coordination, embedded redb,
-filesystem chunk store) is essential for development velocity and evaluation. The
-question is whether it is also a <em>supported production tier</em> — e.g. a homelab
-user's family Drive on one or two NAS boxes. A single chassis cannot deliver
-independent failure domains, so single-box durability promises would be
-dishonest.</p>
+<p>The single-binary / NAS-class profile (in-memory coordination, embedded redb, filesystem chunk store) is essential for development velocity and evaluation. The question is whether it is also a <em>supported production tier</em> — e.g. a homelab user's family Drive on one or two NAS boxes. A single chassis cannot deliver independent failure domains, so single-box durability promises would be dishonest.</p>
 <h2>Decision</h2>
-<p>The single-binary / NAS-class profile is <strong>for development and evaluation only</strong>,
-explicitly not a supported production tier. The embedded backends carry no
-production durability promise, and the docs say so plainly. Production durability
-begins at the real multi-node backends with proper failure-domain separation.</p>
+<p>The single-binary / NAS-class profile is <strong>for development and evaluation only</strong>, explicitly not a supported production tier. The embedded backends carry no production durability promise, and the docs say so plainly. Production durability begins at the real multi-node backends with proper failure-domain separation.</p>
 <h2>Consequences</h2>
 <ul>
 <li>Less test surface and fewer guarantees to maintain for the small profile.</li>
-<li>The &quot;runs on a Synology&quot; message stays honest — it does not imply &quot;your only
-copy on one box is safe.&quot;</li>
-<li>If a supported small-production tier is ever wanted, it would require a stated
-durability floor (e.g. replication across independent machines) and the
-corresponding test surface; that is a future decision, not this one.</li>
+<li>The &quot;runs on a Synology&quot; message stays honest — it does not imply &quot;your only copy on one box is safe.&quot;</li>
+<li>If a supported small-production tier is ever wanted, it would require a stated durability floor (e.g. replication across independent machines) and the corresponding test surface; that is a future decision, not this one.</li>
 </ul>
 
     </article>
