@@ -28,7 +28,7 @@
 <div class="wrap">
   <header class="doc-header">
     <p class="doc-class">Architecture Decision Record</p>
-    <p class="doc-meta">Status: Proposed · 13.06.2026 11:57</p>
+    <p class="doc-meta">Status: Accepted · 13.06.2026 11:57</p>
   </header>
 </div>
 
@@ -49,10 +49,13 @@
 <p>The <code>Status:</code> field in an ADR's header is the source of truth for its state. An ADR moves through:</p>
 <ul>
 <li><strong>Proposed</strong> — written up but not yet ratified. A Proposed ADR is a working draft: it may be edited freely while discussion continues (normally in the pull request that introduces it).</li>
-<li><strong>Accepted</strong> — ratified. An ADR is moved to Accepted by a deliberate edit to its <code>Status:</code> line once the decision is agreed in review. <strong>This transition is the act of acceptance; it is intentional, not an automatic consequence of merging.</strong> From this point the ADR is immutable (see below).</li>
+<li><strong>Accepted</strong> — ratified. An ADR is moved to Accepted by a deliberate edit to its <code>Status:</code> line once the <strong>architecture board</strong> agrees the decision in review (see <em>Who accepts an ADR</em> below). <strong>This transition is the act of acceptance; it is intentional, not an automatic consequence of merging.</strong> From this point the ADR is immutable (see below).</li>
 <li><strong>Superseded</strong> — a later ADR has replaced the decision; recorded as <code>Superseded by ADR-NNNN</code> (see &quot;Immutability&quot;).</li>
 </ul>
 <p>During the initial design phase the whole foundational set is deliberately held at <strong>Proposed</strong> until it has been reviewed and ratified together — being too quick to mark decisions Accepted is itself a mistake this process guards against.</p>
+<h3>Who accepts an ADR</h3>
+<p>Authority to accept an ADR — to move it from Proposed to Accepted — rests with the <strong>architecture board</strong>, whose members are elected by the project's maintainers. A Proposed ADR is accepted when the board agrees the decision, in review on its pull request; that agreement is the ratification, and the merge records it. The same board decides when an Accepted ADR is superseded by a later one.</p>
+<p>This is stated so that acceptance is never an individual author's or a single maintainer's act. The board's size, term, voting threshold, and the procedure by which maintainers elect it are project governance and are <strong>[OPEN]</strong> — to be recorded separately (e.g. in a <code>GOVERNANCE.md</code>) as the maintainer group forms.</p>
 <h3>Immutability, and how a decision changes</h3>
 <p>Once <strong>Accepted</strong>, an ADR is never rewritten — that is exactly what makes &quot;see ADR-NNNN&quot; a durable, trustworthy reference. When a decision changes we do <strong>not</strong> edit the old record. Instead we write a <strong>new</strong> ADR that explains what changed and names the one it replaces (<code>Supersedes ADR-NNNN</code>), and we mark the old entry <code>Superseded by ADR-NNNN</code> in the index. The superseded ADR's own file is left untouched, so the history reads in order.</p>
 <p>This is enforced mechanically: the <code>adr-immutability</code> CI check (<code>.github/workflows/adr-immutability.yml</code>) fails any pull request that modifies, deletes, or renames an Accepted ADR. The check is status-aware — it reads each ADR's <code>status</code> from the pull request's base version, so a Proposed draft may still be edited freely and the Proposed → Accepted transition itself is allowed, with the record frozen only from the point it is Accepted.</p>
