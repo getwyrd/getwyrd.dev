@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Governance — Wyrd</title>
+<meta name="description" content="Wyrd is an open-source project built initially by a small team and dependent on outside contributors ). This document makes explicit who holds which responsibilities and how dec...">
+<meta property="og:title" content="Governance — Wyrd">
+<meta property="og:description" content="Wyrd is an open-source project built initially by a small team and dependent on outside contributors ). This document makes explicit who holds which responsibilities and how dec...">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-meta">Status: draft · 17.06.2026 00:56</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>Governance</h1>
+<blockquote>
+<p><strong>Status: DRAFT — skeleton, not yet ratified.</strong> This records the project's decision-making structure. Only the parts already anchored in an accepted ADR are firm; everything marked <strong>[OPEN]</strong> is a placeholder for a decision the maintainers have not yet made, and is not binding.</p>
+</blockquote>
+<h2>Purpose</h2>
+<p>Wyrd is an open-source project built initially by a small team and dependent on outside contributors (see <a href="/adr/0001-record-architecture-decisions.html">ADR-0001</a>). This document makes explicit <em>who holds which responsibilities</em> and <em>how decisions are made</em>, so that authority is stated rather than assumed.</p>
+<p>It complements, and does not override, the per-class processes documented elsewhere: architecture decisions follow <a href="/adr/0001-record-architecture-decisions.html">ADR-0001</a>, enhancement proposals follow <code>../design/proposals/</code>, and specifications follow <code>../design/specs/</code>.</p>
+<h2>Roles</h2>
+<h3>Contributors</h3>
+<p>Anyone who opens an issue or a pull request. Contributions are accepted under the project's license and DCO sign-off (ADR-0003). No special status is required to contribute.</p>
+<h3>Maintainers</h3>
+<p>Maintainers review and merge contributions, triage issues, and elect the architecture board (below).</p>
+<ul>
+<li><strong>How one becomes a maintainer</strong> — criteria and the nomination / confirmation procedure: <strong>[OPEN]</strong>.</li>
+<li><strong>Day-to-day decision rule</strong> for routine changes (e.g. lazy consensus on pull requests): <strong>[OPEN]</strong>.</li>
+<li><strong>Inactivity / removal policy:</strong> <strong>[OPEN]</strong>.</li>
+</ul>
+<h3>Architecture board</h3>
+<p>The body with authority to <strong>accept</strong> and <strong>supersede</strong> ADRs, per <a href="/adr/0001-record-architecture-decisions.html">ADR-0001</a>. Its members are <strong>elected by the maintainers</strong>.</p>
+<ul>
+<li><strong>Size:</strong> <strong>[OPEN]</strong>.</li>
+<li><strong>Term and re-election cadence:</strong> <strong>[OPEN]</strong>.</li>
+<li><strong>Election procedure</strong> — how maintainers nominate and vote: <strong>[OPEN]</strong>.</li>
+<li><strong>Decision rule for accepting an ADR</strong> — quorum, majority, or full consensus of the board: <strong>[OPEN]</strong>.</li>
+<li><strong>Chair / tie-breaking:</strong> <strong>[OPEN]</strong>.</li>
+</ul>
+<h2>Decision-making</h2>
+<table>
+<thead>
+<tr>
+<th>Decision type</th>
+<th>Process</th>
+<th>Authority</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Architecture decision (ADR)</td>
+<td><a href="/adr/0001-record-architecture-decisions.html">ADR-0001</a> lifecycle (Proposed → Accepted → Superseded)</td>
+<td>Architecture board</td>
+</tr>
+<tr>
+<td>Enhancement proposal</td>
+<td><code>../design/proposals/</code> (draft → accepted)</td>
+<td><strong>[OPEN]</strong> — board, maintainers, or both</td>
+</tr>
+<tr>
+<td>Specification version bump</td>
+<td><code>../design/specs/</code> (strict change process)</td>
+<td><strong>[OPEN]</strong></td>
+</tr>
+<tr>
+<td>Routine code change</td>
+<td>Pull-request review</td>
+<td>Maintainers</td>
+</tr>
+<tr>
+<td>Changes to <em>this</em> document</td>
+<td>See below</td>
+<td><strong>[OPEN]</strong></td>
+</tr>
+</tbody>
+</table>
+<h2>Amending this document</h2>
+<p><strong>[OPEN]</strong> — the process for changing governance itself (who approves, and by what majority) is not yet decided. Until it is, this document remains a DRAFT and is authoritative only for the parts that restate an accepted ADR.</p>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>
