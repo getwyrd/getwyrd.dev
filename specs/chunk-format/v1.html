@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Chunk / fragment on-disk format — v1 — Wyrd</title>
-<meta name="description" content="Data outlives software. A provider with petabytes written under format v1 MUST be able to read it with software written years later. This format is therefore the migration ancho...">
+<meta name="description" content="Data outlives software. A provider with petabytes written under format v1 MUST">
 <meta property="og:title" content="Chunk / fragment on-disk format — v1 — Wyrd">
-<meta property="og:description" content="Data outlives software. A provider with petabytes written under format v1 MUST be able to read it with software written years later. This format is therefore the migration ancho...">
+<meta property="og:description" content="Data outlives software. A provider with petabytes written under format v1 MUST">
 <meta property="og:type" content="article">
 <link rel="stylesheet" href="/assets/style.css">
 </head>
@@ -29,7 +29,6 @@
 <div class="wrap">
   <header class="doc-header">
     <p class="doc-class">Specification</p>
-    <p class="doc-meta">Status: DRAFT · 13.06.2026 11:57</p>
   </header>
 </div>
 
@@ -39,34 +38,173 @@
     <article class="prose">
 <h1>Chunk / fragment on-disk format — v1</h1>
 <blockquote>
-<p><strong>Status: DRAFT (v0, unstable — will change).</strong> This is the one normative, spec-first artifact in the project (ADR-0002). It is published as a draft with an explicit instability marker; the reference implementation is built against it, and it is stamped <code>v1</code> only once validated by a second reader implementation or a sustained fault-injection run.</p>
-<p>This document uses <a href="https://www.rfc-editor.org/rfc/rfc2119">RFC 2119</a> keywords: MUST, SHOULD, MAY.</p>
+<p><strong>Status: DRAFT (v0, unstable — will change).</strong> This is the one normative,
+spec-first artifact in the project (ADR-0002). The byte layout is now fully
+specified and the reference implementation is built against it, but it is
+published as a draft with an explicit instability marker and is stamped <code>v1</code>
+only once validated by a second independent reader implementation or a
+sustained fault-injection run (the rule in &quot;Versioning&quot; below).</p>
+<p>This document uses <a href="https://www.rfc-editor.org/rfc/rfc2119">RFC 2119</a>
+keywords: MUST, SHOULD, MAY.</p>
+<p>The decisions behind this layout — u128 chunk IDs, the self-describing
+header length as the evolution mechanism, and the checksum-over-stored-bytes
+rule that keeps integrity verifiable without decryption — are recorded in
+<a href="/adr/0019-chunk-format-layout.html">ADR-0019</a>.</p>
 </blockquote>
 <h2>Why this is specified</h2>
-<p>Data outlives software. A provider with petabytes written under format <code>v1</code> MUST be able to read it with software written years later. This format is therefore the migration anchor and the stable contract that any reader implementation — the Rust client, a future migration tool, a non-Rust SDK — MUST honor. The on-disk bytes are the source of truth; software is replaceable around them.</p>
+<p>Data outlives software. A provider with petabytes written under format <code>v1</code> MUST
+be able to read it with software written years later. This format is therefore
+the migration anchor and the stable contract that any reader implementation —
+the Rust client, a future migration tool, a non-Rust SDK — MUST honor. The
+on-disk bytes are the source of truth; software is replaceable around them.</p>
 <h2>Scope</h2>
-<p>This spec covers the <strong>on-disk/on-wire layout of a stored fragment</strong>: the bytes a D server persists and returns for a given chunk fragment. It does <strong>not</strong> cover metadata-store schemas, wire RPC, or placement — those are implementation-first (ADR-0002).</p>
-<h2>Fragment structure (normative — to be completed)</h2>
-<p>A stored fragment MUST consist of a header followed by a payload. The header MUST allow a reader to determine, without consulting any external system:</p>
+<p>This spec covers the <strong>on-disk/on-wire layout of a stored fragment</strong>: the bytes a
+D server persists and returns for a given chunk fragment. It does <strong>not</strong> cover
+metadata-store schemas, wire RPC, or placement — those are implementation-first
+(ADR-0002).</p>
+<h2>Conventions (normative)</h2>
 <ul>
-<li>A magic number identifying the format.</li>
-<li>The format version (so mixed-era data is readable — see below).</li>
-<li>The erasure-coding scheme in effect for this fragment's chunk, recorded per chunk so a zone that grows from <code>replication(n)</code> into <code>rs(k,m)</code> carries mixed-era data correctly (ADR-0008). This MUST include the scheme identifier and the fragment's index within the stripe.</li>
-<li>The chunk identifier.</li>
-<li>A checksum of the payload (algorithm identified in the header), which a reader MUST verify before returning data and a scrubber MUST verify in the background (architecture section 6.3).</li>
-<li>The payload length.</li>
+<li>All multi-byte integers are <strong>little-endian</strong>. A reader MUST interpret them as
+little-endian; there is no big-endian variant.</li>
+<li>All offsets and sizes in this document are in <strong>bytes</strong>.</li>
+<li>The header is a <strong>fixed core followed by an optional extension region</strong>. The
+core is the fields at offsets 0–43. The total header size (core + extension)
+is carried in <code>header_length</code>, so a reader locates the payload from the header
+alone, without understanding every field.</li>
 </ul>
-<blockquote>
-<p>The exact byte layout, field widths, endianness, checksum algorithm identifiers, and EC scheme identifiers are <strong>[TO BE SPECIFIED]</strong> during Milestone 0–1 implementation and recorded here before <code>v1</code> is stamped.</p>
-</blockquote>
-<h2>Versioning rules (normative)</h2>
+<h2>Fragment structure (normative)</h2>
+<p>A stored fragment MUST consist of a <strong>header</strong>, a <strong>payload</strong>, and a
+<strong>payload checksum</strong>, in that order:</p>
+<pre><code>Offset  Size  Field               Notes
+------  ----  ------------------  --------------------------------------------
+0       4     magic               MUST be 0x57595244 (ASCII &quot;WYRD&quot;).
+4       2     format_version      u16. The format version. A reader MUST reject
+                                  a fragment whose version it does not
+                                  understand rather than guess. v1 = 1.
+6       2     header_length       u16. Total header size in bytes, core plus
+                                  extension. In v1 with no extension this is 44.
+                                  The payload begins at this offset.
+8       1     flags               u8. Bit 0 (LSB) = payload is encrypted. All
+                                  other bits reserved and MUST be 0 in v1.
+9       1     checksum_algo       u8. Payload-checksum algorithm.
+                                  0 = crc32c (default). 1 = blake3 (reserved;
+                                  not produced by a v1 writer). Other values
+                                  reserved.
+10      1     encryption_scheme   u8. 0 = none (v1). AEAD schemes are reserved;
+                                  a v1 writer MUST write 0 and MUST clear
+                                  flags bit 0.
+11      1     ec_scheme_type      u8. 0 = none/single-copy, 1 = replication,
+                                  2 = reed-solomon. Other values reserved.
+12      1     ec_k                u8. Data-fragment count k. 1 for none and for
+                                  replication.
+13      1     ec_m                u8. Parity-fragment count m. 0 for none and
+                                  for replication.
+14      2     ec_fragment_index   u16. This fragment's index within its stripe,
+                                  0-based. Always 0 for none; the replica or
+                                  parity index otherwise.
+16      16    chunk_id            u128. The chunk identifier. MAY be generated
+                                  without central coordination.
+32      8     payload_length      u64. Length in bytes of the stored payload.
+40      4     header_checksum     u32. crc32c over bytes [0, header_length),
+                                  computed with this field's own four bytes
+                                  taken as zero. Guards the header itself.
+44      E     header_extension    E = header_length - 44. Empty in v1 (E = 0).
+                                  Reserved for future fields (e.g. encryption
+                                  nonce and key identifier, compression info).
+44+E    N     payload             N = payload_length. The stored bytes
+                                  (ciphertext if flags bit 0 is set, otherwise
+                                  plaintext).
+44+E+N  V     payload_checksum    Per checksum_algo: 4 bytes for crc32c, 32
+                                  bytes for blake3. Computed over the stored
+                                  payload bytes (see &quot;Checksums&quot;).
+</code></pre>
+<p>The v1 core header is therefore <strong>44 bytes</strong>. The payload starts at
+<code>header_length</code> (44 when there is no extension).</p>
+<h3>Field rules (normative)</h3>
 <ul>
-<li>Every fragment MUST carry its format version.</li>
-<li>A reader MUST reject a fragment whose version it does not understand, rather than guess.</li>
-<li>A version increment is a breaking ecosystem event and follows the strict change process (this document, plus updated conformance vectors).</li>
+<li>A reader MUST verify <code>magic</code> and reject any fragment that does not begin with
+it.</li>
+<li>A reader MUST reject a fragment whose <code>format_version</code> it does not understand,
+rather than attempt to parse it.</li>
+<li>A reader MUST read <code>header_length</code> to locate the payload and MUST treat any
+bytes between offset 44 and <code>header_length</code> as a header extension it MAY not
+understand. A reader that does not understand an extension MUST skip it (using
+<code>header_length</code>) and MUST NOT guess its contents. A reader MUST NOT fail
+solely because an extension is present, except where a set <code>flags</code> bit (e.g.
+encryption) means the reader cannot correctly return the payload — in which
+case it MUST refuse rather than return undecrypted or misinterpreted bytes.</li>
+<li>A v1 writer MUST write <code>flags = 0</code>, <code>encryption_scheme = 0</code>, and an empty
+extension (<code>header_length = 44</code>).</li>
+<li>The <code>ec_scheme_type</code>, <code>ec_k</code>, <code>ec_m</code>, and <code>ec_fragment_index</code> recorded here
+MUST agree with the chunk's authoritative metadata record. The header is
+self-describing so a fragment validates standalone (a scrubber needs no
+external system); the metadata is authoritative so the system knows a chunk's
+scheme without reading fragments. A disagreement is a detectable corruption.</li>
+</ul>
+<h3>Checksums (normative)</h3>
+<ul>
+<li>The <strong>header checksum</strong> (<code>header_checksum</code>) is crc32c computed over the header
+bytes <code>[0, header_length)</code> with the four bytes of the <code>header_checksum</code> field
+itself treated as zero during computation. A reader MUST verify the header
+checksum before acting on any other header field.</li>
+<li>The <strong>payload checksum</strong> (<code>payload_checksum</code>) is computed over the <strong>stored
+payload bytes</strong> — that is, over the ciphertext when the payload is encrypted,
+and over the plaintext when it is not. This is mandatory so that integrity is
+verifiable <strong>without the decryption key</strong>: a D server or scrubber holding only
+ciphertext MUST be able to detect bit-rot and corruption without decrypting.
+A reader MUST verify the payload checksum before returning data, and a
+scrubber MUST verify it in the background (architecture section 6.3).</li>
+<li>Authenticity of the <em>plaintext</em> under encryption is the responsibility of the
+AEAD scheme (recorded by a future <code>encryption_scheme</code>), and is separate from
+this storage-integrity checksum.</li>
+<li>The algorithm is identified by <code>checksum_algo</code>. A v1 writer MUST use crc32c
+(0). blake3 (1) is reserved for future content-addressing or
+cryptographic-integrity use and MUST NOT be produced by a v1 writer; a reader
+MAY support it.</li>
+</ul>
+<h2>Erasure-coding scheme, recorded per chunk (normative)</h2>
+<p>The header records the EC scheme per fragment (<code>ec_scheme_type</code>, <code>ec_k</code>,
+<code>ec_m</code>, <code>ec_fragment_index</code>) so that a zone which grows from <code>replication(n)</code>
+into <code>rs(k,m)</code> carries mixed-era data correctly (ADR-0008): old chunks remain
+readable under their original scheme while new chunks use the new one. A reader
+MUST use the scheme recorded in the fragment (cross-checked against the chunk
+metadata) and MUST NOT assume a single zone-wide scheme.</p>
+<h2>Versioning (normative)</h2>
+<ul>
+<li>Every fragment MUST carry its <code>format_version</code>.</li>
+<li>A reader MUST reject a fragment whose version it does not understand rather
+than guess.</li>
+<li>Backward-compatible additions (new optional header-extension fields, new
+reserved code points for <code>checksum_algo</code>, <code>encryption_scheme</code>, or
+<code>ec_scheme_type</code>) MAY be made <strong>without</strong> a version increment, because a
+conforming reader skips extensions it does not understand and rejects code
+points it does not recognize. Such additions MUST be accompanied by new
+conformance vectors.</li>
+<li>A change that alters the meaning or layout of an existing core field, or that
+a conforming v1 reader could misinterpret, is a <strong>breaking</strong> change and MUST
+increment <code>format_version</code>. A version increment is an ecosystem event and
+follows the strict change process (this document plus updated conformance
+vectors).</li>
+<li>This format remains <strong>v0/unstable</strong> until validated by a second independent
+reader implementation or a sustained fault-injection run, at which point it is
+stamped <code>v1</code>. Until then, the layout MAY change.</li>
+</ul>
+<h2>Reserved for future use (informative)</h2>
+<p>The following are reserved now so they can be added without a breaking change:</p>
+<ul>
+<li><strong>Encryption</strong> — <code>flags</code> bit 0, the <code>encryption_scheme</code> byte, and the header
+extension region (for nonce and key identifier). Client-side envelope
+encryption is a planned future feature (ADR-0005 §8.5); the
+checksum-over-stored-bytes rule above already accommodates it.</li>
+<li><strong>Content addressing / cryptographic integrity</strong> — <code>checksum_algo = 1</code>
+(blake3).</li>
+<li><strong>Compression</strong> — a future <code>flags</code> bit and a scheme byte, with any parameters
+in the header extension.</li>
 </ul>
 <h2>Conformance</h2>
-<p>A conforming reader MUST correctly parse and verify every vector in <code>../conformance/</code>. A conforming writer MUST produce fragments that the reference reader accepts. See <code>../conformance/README.md</code>.</p>
+<p>A conforming reader MUST correctly parse and verify every vector in
+<code>../conformance/</code>. A conforming writer MUST produce fragments that the reference
+reader accepts. See <code>../conformance/README.md</code>.</p>
 
     </article>
   </main>
