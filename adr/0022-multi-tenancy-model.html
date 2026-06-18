@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0022. Multi-tenancy model — Wyrd</title>
+<meta name="description" content="The primary deployment is a cloud provider serving many tenants , so a tenant is a first-class concept — yet the architecture only had scattered per-tenant hooks and no model: w...">
+<meta property="og:title" content="0022. Multi-tenancy model — Wyrd">
+<meta property="og:description" content="The primary deployment is a cloud provider serving many tenants , so a tenant is a first-class concept — yet the architecture only had scattered per-tenant hooks and no model: w...">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Proposed · 18.06.2026 23:05</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>0022. Multi-tenancy model</h1>
+<h2>Context</h2>
+<p>The primary deployment is a cloud provider serving many tenants (section 1.4), so a tenant is a first-class concept — yet the architecture only had scattered per-tenant <em>hooks</em> (replication factor, sync-replication opt-in, envelope encryption, quotas) and no model: what a tenant <em>is</em>, how tenants are isolated, and where isolation is enforced. For a provider substrate that is load-bearing, not a detail.</p>
+<p>Much of the shape is already fixed by prior decisions. Single-provider, closed federation (ADR-0005) means all tenants belong to one operator, so the threat model is <strong>isolation and fairness, not mutual distrust between operators</strong>. The L2 global namespace (ADR-0020) already partitions the directory tree; per-tenant envelope encryption (ADR-0021) already gives a cryptographic data boundary; and the access layer (L1) is already the authentication/authorization enforcement point (section 8.5).</p>
+<h2>Decision</h2>
+<ol>
+<li>
+<p><strong>A tenant is the unit of isolation, policy, and billing</strong> — a namespace partition plus an identity domain. Each tenant owns a subtree of the global namespace, a set of credentials (S3 access keys / an OIDC realm), and a policy bundle (residency, replication factor, encryption, quotas, rate limits).</p>
+</li>
+<li>
+<p><strong>Multi-tenancy is logical, not physical.</strong> Tenants share zones, D servers, and the metadata / namespace tiers; isolation is the composition of four boundaries, not dedicated hardware (single-provider, ADR-0005). A dedicated-zone or dedicated-hardware tier is a possible future option, not v1.</p>
+</li>
+<li>
+<p><strong>Four isolation boundaries, each at a definite enforcement point:</strong></p>
+<ul>
+<li><strong>Namespace</strong> — the L2 global namespace is partitioned per tenant; cross-tenant naming or traversal is impossible by construction (ADR-0020).</li>
+<li><strong>Data</strong> — per-tenant envelope encryption makes the boundary cryptographic; D servers hold opaque, mixed-tenant ciphertext (ADR-0021).</li>
+<li><strong>Capacity</strong> — per-tenant quotas (bytes, object count) checked at <strong>admission</strong> in the L1 gateway against the tenant's L2 record; a hard limit rejects, a soft limit warns.</li>
+<li><strong>Performance</strong> — per-tenant request-rate limits (token bucket) at L1, and placement spreads a tenant across failure domains so one tenant cannot monopolise a domain (noisy-neighbour control).</li>
+</ul>
+</li>
+<li>
+<p><strong>Enforcement lives at L1 and L2, never below.</strong> The gateway authenticates the tenant, authorizes against L2 ACLs, and checks quota/rate before issuing any storage operation; D servers and the metadata store stay <strong>tenant-oblivious</strong>, trusting an admitted request. The storage tier stays dumb; the policy tier stays centralized.</p>
+</li>
+</ol>
+<h2>Consequences</h2>
+<ul>
+<li>Tenancy is now a named model with concrete enforcement points, not scattered hooks.</li>
+<li>The boundary is defense-in-depth — namespace + crypto + quota + rate — so a single bug does not cross tenants (the cryptographic boundary still holds even if namespace isolation is breached).</li>
+<li>Sharing infrastructure keeps utilization high (the provider economics, goal 2) at the cost of needing real fairness controls, which become first-class admission/backpressure concerns (section 8.9).</li>
+<li>Per-tenant policy is data in L2, read on the admission path, so it is cached and version-fenced like ACLs (section 8.5); a stale quota cannot admit past a hard limit because the hard check re-reads on conflict.</li>
+<li><strong>[OPEN]</strong> billing/metering event stream (likely the audit/event log, section 8.3), and whether very large tenants warrant a dedicated namespace shard or zone.</li>
+<li><strong>[OPEN]</strong> cross-tenant sharing (a dirent pointing at another tenant's object) — allowed, forbidden, or capability-gated.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>
