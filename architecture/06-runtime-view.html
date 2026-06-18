@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>6. Runtime view — Wyrd</title>
-<meta name="description" content="The headline scenario. Detailed step-by-step in section 5 and normatively in the commit-protocol spec. The essential property: the file does not exist until step 3&#x27;s single atom...">
+<meta name="description" content="The headline scenario; see diagrams/write-path-sequence.mermaid. Detailed step-by-step in section 5 and normatively in the commit-protocol spec">
 <meta property="og:title" content="6. Runtime view — Wyrd">
-<meta property="og:description" content="The headline scenario. Detailed step-by-step in section 5 and normatively in the commit-protocol spec. The essential property: the file does not exist until step 3&#x27;s single atom...">
+<meta property="og:description" content="The headline scenario; see diagrams/write-path-sequence.mermaid. Detailed step-by-step in section 5 and normatively in the commit-protocol spec">
 <meta property="og:type" content="article">
 <link rel="stylesheet" href="/assets/style.css">
 </head>
@@ -42,12 +42,17 @@
 <p>Living document. The scenarios that most define the system's behavior. See <code>diagrams/</code> for sequence diagrams.</p>
 </blockquote>
 <h2>6.1 Write path (the commit point)</h2>
-<p>The headline scenario. Detailed step-by-step in section 5 (L4 write protocol) and normatively in the commit-protocol spec. The essential property: the file does not exist until step 3's single atomic metadata mutation, and fully exists after it. Bulk data (steps 2) flows directly from client to D servers, crossing no shared component — this is the basis of the throughput-scaling claim.</p>
+<p>The headline scenario; see <code>diagrams/write-path-sequence.mermaid</code>. Detailed step-by-step in section 5 (L4 write protocol) and normatively in the commit-protocol spec.</p>
+<p><strong>Step 0 — resolve the home zone (L2).</strong> Before any data moves, the access layer resolves the target against the global namespace (<code>NamespaceStore</code>, ADR-0020): an existing object returns its <strong>home zone</strong> (cached after first use); a new object is assigned a home zone and replica set by the <strong>placement service</strong> from policy — residency, replication factor, capacity. Steps 1–4 then run entirely <em>within that home zone</em>.</p>
+<p><strong>Steps 1–4 — stage and commit (home zone).</strong> As detailed in section 5: the client registers chunk IDs in the pending ledger, erasure-codes and writes fragments directly to the home zone's D servers — bulk data crosses no shared component, the basis of the throughput-scaling claim — then issues the single atomic metadata mutation that <em>is</em> the commit point. The file does not exist until that mutation and fully exists after it.</p>
+<p><strong>Two linearization points, not one.</strong> Introducing or moving a <em>name</em> (create, rename) is linearized globally by L2, so it is visible in every zone and never lost or resurrected (section 8.1); a file's <em>content version</em> is linearized at its home zone by the commit point. For a new object the global name is published only once its first content version has committed, so no reader anywhere sees a name without content. The exact interleaving is owned by the commit-protocol spec.</p>
 <h2>6.2 Read path</h2>
+<p>See <code>diagrams/read-path-sequence.mermaid</code>.</p>
 <ol>
-<li>Client fetches file metadata (chunk list, fragment locations, EC scheme) from the metadata store (cached after first read).</li>
-<li>Client reads fragments directly from D servers. Because it holds the EC logic, it needs only <em>k</em> of <em>n</em> fragments and reconstructs from whichever <em>k</em> arrive first — turning erasure coding into a tail-latency <em>advantage</em>: a slow or dead disk does not slow the read.</li>
-<li>Client verifies checksums on every fragment, catching bit rot at read time; re-reads elsewhere on failure.</li>
+<li><strong>Resolve the home zone (L2).</strong> Resolve the path/key against the global namespace → file identity, <strong>home zone</strong>, and an ACL check (cached after first use). Consistency-sensitive reads route to the home zone (section 6.6); stale-tolerant reads may target a nearer replica.</li>
+<li><strong>Fetch the chunk map (L4).</strong> From the home zone's metadata store — or a version-fenced replica — get the chunk list, fragment locations, and EC scheme (cached after first read). In steady state both metadata hops are cached, so a hot read goes straight to the data path.</li>
+<li><strong>Read fragments directly from D servers.</strong> Holding the EC logic, the client needs only <em>k</em> of <em>n</em> fragments and reconstructs from whichever <em>k</em> arrive first — turning erasure coding into a tail-latency <em>advantage</em>: a slow or dead disk does not slow the read.</li>
+<li><strong>Verify checksums</strong> on every fragment, catching bit rot at read time; re-read elsewhere on failure.</li>
 </ol>
 <h2>6.3 Repair (self-healing, intra-zone)</h2>
 <p>Driven by custodians (L4):</p>
@@ -73,6 +78,14 @@
 <p>Restoring bytes before the map is useless; restoring the map before coordination cannot even start. This ordering is a runbook section and must be written and drilled before it is needed.</p>
 <h2>6.6 Consistency at runtime</h2>
 <p>See section 8 (the consistency contract). In brief: the namespace is globally strongly consistent; a file's writes are linearizable at its home zone; per-session read-your-writes and monotonic reads are provided (v1: by routing consistency-sensitive reads to the home zone); stale-tolerant reads may be served from a lagging replica; cross-session visibility of a remote write is eventually consistent, bounded by replication lag.</p>
+<h2>6.7 Delete and space reclamation</h2>
+<p>Delete is a commit-point operation too, and its cost is paid lazily, off the critical path.</p>
+<ol>
+<li><strong>Unlink (the commit point).</strong> Removing the dirent — and tombstoning the inode/version — is a single atomic metadata mutation, linearized globally by L2 for the <em>name</em> so no zone ever resurrects a deleted file (section 8.1). The delete acknowledges here; the object is now invisible to every consistency-sensitive reader and its chunks are unreferenced.</li>
+<li><strong>Reclaim (custodian GC, L4).</strong> The orphaned fragments are reclaimed by a GC custodian after a grace period — long enough that an in-flight reader holding the old version is never torn — exactly the pending-ledger sweep pattern (section 5). Reclamation is background work, not on the delete's latency path.</li>
+<li><strong>Propagate across zones (L3).</strong> If the object had replicas, the deletion propagates through the replica catalog: each holding zone drops its catalog record and its GC reclaims the local fragments. Until propagation completes, a <em>stale-tolerant</em> read in a lagging zone may still see the old object, bounded by replication lag (section 8.1); consistency-sensitive reads route to the home zone and never do.</li>
+<li><strong>Prove it (audit + crypto-erase).</strong> The deletion is recorded in the append-only audit/event log — the operator's compliance and GDPR-deletion story (section 8.3). Where per-tenant envelope encryption is enabled, dropping the object/tenant key crypto-shreds the data immediately, making it unrecoverable independent of when GC runs (section 8.5).</li>
+</ol>
 
     </article>
   </main>

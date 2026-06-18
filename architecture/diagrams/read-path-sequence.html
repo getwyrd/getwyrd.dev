@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Write Path Sequence — Wyrd</title>
-<meta name="description" content="Runtime view — the write path and its commit point">
-<meta property="og:title" content="Write Path Sequence — Wyrd">
-<meta property="og:description" content="Runtime view — the write path and its commit point">
+<title>Read Path Sequence — Wyrd</title>
+<meta name="description" content="Runtime view — the read path: two-hop metadata resolution + k-of-n reconstruction">
+<meta property="og:title" content="Read Path Sequence — Wyrd">
+<meta property="og:description" content="Runtime view — the read path: two-hop metadata resolution + k-of-n reconstruction">
 <meta property="og:type" content="article">
 <link rel="stylesheet" href="/assets/style.css">
 </head>
@@ -36,31 +36,26 @@
   <main>
     <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
     <article class="prose">
-<h1>Write Path Sequence</h1>
-<p>Runtime view — the write path and its commit point</p>
+<h1>Read Path Sequence</h1>
+<p>Runtime view — the read path: two-hop metadata resolution + k-of-n reconstruction</p>
 <div class="mermaid">
-%% Runtime view — the write path and its commit point
+%% Runtime view — the read path: two-hop metadata resolution + k-of-n reconstruction
 %% Diagrams as code. Render with any Mermaid renderer.
 sequenceDiagram
     participant C as Client library
-    participant Z as Placement / namespace (L2)
-    participant L as Pending-chunk ledger
-    participant D as D servers
-    participant M as Metadata store (home zone)
+    participant N as Global namespace (L2)
+    participant M as Metadata store (L4, home zone)
+    participant D as D servers (home zone)
 
-    C-&gt;&gt;Z: 0. Resolve/assign home zone (placement; cached)
-    Z--&gt;&gt;C: home zone
-    Note over C,M: Steps 1–4 run in the home zone. File does NOT exist yet
-    C-&gt;&gt;L: 1. Register chunk IDs (leased)
-    C-&gt;&gt;C: 2a. Chunk + erasure-code
-    C-&gt;&gt;D: 2b. Write fragments directly (parallel, bulk data)
-    D--&gt;&gt;C: checksums verified
-    Note over C,D: Fragments exist but are unreferenced garbage
-    C-&gt;&gt;M: 3. Atomic commit: chunk map + state=COMMITTED + version++ (conditional on prior version)
-    Note over M: THIS is the commit point — the file now exists
-    M--&gt;&gt;C: committed (or conflict → retry)
-    C-&gt;&gt;L: 4. Release ledger entries
-    Note over C,M: Crash before 3 → leased garbage (GC). Crash 3→4 → custodian sweep.</div>
+    C-&gt;&gt;N: 1. Resolve path → file id + home zone (+ ACL)
+    N--&gt;&gt;C: home zone (cached after first use)
+    C-&gt;&gt;M: 2. Fetch chunk map: fragments, locations, EC scheme
+    M--&gt;&gt;C: chunk map (cached after first read)
+    C-&gt;&gt;D: 3. Read any k of n fragments (parallel)
+    D--&gt;&gt;C: fragments (slowest n−k ignored)
+    C-&gt;&gt;C: 4. Verify checksums + reconstruct
+    Note over C,N: Steady state — both metadata hops cached → straight to D servers
+    Note over C,D: Consistency-sensitive reads route to the home zone; stale-tolerant may use a replica</div>
 
     </article>
   </main>
