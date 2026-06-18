@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Layer Stack — Wyrd</title>
+<meta name="description" content="Layer stack — the L1–L5 model (building-block view, section 5)">
+<meta property="og:title" content="Layer Stack — Wyrd">
+<meta property="og:description" content="Layer stack — the L1–L5 model (building-block view, section 5)">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Diagram</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>Layer Stack</h1>
+<p>Layer stack — the L1–L5 model (building-block view, section 5)</p>
+<div class="mermaid">
+%% Layer stack — the L1–L5 model (building-block view, section 5)
+%% Diagrams as code. Render with any Mermaid renderer.
+%% Decisive split: L1–L3 span zones (global scope); L4–L5 live within a single zone.
+graph TB
+    subgraph spanning[&quot;Span zones — global scope&quot;]
+        L1[&quot;&lt;b&gt;L1 — Access layer&lt;/b&gt;&lt;br/&gt;S3 / FUSE / WebDAV / SDK gateways&lt;br/&gt;stateless&quot;]
+        L2[&quot;&lt;b&gt;L2 — Global control plane&lt;/b&gt;&lt;br/&gt;namespace · placement · ACLs · registry&lt;br/&gt;global consensus&quot;]
+        L3[&quot;&lt;b&gt;L3 — Cross-zone replication&lt;/b&gt;&lt;br/&gt;async chunk copy · global custodians&lt;br/&gt;off the data path&quot;]
+    end
+    subgraph zonal[&quot;Within one zone — per datacenter&quot;]
+        L4[&quot;&lt;b&gt;L4 — Zonal file system&lt;/b&gt;&lt;br/&gt;metadata store · D servers · custodians · client library&quot;]
+        L5[&quot;&lt;b&gt;L5 — Bootstrap &amp; coordination&lt;/b&gt;&lt;br/&gt;discovery · leader election · locks · config&quot;]
+    end
+    L1 --- L2 --- L3 --- L4 --- L5</div>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+<script src="/assets/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true,theme:"neutral"});</script>
+</body>
+</html>
