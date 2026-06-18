@@ -50,7 +50,7 @@
 <p>Explicitly <strong>out</strong> of M0 (deferred to the risk-ordered widening in [§9][s9]): erasure coding (<code>replication(1)</code>/<code>none</code> only), networked gRPC D servers, custodians, TiKV, every cross-zone layer (L2/L3), and <strong>observability / telemetry</strong>. Their <em>hooks</em> are respected where retrofitting is expensive (see Backward compatibility).</p>
 <p>Observability is deliberately <strong>not implemented in M0</strong>: the durability-plane telemetry is emitted by the custodians ([ADR-0011][a11]), so it arrives with them at M3; the instrumentation seam is OpenTelemetry ([ADR-0012][a12]), wired at that point; and M0 is verified by DST, not by metrics. Unlike the append/CAS/watch and version-fence hooks, it needs <strong>no reserved seat now</strong> — attaching telemetry at the custodian is not an expensive retrofit.</p>
 <h3>Deliverable</h3>
-<p>M0's output is a <strong>proof, not a product</strong>: a single binary that runs S3 PUT → four-phase commit → byte-identical GET in one process, plus a <strong>seed-reproducible DST proof that the commit is atomic</strong> (the property tests below), the trait and test scaffold (<code>ChunkStore</code> / <code>MetadataStore</code> / <code>Coordination</code> + <code>testkit</code>) every later milestone attaches to, and the on-disk format fixed (v0/unstable) with a conformance vector. It is a credible, publishable proof-of-concept — <em>the central claim is no longer a claim</em> — even if nothing follows. It is explicitly <strong>not</strong> deployable (no EC, no networked servers, no durability promise); a usable single-zone product is M4.</p>
+<p>M0's output is a <strong>proof, not a product</strong>: a single binary that runs S3 PUT → four-phase commit → byte-identical GET in one process, plus a <strong>seed-reproducible DST proof that the commit is atomic</strong> (the property tests below), the trait and test scaffold (<code>ChunkStore</code> / <code>MetadataStore</code> / <code>Coordination</code> + <code>testkit</code>) every later milestone attaches to, and the on-disk format ([ADR-0019][a19]) implemented (v0/unstable) with a conformance vector. It is a credible, publishable proof-of-concept — <em>the central claim is no longer a claim</em> — even if nothing follows. It is explicitly <strong>not</strong> deployable (no EC, no networked servers, no durability promise); a usable single-zone product is M4.</p>
 <h3>Workspace and crate scaffold (coarse start, [ADR-0016][a16])</h3>
 <p>A Cargo workspace, starting <strong>coarse</strong> and splitting later. Trait boundaries exist from day one even where crate boundaries do not. <code>Cargo.lock</code> is committed (this is an application).</p>
 <table>
@@ -134,7 +134,7 @@ graph TB
     lib -. uses .-&gt; proto
     testkit -. drives, injects faults .-&gt; lib
 </div>
-<p>Deferred to later milestones, absent from M0: L2 (namespace DB, placement, zone registry), L3 (cross-zone replication, global custodians), networked gRPC D servers, custodians, and erasure coding.</p>
+<p>Deferred to later milestones, absent from M0: L2 (namespace DB, placement, zone registry), L3 (cross-zone replication, global custodians), networked gRPC D servers, custodians, and erasure coding. The fourth trait seam, <code>NamespaceStore</code> ([ADR-0020][a20]), is deferred too: M0 has no global namespace or placement, so its only namespace is the <strong>local</strong> inode/dirent inside <code>MetadataStore</code> — there is no M0 behaviour behind a <code>NamespaceStore</code> to retrofit. It is introduced with L2, where ADR-0020 folds it onto the same embedded store in single-zone profiles.</p>
 <h3>Metadata model — redb behind <code>MetadataStore</code> ([§5 L4][s5])</h3>
 <p>Hierarchical <strong>inode + dirent</strong>, not path-as-key, so create writes inode + dirent atomically and rename is a single dirent mutation:</p>
 <ul>
@@ -145,7 +145,7 @@ graph TB
 </ul>
 <p>The atomic commit is a <strong>single redb write transaction</strong> spanning these keys. That transaction <em>is</em> the commit point.</p>
 <h3>Chunk / fragment format (<code>chunk-format</code> + [the spec][spec])</h3>
-<p>Implement the v1-draft header: magic, format version, EC-scheme id + fragment-index-in-stripe, chunk id, payload checksum (algorithm id), payload length. For M0 the EC scheme is <code>replication(1)</code>/<code>none</code> (no real EC yet), but the scheme id is recorded per chunk so later mixed-era data reads correctly. The <code>[TO BE SPECIFIED]</code> byte layout, endianness, checksum algorithm, and scheme ids are <strong>decided during M0 and written back into [the spec][spec] in the same PR</strong>; seed conformance vectors land in <code>specs/conformance/</code>. The format stays <strong>v0 / unstable</strong> — <code>v1</code> is stamped only after a second reader or a sustained fault-injection run validates it (per the spec's own rule).</p>
+<p>The byte layout is <strong>already decided and specified</strong> — the 44-byte v1 header (magic, <code>format_version</code>, a self-describing <code>header_length</code>, <code>flags</code>, <code>checksum_algo</code>, <code>encryption_scheme</code>, the per-fragment EC fields, a u128 <code>chunk_id</code>, <code>payload_length</code>, and a <code>header_checksum</code>), little-endian and fixed-width, with crc32c the default payload checksum (blake3 reserved) computed over the <em>stored</em> bytes ([the spec][spec], [ADR-0019][a19]). M0 <strong>implements that spec</strong> in the <code>chunk-format</code> crate and lands the first seed <strong>conformance vectors</strong> in <code>specs/conformance/</code> — it does not redesign the format. For M0 the EC scheme is <code>replication(1)</code>/<code>none</code>, but it is recorded per fragment so later mixed-era data reads correctly. The format stays <strong>v0 / unstable</strong> — <code>v1</code> is stamped only after a second independent reader or a sustained fault-injection run validates it (the spec's own rule).</p>
 <h3>Write / commit protocol (the differentiator) — [§5][s5]</h3>
 <p>Implement all four phases:</p>
 <ol>
@@ -189,7 +189,7 @@ graph TB
 </ul>
 </li>
 </ul>
-<p><strong>Hardcoded defaults at M0, not yet knobs:</strong> the small-file <strong>inline threshold</strong> and <strong>chunk/stripe size</strong> (the <code>[OPEN]</code> empirical parameters, deferred to measurement) and the <strong>checksum algorithm</strong> (a format-level <code>[TO BE SPECIFIED]</code> decision, carried as an id in the header).</p>
+<p><strong>Hardcoded defaults at M0, not yet knobs:</strong> the small-file <strong>inline threshold</strong> and <strong>chunk/stripe size</strong> (the <code>[OPEN]</code> empirical parameters, deferred to measurement). The <strong>checksum algorithm</strong> is not a knob — it is fixed by the format to crc32c, carried as <code>checksum_algo</code> in the header (blake3 reserved; [ADR-0019][a19]).</p>
 <p><strong>Not configuration at M0:</strong> backend selection is <strong>code composition in <code>server</code></strong> (redb / filesystem / in-memory), not a runtime flag — swapping a backend is a composition change, not config ([ADR-0008][a8]). Zone/region, replication factor, placement policy, coordination endpoints, and telemetry have no config because L2, networked coordination, and observability are not in M0. The <strong>DST seed</strong> is a test-runner input, not server config.</p>
 <p>The full &quot;same system, configured differently&quot; profile model ([ADR-0014][a14]) and the declarative, API-first management surface ([ADR-0013][a13]) arrive with L2 and the custodians — not at M0. M0 config is just <em>where is the data, what port, how long are leases.</em></p>
 <h3>DST harness + property tests — attach at M0 ([ADR-0009][a9])</h3>
@@ -232,12 +232,12 @@ graph TB
 <li>A file written via S3 PUT is read back via GET <strong>byte-identical</strong>.</li>
 <li>The commit is <strong>proven atomic under fault injection in simulation</strong>, reproducible from a seed.</li>
 <li>Commit-protocol property tests are green; <code>fmt</code>/<code>clippy</code> clean; <code>Cargo.lock</code> committed.</li>
-<li>The chunk-format byte layout is recorded in [the spec][spec] with at least one conformance vector the reference reader accepts.</li>
+<li>The reference <code>chunk-format</code> reader/writer implements [the spec][spec] ([ADR-0019][a19]) and accepts at least one conformance vector in <code>specs/conformance/</code>.</li>
 </ul>
 <h3>Suggested PR sequence (each with its own definition of done)</h3>
 <ol>
 <li>Workspace scaffold + <code>traits</code> + <code>testkit</code> skeleton + CI.</li>
-<li><code>chunk-format</code> encode/decode + conformance vector + spec byte-layout filled in.</li>
+<li><code>chunk-format</code> encode/decode against the spec ([ADR-0019][a19]) + first conformance vector.</li>
 <li>redb <code>MetadataStore</code> (inode / dirent / ledger) behind the trait.</li>
 <li>Filesystem <code>ChunkStore</code> behind the trait.</li>
 <li>Client library: chunk → write fragment → four-phase commit.</li>
@@ -247,18 +247,17 @@ graph TB
 </ol>
 <h2>Backward compatibility</h2>
 <ul>
-<li><strong>On-disk format</strong>: M0 fixes the chunk-format byte layout but it remains <strong>v0 / unstable</strong>; no stability promise until <code>v1</code> is stamped. No existing data to migrate.</li>
+<li><strong>On-disk format</strong>: the byte layout is fixed by [ADR-0019][a19] / [the spec][spec] (still <strong>v0 / unstable</strong> until validated, then stamped <code>v1</code>); M0 implements it. No existing data to migrate.</li>
 <li><strong>Deferred-with-reserved-seats</strong> honored now because retrofitting is expensive ([§9][s9]): append/CAS/watch primitives ([ADR-0007][a7]) accommodated by the ledger + schema shape; the <code>meta:version</code> fence counter reserved ([ADR-0015][a15]); trait seams for etcd/TiKV/openraft.</li>
 <li><strong>API / deployments</strong>: none yet, so nothing to stay compatible with.</li>
 </ul>
 <h2>Open questions</h2>
 <ul>
-<li>Checksum algorithm for the fragment header (crc32c vs blake3) and exact field widths / endianness — <strong>[TO BE SPECIFIED]</strong> during step 2.</li>
 <li>Small-file <strong>inline threshold</strong> ([§5][s5] mentions inlining): implement in M0 or defer to the EC widening step?</li>
 <li>Does the minimal S3 surface stay in <code>server</code> for M0, or warrant a <code>gateway-s3</code> crate immediately?</li>
 <li>redb key encoding (byte order of <code>&lt;id&gt;</code>, dirent name normalization).</li>
 </ul>
-<p>[s4]: ../../architecture/04-solution-strategy.md [s5]: ../../architecture/05-building-block-view.md [s9]: ../../architecture/09-build-order-and-roadmap.md [spec]: ../../specs/chunk-format/v1.md [a2]: ../../adr/0002-spec-first-on-disk-format-only.md [a7]: ../../adr/0007-reserve-append-cas-watch.md [a9]: ../../adr/0009-deterministic-simulation-testing.md [a10]: ../../adr/0010-pluggable-deployment-substrate.md [a15]: ../../adr/0015-consistency-contract.md [a16]: ../../adr/0016-monorepo-and-crate-structure.md [a3]: ../../adr/0003-apache-2-license-and-dco.md [a8]: ../../adr/0008-tikv-metadata-and-pluggable-backends.md [a11]: ../../adr/0011-durability-telemetry-and-declarative-management.md [a12]: ../../adr/0012-opentelemetry-instrumentation.md [a13]: ../../adr/0013-api-first-management.md [a14]: ../../adr/0014-single-binary-dev-only.md</p>
+<p>[s4]: ../../architecture/04-solution-strategy.md [s5]: ../../architecture/05-building-block-view.md [s9]: ../../architecture/09-build-order-and-roadmap.md [spec]: ../../specs/chunk-format/v1.md [a2]: ../../adr/0002-spec-first-on-disk-format-only.md [a7]: ../../adr/0007-reserve-append-cas-watch.md [a9]: ../../adr/0009-deterministic-simulation-testing.md [a10]: ../../adr/0010-pluggable-deployment-substrate.md [a15]: ../../adr/0015-consistency-contract.md [a16]: ../../adr/0016-monorepo-and-crate-structure.md [a3]: ../../adr/0003-apache-2-license-and-dco.md [a8]: ../../adr/0008-tikv-metadata-and-pluggable-backends.md [a11]: ../../adr/0011-durability-telemetry-and-declarative-management.md [a12]: ../../adr/0012-opentelemetry-instrumentation.md [a13]: ../../adr/0013-api-first-management.md [a14]: ../../adr/0014-single-binary-dev-only.md [a19]: ../../adr/0019-chunk-format-layout.md [a20]: ../../adr/0020-global-namespace-store.md</p>
 
     </article>
   </main>
