@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>0003. Apache 2.0 license and DCO sign-off — Wyrd</title>
+<title>0003. Licensing, and dependency-selection criteria — Wyrd</title>
 <meta name="description" content="The target users are mid-sized cloud providers — commercial entities that must be legally able to deploy, modify, and build products on the system. AGPL squeezes exactly these u...">
-<meta property="og:title" content="0003. Apache 2.0 license and DCO sign-off — Wyrd">
+<meta property="og:title" content="0003. Licensing, and dependency-selection criteria — Wyrd">
 <meta property="og:description" content="The target users are mid-sized cloud providers — commercial entities that must be legally able to deploy, modify, and build products on the system. AGPL squeezes exactly these u...">
 <meta property="og:type" content="article">
 <link rel="stylesheet" href="/assets/style.css">
@@ -37,18 +37,107 @@
   <main>
     <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
     <article class="prose">
-<h1>0003. Apache 2.0 license and DCO sign-off</h1>
+<h1>0003. Licensing, and dependency-selection criteria</h1>
 <h2>Context</h2>
-<p>The target users are mid-sized cloud providers — commercial entities that must be legally able to deploy, modify, and build products on the system. AGPL (the MinIO path) squeezes exactly these users and triggers fork-and-flee dynamics. An infrastructure foundation intended for broad adoption needs a permissive license.</p>
-<p>Contribution provenance must be tracked, but a full CLA imposes friction that deters drive-by contributors.</p>
+<p>The target users are mid-sized cloud providers — commercial entities that must be legally able to deploy, modify, and build products on the system. AGPL (the MinIO path) squeezes exactly these users and triggers fork-and-flee dynamics. An infrastructure foundation intended for broad adoption needs a permissive license. Contribution provenance must be tracked, but a full CLA imposes friction that deters drive-by contributors.</p>
+<p>The same lens applies <em>inward</em>. Wyrd is sovereignty-first and built on pluggable components at every seam (coordination, metadata store, chunk store, deployment substrate, telemetry). <strong>A sovereignty-first system is only as sovereign as its weakest pluggable component</strong>, so dependency choices cannot rest on technical merit alone. An early draft design applied the license/sovereignty lens <em>unevenly</em> — etcd and TiKV happen to pass it; CockroachDB did not (source-available, single vendor, revenue-capped, forced telemetry). The durable fix is not swapping one database; it is encoding the test so the next CockroachDB is caught at selection time.</p>
 <h2>Decision</h2>
-<p>License under <strong>Apache 2.0</strong>. Track provenance with <strong>DCO</strong> (Developer Certificate of Origin) sign-offs on every commit, not a CLA. Ship <code>LICENSE</code>, <code>NOTICE</code>, and a <code>SECURITY.md</code> from the first commit.</p>
+<h3>1. Outbound license and contribution provenance</h3>
+<p>License Wyrd under <strong>Apache 2.0</strong> — permissive, with an explicit patent grant — so commercial providers can deploy, modify, and build products on it without legal friction. Ship <code>LICENSE</code>, <code>NOTICE</code>, and <code>SECURITY.md</code> from the first commit.</p>
+<p>Track contribution provenance with the <strong>Developer Certificate of Origin (DCO)</strong>, <em>not</em> a <strong>Contributor License Agreement (CLA)</strong>. Both establish that the project has the right to use a contribution, but they differ sharply in cost and in where they put power:</p>
+<ul>
+<li>A <strong>CLA</strong> is a legal agreement each contributor signs — typically once, via a signing bot such as CLA Assistant — granting the project's steward an explicit copyright license, a patent grant, and, in many CLAs, the right to <strong>relicense</strong> the contribution later. (A stronger variant, a Copyright Assignment Agreement, transfers copyright outright.) It gives the steward the cleanest legal footing and the freedom to change the license unilaterally — but at two costs. First, <strong>friction</strong>: a contributor acting for an employer usually has to clear the agreement through legal or management before even a one-line fix can merge, which is exactly what deters the drive-by contributors an open-infrastructure project wants. Second, <strong>concentration of power</strong>: the relicensing right a CLA grants is precisely the lever a single vendor later pulls to go source-available.</li>
+<li>The <strong>DCO</strong> is a lightweight, per-commit attestation originated by the Linux kernel: the contributor adds a <code>Signed-off-by:</code> line certifying they have the right to submit the patch under the project's license. No separate document, no signing ceremony, no legal review for routine work. Contributions are licensed inbound under Apache 2.0, identical to the outbound license (&quot;inbound = outbound&quot;).</li>
+</ul>
+<p>We choose the DCO because the CLA's friction is paid by exactly the contributors we most want, and because the one thing a CLA would buy us — the unilateral right to relicense — is something a sovereignty-first, no-rug-pulls project should deliberately <strong>not</strong> hold. The trade-off is conscious: under the DCO every contributor retains copyright under Apache 2.0, so Wyrd <em>cannot</em> later relicense the project out from under its community. That is the same guarantee this ADR demands of its dependencies (§2: foundation-governed, permissive, un-rug-pullable), turned on Wyrd itself.</p>
+<h3>2. Dependency-selection criteria (inbound)</h3>
+<p>Every external dependency at a pluggable seam — and every component recommended as a <em>default</em> — is evaluated against three tests:</p>
+<ul>
+<li><strong>License.</strong> Permissive and clearly-licensed (MIT / Apache-2.0 / BSD-class) is preferred. Adopter-infecting copyleft (AGPL) and source-available &quot;paywall&quot; licenses (BSL, SSPL, vendor community licenses) are <strong>disqualifying for a default</strong> and must be explicitly justified if used at all.</li>
+<li><strong>Governance.</strong> Foundation- or multi-stakeholder-governed (e.g. CNCF) is preferred over a single vendor who can unilaterally relicense. A permissive license is the safety net: permissively-licensed code is forkable, so a relicense <em>trap</em> is impossible even if the lead vendor changes course.</li>
+<li><strong>Control resilience.</strong> <em>(Sovereignty, framed around control rather than jurisdiction.)</em> A component passes if control over it cannot be withdrawn and you can run it yourself: it must be <strong>forkable</strong> (permissive, ideally foundation-governed, so no single party can relicense it away), <strong>self-hostable</strong> with no forced phone-home and no <em>required</em> managed/hosted service, and — for components that hold data — keep <strong>data residency</strong> under the operator's control. <strong>Vendor nationality is explicitly not a test;</strong> the test is whether control can be withdrawn — a managed, hosted service you cannot self-run fails it regardless of who operates it.</li>
+</ul>
+<p><em>Inspired by the EU Cloud Sovereignty Framework's dimensional decomposition, minus the politics.</em></p>
+<h3>3. Principle</h3>
+<p><strong>Prefer foundation-governed, permissively-licensed components at every pluggable seam.</strong> When a chosen default carries a control-resilience wrinkle, name it; when a more resilient alternative exists, offer it. This makes the audit a standing rule, not a one-time cleanup.</p>
 <h2>Consequences</h2>
 <ul>
-<li>Commercial providers can adopt without legal friction; patent grant included.</li>
-<li>Lower contribution friction than a CLA, sufficient provenance for an Apache-2.0 project.</li>
-<li>The MinIO community (wounded by AGPL + feature-stripping) becomes an addressable audience.</li>
-<li>Trademark/governance (project vs. foundation trajectory) is deferred; the license is not.</li>
+<li>Commercial providers can adopt Wyrd without legal friction; patent grant included. Lower contribution friction than a CLA, with sufficient provenance. The MinIO community (wounded by AGPL + feature-stripping) becomes an addressable audience.</li>
+<li>The three tests turn &quot;we got lucky on most dependencies&quot; into &quot;we have a rule.&quot; This is the higher-value output — more than any single component swap.</li>
+<li>Trademark/governance (project-vs-foundation trajectory for Wyrd itself) is deferred; the license is not.</li>
+</ul>
+<h3>Audit of currently-named dependencies (the three tests applied)</h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Seam</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>etcd</strong></td>
+<td>L5 coordination</td>
+<td><strong>Keep</strong> — Apache-2.0, CNCF-graduated. (Auth CVEs in non-k8s contexts handled as defence-in-depth behind mTLS — ADR-0006.)</td>
+</tr>
+<tr>
+<td><strong>TiKV</strong></td>
+<td>L4 metadata; <strong>new L2 default</strong></td>
+<td><strong>Keep</strong> — Apache-2.0, CNCF-graduated. The answer to the CockroachDB problem.</td>
+</tr>
+<tr>
+<td><strong>TiDB</strong></td>
+<td>L2 default (SQL surface on TiKV)</td>
+<td><strong>Default, with a stated wrinkle</strong> — Apache-2.0; storage core (TiKV) is CNCF-graduated; TiFlash is also Apache-2.0. PingCAP-led (China-HQ). Passes the control-resilience test (Apache-2.0, CNCF-graduated core, forkable, self-hostable); vendor nationality is not a criterion.</td>
+</tr>
+<tr>
+<td><strong>YugabyteDB</strong></td>
+<td>L2 alternative</td>
+<td><strong>Alternative</strong> — core is <strong>100% Apache-2.0</strong> (former enterprise features now included; verified 2025). Only the <em>management platform</em> (YugabyteDB Anywhere) is source-available, which Wyrd does not depend on. Single-vendor-led but forkable (Apache-2.0 core).</td>
+</tr>
+<tr>
+<td><strong>PostgreSQL</strong></td>
+<td>L2 alternative (smaller tier)</td>
+<td><strong>Keep — gold-standard governance / maximal control resilience</strong>: PostgreSQL License (permissive), foundation-governed, <em>un-relicenseable</em>, no controlling vendor. Not natively Spanner-class, so it fits L2 deployments that don't need geo-distributed consensus.</td>
+</tr>
+<tr>
+<td><strong>CockroachDB</strong></td>
+<td>former L2</td>
+<td><strong>Rejected</strong> — source-available (2024), single-vendor-controlled, revenue-capped, forced telemetry. Fails all three tests. Replaced by TiDB/TiKV; kept only as a caveated mention (ADR-0008, building-block view).</td>
+</tr>
+<tr>
+<td><strong>NATS JetStream</strong></td>
+<td>L3 transport</td>
+<td><strong>Keep — and a live cautionary example.</strong> Apache-2.0, CNCF. In 2025 the lead vendor (Synadia) attempted to pull NATS out of CNCF and relicense the server to BSL; it stayed Apache-2.0/CNCF <em>only</em> because CNCF held the trademark and the code was forkable — precisely the protection the principle above buys.</td>
+</tr>
+<tr>
+<td><strong>OpenTelemetry; SPIFFE/SPIRE; Prometheus</strong></td>
+<td>telemetry / PKI</td>
+<td><strong>Keep</strong> — Apache-2.0, CNCF, vendor-neutral.</td>
+</tr>
+<tr>
+<td><strong>Rust toolchain, reed-solomon-simd, redb, prost/protobuf, madsim/turmoil</strong></td>
+<td>implementation</td>
+<td><strong>Keep</strong> — permissive (MIT/Apache-2.0); forkable, so no relicense trap even where single-maintainer (redb).</td>
+</tr>
+<tr>
+<td><strong>Deployment substrate (Kubernetes)</strong></td>
+<td>orchestration</td>
+<td><strong>Audit wording (follow-up).</strong> Kubernetes itself is CNCF/Apache and clean, but <em>managed</em> k8s (EKS/GKE/AKS) is operator-captured — you cannot self-run it — the control trap one layer down. ADR-0010's &quot;no coupling to orchestrator APIs&quot; protects architecturally; the docs should <em>recommend</em> self-hosted k8s, systemd, or any operator-controlled substrate, and flag the managed path as convenient-but-control-compromising.</td>
+</tr>
+<tr>
+<td><strong>Reference observability (Loki/Tempo/Grafana)</strong></td>
+<td>optional reference only</td>
+<td><strong>Note, don't change.</strong> AGPLv3 since 2021, but shipped as an <em>optional reference</em> Wyrd depends on none of (OTel-native, backend-agnostic — ADR-0012), so the AGPL does not reach Wyrd. Note that an operator avoiding AGPL can swap it.</td>
+</tr>
+</tbody>
+</table>
+<h3>Follow-ups (separate changes)</h3>
+<ul>
+<li>Audit the <strong>deployment-substrate wording</strong> (architecture section 7 / ADR-0010) to recommend sovereignty-safe orchestration and flag the managed-hyperscaler path.</li>
+<li>Add the <strong>AGPL note</strong> on the reference observability stack (near ADR-0012).</li>
+<li>Consider naming <strong>YugabyteDB / PostgreSQL</strong> in ADR-0008 itself (it currently names only <code>redb</code> + <code>TiKV</code> concretely).</li>
 </ul>
 
     </article>
