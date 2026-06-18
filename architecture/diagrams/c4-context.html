@@ -51,7 +51,7 @@ graph TB
 
     subgraph deps[&quot;External dependencies&quot;]
         coord[&quot;Coordination service&lt;br/&gt;(etcd, prod)&quot;]
-        cpdb[&quot;Global control-plane DB&lt;br/&gt;(CockroachDB / TiDB)&quot;]
+        cpdb[&quot;Global control-plane DB&lt;br/&gt;(TiDB / TiKV)&quot;]
         otel[&quot;Observability backend&lt;br/&gt;(operator's choice via OTLP)&quot;]
         hw[&quot;Provider compute &amp; storage&lt;br/&gt;(organized into zones)&quot;]
     end
