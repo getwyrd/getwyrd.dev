@@ -47,7 +47,10 @@
 <h2>Design</h2>
 <h3>Scope boundary</h3>
 <p>In scope: S3 PUT/GET (minimal) → client library (chunk + commit) → embedded metadata store (redb) → filesystem chunk store → in-memory coordination, plus the <code>testkit</code> DST harness and the commit-protocol property tests.</p>
-<p>Explicitly <strong>out</strong> of M0 (deferred to the risk-ordered widening in [§9][s9]): erasure coding (<code>replication(1)</code>/<code>none</code> only), networked gRPC D servers, custodians, TiKV, and every cross-zone layer (L2/L3). Their <em>hooks</em> are respected where retrofitting is expensive (see Backward compatibility).</p>
+<p>Explicitly <strong>out</strong> of M0 (deferred to the risk-ordered widening in [§9][s9]): erasure coding (<code>replication(1)</code>/<code>none</code> only), networked gRPC D servers, custodians, TiKV, every cross-zone layer (L2/L3), and <strong>observability / telemetry</strong>. Their <em>hooks</em> are respected where retrofitting is expensive (see Backward compatibility).</p>
+<p>Observability is deliberately <strong>not implemented in M0</strong>: the durability-plane telemetry is emitted by the custodians ([ADR-0011][a11]), so it arrives with them at M3; the instrumentation seam is OpenTelemetry ([ADR-0012][a12]), wired at that point; and M0 is verified by DST, not by metrics. Unlike the append/CAS/watch and version-fence hooks, it needs <strong>no reserved seat now</strong> — attaching telemetry at the custodian is not an expensive retrofit.</p>
+<h3>Deliverable</h3>
+<p>M0's output is a <strong>proof, not a product</strong>: a single binary that runs S3 PUT → four-phase commit → byte-identical GET in one process, plus a <strong>seed-reproducible DST proof that the commit is atomic</strong> (the property tests below), the trait and test scaffold (<code>ChunkStore</code> / <code>MetadataStore</code> / <code>Coordination</code> + <code>testkit</code>) every later milestone attaches to, and the on-disk format fixed (v0/unstable) with a conformance vector. It is a credible, publishable proof-of-concept — <em>the central claim is no longer a claim</em> — even if nothing follows. It is explicitly <strong>not</strong> deployable (no EC, no networked servers, no durability promise); a usable single-zone product is M4.</p>
 <h3>Workspace and crate scaffold (coarse start, [ADR-0016][a16])</h3>
 <p>A Cargo workspace, starting <strong>coarse</strong> and splitting later. Trait boundaries exist from day one even where crate boundaries do not. <code>Cargo.lock</code> is committed (this is an application).</p>
 <table>
@@ -97,6 +100,41 @@
 </tbody>
 </table>
 <p>CI adds <code>cargo build/test/fmt/clippy</code>; the <code>adr-immutability</code> check already exists.</p>
+<h3>Logical view</h3>
+<p>M0 collapses the L1–L5 layer model into a <strong>single process</strong> — a vertical slice through L1, L4, and L5, behind the three trait seams. There is no L2 (namespace/placement) or L3 (cross-zone) yet; the concretes are M0-trivial, but the seams are real from day one.</p>
+<div class="mermaid">
+graph TB
+    client([&quot;S3 client&quot;])
+
+    subgraph proc[&quot;server — single process, one machine&quot;]
+        s3[&quot;S3 PUT/GET&lt;br/&gt;(L1, minimal)&quot;]
+        lib[&quot;Client library&lt;br/&gt;chunk + 4-phase commit (L4)&quot;]
+
+        subgraph traits[&quot;trait seams — fixed at M0&quot;]
+            ms[&quot;MetadataStore&quot;]
+            cs[&quot;ChunkStore&quot;]
+            co[&quot;Coordination&quot;]
+        end
+
+        redb[&quot;redb&lt;br/&gt;(embedded metadata)&quot;]
+        fs[&quot;filesystem&lt;br/&gt;(chunk store)&quot;]
+        mem[&quot;in-memory&quot;]
+        fmt[&quot;chunk-format&lt;br/&gt;(fragment header)&quot;]
+        proto[&quot;proto&lt;br/&gt;(message shapes)&quot;]
+    end
+
+    testkit[&quot;testkit — DST harness&lt;br/&gt;(abstract time/disk, seed runner)&quot;]
+
+    client --&gt;|&quot;PUT / GET&quot;| s3
+    s3 --&gt; lib
+    lib --&gt; ms --&gt; redb
+    lib --&gt; cs --&gt; fs
+    lib --&gt; co --&gt; mem
+    lib -. uses .-&gt; fmt
+    lib -. uses .-&gt; proto
+    testkit -. drives, injects faults .-&gt; lib
+</div>
+<p>Deferred to later milestones, absent from M0: L2 (namespace DB, placement, zone registry), L3 (cross-zone replication, global custodians), networked gRPC D servers, custodians, and erasure coding.</p>
 <h3>Metadata model — redb behind <code>MetadataStore</code> ([§5 L4][s5])</h3>
 <p>Hierarchical <strong>inode + dirent</strong>, not path-as-key, so create writes inode + dirent atomically and rename is a single dirent mutation:</p>
 <ul>
@@ -122,6 +160,38 @@
 <li><strong>S3 PUT/GET</strong> in <code>server</code>: PUT object → client write path; GET → read path (single fragment, since <code>replication(1)</code>). Just enough for an end-to-end test; full S3 semantics are deferred.</li>
 <li><strong>In-memory <code>Coordination</code></strong> behind the trait: discovery / leader election / locks are trivial in one process, but the trait shape is fixed now so etcd drops in later as a composition change.</li>
 </ul>
+<h3>Configuration</h3>
+<p>M0's configuration surface is deliberately small — one process, one machine. Outline of the knobs that exist (the <em>format</em> — file / env / flags — is an implementation detail, not decided here):</p>
+<ul>
+<li><strong>server</strong> — the S3 gateway
+<ul>
+<li><code>listen</code> — bind address for PUT/GET (e.g. <code>127.0.0.1:9000</code>)</li>
+</ul>
+</li>
+<li><strong>metadata</strong> — <code>MetadataStore</code> (redb at M0)
+<ul>
+<li><code>path</code> — the redb database file</li>
+</ul>
+</li>
+<li><strong>chunks</strong> — <code>ChunkStore</code> (filesystem at M0)
+<ul>
+<li><code>dir</code> — the chunk-store root directory</li>
+</ul>
+</li>
+<li><strong>commit</strong> — commit-protocol parameters
+<ul>
+<li><code>pending_lease</code> — expiry on intent-phase chunks (the GC ledger entry)</li>
+</ul>
+</li>
+<li><strong>format</strong> — on-disk format
+<ul>
+<li><code>durability</code> — <code>none</code> | <code>replication(n)</code> | <code>rs(k,m)</code>; <strong>fixed to <code>replication(1)</code>/<code>none</code> at M0</strong>, recorded per chunk</li>
+</ul>
+</li>
+</ul>
+<p><strong>Hardcoded defaults at M0, not yet knobs:</strong> the small-file <strong>inline threshold</strong> and <strong>chunk/stripe size</strong> (the <code>[OPEN]</code> empirical parameters, deferred to measurement) and the <strong>checksum algorithm</strong> (a format-level <code>[TO BE SPECIFIED]</code> decision, carried as an id in the header).</p>
+<p><strong>Not configuration at M0:</strong> backend selection is <strong>code composition in <code>server</code></strong> (redb / filesystem / in-memory), not a runtime flag — swapping a backend is a composition change, not config ([ADR-0008][a8]). Zone/region, replication factor, placement policy, coordination endpoints, and telemetry have no config because L2, networked coordination, and observability are not in M0. The <strong>DST seed</strong> is a test-runner input, not server config.</p>
+<p>The full &quot;same system, configured differently&quot; profile model ([ADR-0014][a14]) and the declarative, API-first management surface ([ADR-0013][a13]) arrive with L2 and the custodians — not at M0. M0 config is just <em>where is the data, what port, how long are leases.</em></p>
 <h3>DST harness + property tests — attach at M0 ([ADR-0009][a9])</h3>
 <p><code>testkit</code> provides abstract time/disk and a single-threaded, seed-reproducible runner. The commit-protocol property tests assert the core invariants:</p>
 <ul>
@@ -129,6 +199,27 @@
 <li>A reader sees either the pre-commit or post-commit version, <strong>never a hybrid</strong>.</li>
 <li><strong>Fault injection</strong>: crash between phases 3 and 4 → the file is either fully visible or not at all, and no committed chunk-map entry references a fragment the sweep would reclaim.</li>
 </ul>
+<h3>Test harness implementation</h3>
+<p>The harness has <strong>two tiers, kept distinct</strong>:</p>
+<ul>
+<li><strong>Tier 1 — DST correctness (<code>testkit</code>), from M0, no containers.</strong> Production logic is written against <code>testkit</code>'s abstract time / disk / (later) network plus the trait seams, then run in a single-threaded, seed-reproducible simulator. <strong>madsim</strong> is the primary runtime — it simulates time, scheduling, network, and randomness ([ADR-0009][a9]). A container is deliberately <em>not</em> used here: it would reintroduce the real clock, scheduler, and network that DST exists to remove, breaking reproducibility. Entry points are <code>cargo test</code> (property tests) and <code>cargo xtask</code> (longer sim campaigns, conformance vectors); it runs on a laptop and in CI.</li>
+<li><strong>Tier 2 — integration against real backends, from M2+, containers.</strong> When the in-process redb/filesystem stores are swapped for networked gRPC D servers, TiKV, and etcd, those services run under docker-compose / testcontainers for (non-deterministic) integration tests, and Jepsen drives adversarial consistency against a real cluster. None of this exists in M0.</li>
+</ul>
+<p>For M0 the only tier is Tier 1: in-process DST on madsim — no containers, no services.</p>
+<h3>Environment, and what is not tested yet</h3>
+<ul>
+<li><strong>Hardware:</strong> a single developer machine — laptop or workstation. Everything is one process (embedded redb, filesystem chunks, in-memory coordination), and DST simulates concurrency and faults deterministically, so M0 needs no cluster, no networked nodes, and no infrastructure. The first hardware beyond a laptop appears at M2 (networked D servers).</li>
+<li><strong>Correctness</strong> is the whole point and is covered above: deterministic simulation (<code>testkit</code>, seed-reproducible), the commit-protocol property tests, fault injection, and the format conformance vectors — all in CI (<code>cargo build/test/fmt/clippy</code>).</li>
+<li><strong>Performance is deliberately out of scope for M0.</strong> DST abstracts time and runs single-threaded, so it proves correctness, not throughput — wall-clock numbers from the simulation are meaningless. Real benchmarks begin at M1 (Reed-Solomon micro-benchmarks in CI); the throughput-scaling claim (architecture §10, scenario Q6) is only measurable at M2+ on real hardware. The empirical open questions (small-file inline threshold, chunk/stripe size) are deferred to those measurements, not guessed now.</li>
+</ul>
+<h3>CI</h3>
+<p>GitHub Actions — the repo's existing platform (<code>adr-immutability</code> and <code>docs</code> workflows already run). M0 adds a <code>ci</code> workflow that is a thin caller of <strong><code>cargo xtask ci</code></strong> (logic in Rust, not YAML, so it runs identically on a laptop — [ADR-0016][a16]), gating every PR on:</p>
+<ul>
+<li><code>cargo fmt --check</code>, <code>cargo clippy -D warnings</code>, <code>cargo build</code>, <code>cargo test</code> — the DST commit-protocol property tests run here, on madsim ([ADR-0009][a9]);</li>
+<li><code>cargo xtask conformance</code> — the <code>chunk-format</code> reader against <code>specs/conformance/</code> ([ADR-0002][a2]);</li>
+<li><strong>DCO</strong> sign-off on every commit and <strong><code>cargo-deny</code></strong> (permissive-license allowlist + RUSTSEC advisories), enforcing [ADR-0003][a3] in CI.</li>
+</ul>
+<p>All on <code>ubuntu-latest</code>, deterministic, with no services or containers (Tier 1). A DST seed that finds a bug is committed as a permanent regression test. The integration tier (containers, Jepsen, benchmarks) arrives with the networked milestones, not M0. The full testing-and-CI strategy is [ADR-0009][a9].</p>
 <h2>Alternatives considered</h2>
 <ul>
 <li><strong>Bottom-up</strong> (all D servers / EC first): rejected by [§4.2][s4] / [ADR-0009][a9] — a vertical slice proves the differentiator sooner and gives every layer a trivial-then-real path.</li>
@@ -167,7 +258,7 @@
 <li>Does the minimal S3 surface stay in <code>server</code> for M0, or warrant a <code>gateway-s3</code> crate immediately?</li>
 <li>redb key encoding (byte order of <code>&lt;id&gt;</code>, dirent name normalization).</li>
 </ul>
-<p>[s4]: ../../architecture/04-solution-strategy.md [s5]: ../../architecture/05-building-block-view.md [s9]: ../../architecture/09-build-order-and-roadmap.md [spec]: ../../specs/chunk-format/v1.md [a2]: ../../adr/0002-spec-first-on-disk-format-only.md [a7]: ../../adr/0007-reserve-append-cas-watch.md [a9]: ../../adr/0009-deterministic-simulation-testing.md [a10]: ../../adr/0010-pluggable-deployment-substrate.md [a15]: ../../adr/0015-consistency-contract.md [a16]: ../../adr/0016-monorepo-and-crate-structure.md</p>
+<p>[s4]: ../../architecture/04-solution-strategy.md [s5]: ../../architecture/05-building-block-view.md [s9]: ../../architecture/09-build-order-and-roadmap.md [spec]: ../../specs/chunk-format/v1.md [a2]: ../../adr/0002-spec-first-on-disk-format-only.md [a7]: ../../adr/0007-reserve-append-cas-watch.md [a9]: ../../adr/0009-deterministic-simulation-testing.md [a10]: ../../adr/0010-pluggable-deployment-substrate.md [a15]: ../../adr/0015-consistency-contract.md [a16]: ../../adr/0016-monorepo-and-crate-structure.md [a3]: ../../adr/0003-apache-2-license-and-dco.md [a8]: ../../adr/0008-tikv-metadata-and-pluggable-backends.md [a11]: ../../adr/0011-durability-telemetry-and-declarative-management.md [a12]: ../../adr/0012-opentelemetry-instrumentation.md [a13]: ../../adr/0013-api-first-management.md [a14]: ../../adr/0014-single-binary-dev-only.md</p>
 
     </article>
   </main>
@@ -190,6 +281,7 @@
 
 <!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
      contain a diagram; empty otherwise. -->
-
+<script src="/assets/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true,theme:"neutral"});</script>
 </body>
 </html>
