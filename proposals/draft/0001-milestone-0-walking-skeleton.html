@@ -235,15 +235,17 @@ graph TB
 <li>The reference <code>chunk-format</code> reader/writer implements [the spec][spec] ([ADR-0019][a19]) and accepts at least one conformance vector in <code>specs/conformance/</code>.</li>
 </ul>
 <h3>Suggested PR sequence (each with its own definition of done)</h3>
+<p>Each step is one PR, tracked under the <strong>M0</strong> milestone (parent tracker in the <code>tracking-issue</code> frontmatter):</p>
 <ol>
-<li>Workspace scaffold + <code>traits</code> + <code>testkit</code> skeleton + CI.</li>
-<li><code>chunk-format</code> encode/decode against the spec ([ADR-0019][a19]) + first conformance vector.</li>
-<li>redb <code>MetadataStore</code> (inode / dirent / ledger) behind the trait.</li>
-<li>Filesystem <code>ChunkStore</code> behind the trait.</li>
-<li>Client library: chunk → write fragment → four-phase commit.</li>
-<li>In-memory <code>Coordination</code>.</li>
-<li>Minimal S3 PUT/GET in <code>server</code> + end-to-end write/read test.</li>
-<li>DST commit-protocol property tests + crash-between-3-and-4 fault injection.</li>
+<li><strong>Workspace scaffold</strong> — <code>traits</code>, <code>proto</code>, <code>testkit</code> skeleton, <code>xtask</code>, and CI (<code>cargo xtask ci</code>, cargo-deny, DCO).</li>
+<li><strong><code>chunk-format</code></strong> encode/decode against the spec ([ADR-0019][a19]) + first conformance vectors.</li>
+<li><strong>redb <code>MetadataStore</code></strong> (inode / dirent / pending ledger / <code>meta:version</code>) behind the trait.</li>
+<li><strong>Filesystem <code>ChunkStore</code></strong> behind the trait.</li>
+<li><strong>Client write/commit path</strong> — the four phases + the minimal test-invoked ledger-sweep.</li>
+<li><strong>Client read path</strong> — chunk map → fragment → checksum verify → return.</li>
+<li><strong>In-memory <code>Coordination</code></strong> behind the trait.</li>
+<li><strong>Minimal S3 PUT/GET</strong> in <code>server</code> + end-to-end write/read test.</li>
+<li><strong>DST property tests</strong> + crash-between-3-and-4 fault injection.</li>
 </ol>
 <h2>Backward compatibility</h2>
 <ul>
