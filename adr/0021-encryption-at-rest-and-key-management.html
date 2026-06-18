@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0021. Encryption at rest and key management — Wyrd</title>
+<meta name="description" content="Section 8.5 named &quot;per-tenant envelope encryption&quot; as an optional feature but never decided the mechanism — where keys live, the key hierarchy, how rotation works, and what &quot;del...">
+<meta property="og:title" content="0021. Encryption at rest and key management — Wyrd">
+<meta property="og:description" content="Section 8.5 named &quot;per-tenant envelope encryption&quot; as an optional feature but never decided the mechanism — where keys live, the key hierarchy, how rotation works, and what &quot;del...">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Proposed · 18.06.2026 23:05</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>0021. Encryption at rest and key management</h1>
+<h2>Context</h2>
+<p>Section 8.5 named &quot;per-tenant envelope encryption&quot; as an optional feature but never decided the mechanism — where keys live, the key hierarchy, how rotation works, and what &quot;delete&quot; means cryptographically. A multi-tenant provider substrate needs a concrete answer: the gap between <em>&quot;we encrypt&quot;</em> and an auditable key lifecycle is exactly where compliance stories fail.</p>
+<p>Constraints fix much of the shape. Single-provider, closed federation (ADR-0005) means keys are <strong>provider-held</strong> — there is no untrusted-operator or cross-org threat model to escrow against. D servers are deliberately dumb and may run on less-trusted storage hardware, so keeping them <strong>ciphertext-only</strong> is what relaxes that trust. The on-disk format is spec-first and versioned (ADR-0002 / ADR-0019), so any encryption marker is a format concern, not an afterthought. And the delete fast-path already leans on crypto-erase (section 6.7), so a key lifecycle that makes that real is owed.</p>
+<h2>Decision</h2>
+<ol>
+<li>
+<p><strong>Envelope encryption, two-level hierarchy.</strong> Bulk data is encrypted with per-object (or per-chunk) <strong>data-encryption keys (DEKs)</strong>; each DEK is wrapped by a per-tenant <strong>key-encryption key (KEK)</strong>; KEKs live in an external <strong>KMS</strong> behind a narrow <code>KeyService</code> trait (provider KMS / Vault / cloud KMS in production; a file-backed stub for dev). The system never persists an unwrapped KEK, and the KMS never sees plaintext data.</p>
+</li>
+<li>
+<p><strong>Crypto stays in the client library; storage stays dumb.</strong> The client encrypts on the write path (before erasure coding) and decrypts after reconstruction — encryption is a thick-client concern, like EC (section 8.6). D servers and the metadata store hold only ciphertext, the wrapped DEK, and a key-version id; the wrapped DEK travels in the chunk / metadata records, marked in the on-disk format (ADR-0019).</p>
+</li>
+<li>
+<p><strong>Rotation is re-wrap, not re-encrypt.</strong> Rotating a tenant KEK re-wraps its DEKs — a cheap, metadata-only operation; the bulk ciphertext is never touched. True DEK rotation (re-encryption) is a background custodian job, reserved for the rare cases that require it.</p>
+</li>
+<li>
+<p><strong>Crypto-erase is a first-class delete mode.</strong> Destroying a tenant or object KEK renders all ciphertext under it permanently unrecoverable, independent of GC — the section 6.7 delete fast-path and a defensible right-to-erasure story (section 8.3).</p>
+</li>
+<li>
+<p><strong>Optional, per-tenant, off by default in dev.</strong> Encryption is a per-tenant policy, like replication factor; the single-binary / dev profile defaults to none. The AEAD cipher (e.g. AES-256-GCM or XChaCha20-Poly1305) and whether the unit is per-object or per-chunk are <strong>[OPEN]</strong>, settled with the format work.</p>
+</li>
+</ol>
+<h2>Consequences</h2>
+<ul>
+<li>Storage-hardware trust is relaxed: a stolen disk or a compromised D server yields only ciphertext.</li>
+<li>Delete gains a cryptographic guarantee that does not wait on GC — auditable erasure for compliance.</li>
+<li>The <code>KeyService</code> seam keeps the KMS pluggable, consistent with the narrow-trait dependency rule (ADR-0010).</li>
+<li>Cost: the client library and the on-disk format carry encryption metadata from the start — a reserved seat even when encryption is off — and key-management operational burden (rotation, KMS availability) lands on the operator.</li>
+<li>The KMS sits on the read/write path for encrypted tenants, so its latency and availability matter; bounded-lifetime <strong>DEK caching</strong> mitigates, and KMS unavailability must <strong>fail closed</strong> without compromising the durability of the (still-encrypted) data. Caching policy is <strong>[OPEN]</strong>.</li>
+<li><strong>[OPEN]</strong> key-hierarchy depth for very large tenants (whether a per-bucket intermediate key is warranted) and HSM-backing for KEKs.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>

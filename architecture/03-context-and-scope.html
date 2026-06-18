@@ -104,6 +104,7 @@
 </tr>
 </tbody>
 </table>
+<p>All inbound interfaces authenticate at the access layer (section 8.5): OIDC for the Drive / WebDAV / SDK surfaces, S3 Signature V4 for the S3 API, OIDC + mTLS for management. Internal service-to-service traffic is mTLS under the provider CA (ADR-0005).</p>
 <h2>3.3 What is explicitly out of context</h2>
 <ul>
 <li>Cross-provider or untrusted-operator federation (ADR-0005).</li>

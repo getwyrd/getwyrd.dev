@@ -145,6 +145,11 @@
 <td>A full SQL store (TiDB, YugabyteDB) is heavy for L2</td>
 <td>Justified because L2 is small and off the data path; revisit only if it proves a bottleneck</td>
 </tr>
+<tr>
+<td>Key management as a new failure domain</td>
+<td>Encryption puts the KMS on the read/write path for encrypted tenants; a KMS outage or a lost KEK is catastrophic</td>
+<td>Pluggable <code>KeyService</code>; bounded-lifetime DEK caching; fail closed on KMS loss without losing ciphertext durability; KEK backups independent of the system (ADR-0021)</td>
+</tr>
 </tbody>
 </table>
 <h3>Conscious exclusions (not debt — decisions)</h3>
