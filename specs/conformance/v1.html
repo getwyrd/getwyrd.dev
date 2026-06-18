@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Conformance vectors — Wyrd</title>
-<meta name="description" content="Test vectors that any implementation of the on-disk format MUST satisfy. They live with the spec, in the repository, so the spec and the reference implementation stay honest wit...">
+<meta name="description" content="Test vectors that any implementation of the on-disk format ) MUST satisfy. They live with the spec, in the repository, so the spec and the reference implementation stay honest w...">
 <meta property="og:title" content="Conformance vectors — Wyrd">
-<meta property="og:description" content="Test vectors that any implementation of the on-disk format MUST satisfy. They live with the spec, in the repository, so the spec and the reference implementation stay honest wit...">
+<meta property="og:description" content="Test vectors that any implementation of the on-disk format ) MUST satisfy. They live with the spec, in the repository, so the spec and the reference implementation stay honest w...">
 <meta property="og:type" content="article">
 <link rel="stylesheet" href="/assets/style.css">
 </head>
@@ -41,8 +41,9 @@
 <blockquote>
 <p><strong>Status: DRAFT — normative; tracks chunk-format v1 (v0, unstable).</strong> Uses <a href="https://www.rfc-editor.org/rfc/rfc2119">RFC 2119</a> keywords: MUST, SHOULD, MAY.</p>
 </blockquote>
-<p>Test vectors that any implementation of the on-disk format (<code>../chunk-format/v1.md</code>) MUST satisfy. They live <em>with</em> the spec, in the repository, so the spec and the reference implementation stay honest with each other mechanically: the <code>chunk-format</code> crate is run against these vectors in CI (<code>cargo xtask conformance</code>).</p>
-<h2>Layout (to be populated during Milestone 0–1)</h2>
+<p>Test vectors that any implementation of the on-disk format (<code>../chunk-format/v1.md</code>, decided in <a href="/adr/0019-chunk-format-layout.html">ADR-0019</a>) MUST satisfy. They live <em>with</em> the spec, in the repository, so the spec and the reference implementation stay honest with each other mechanically: the <code>chunk-format</code> crate is run against these vectors in CI (<code>cargo xtask conformance</code>).</p>
+<h2>Layout</h2>
+<p>The vectors below are produced and checked in during <strong>Milestone 0</strong> (proposal 0001, step M0.2): the <code>chunk-format</code> crate lands the first valid and invalid vectors and wires <code>cargo xtask conformance</code> into CI.</p>
 <pre><code>conformance/
   vectors/
     v1/
