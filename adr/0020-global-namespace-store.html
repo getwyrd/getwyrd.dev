@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0020. Global namespace store: NamespaceStore trait and TiDB default — Wyrd</title>
+<meta name="description" content="The L2 global control plane holds the system&#x27;s globally-authoritative truth — directory tree, file→home-zone mapping, ACLs, sharing, quotas, the zone registry, the replica catal...">
+<meta property="og:title" content="0020. Global namespace store: NamespaceStore trait and TiDB default — Wyrd">
+<meta property="og:description" content="The L2 global control plane holds the system&#x27;s globally-authoritative truth — directory tree, file→home-zone mapping, ACLs, sharing, quotas, the zone registry, the replica catal...">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Proposed · 18.06.2026 19:20</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>0020. Global namespace store: NamespaceStore trait and TiDB default</h1>
+<h2>Context</h2>
+<p>The L2 global control plane (section 5) holds the system's globally-authoritative truth — directory tree, file→home-zone mapping, ACLs, sharing, quotas, the zone registry, the replica catalog. It is the one heavy external dependency the architecture names but never <em>decides</em>: ADR-0008 covers the <strong>zonal</strong> <code>MetadataStore</code> (L4 inode/dirent/chunk-map, linearizable within one zone), and nothing covers L2. The de-Cockroaching note in section 5 even attributed L2's seam to <code>MetadataStore</code> (ADR-0008) — a tell that the real seam was missing.</p>
+<p>L2's demanded capability is specific, strong, and different from L4's: namespace operations must be <strong>linearizable globally</strong> (section 8.1 — a create / rename / delete / share is visible in every zone once acknowledged; no &quot;lost just-created&quot; or &quot;resurrected deleted&quot; file). That needs a geo-distributed, externally-consistent transactional store with multi-key transactions and a monotonic global commit version. It is also <em>tiny</em> (metadata about metadata — kilobytes per file) and off the data path, so the operational weight of such a store is affordable (section 10).</p>
+<p>Leaving L2 as a bare product name violates the replaceability goal (section 1.3, goal 5) and the dependency rule (ADR-0010): every backend sits behind a narrow trait so only <code>server</code> knows the concrete. L2 was the lone exception. Which store fills it is governed by the dependency-selection tests (ADR-0003) — license, governance, control-resilience — not by vendor.</p>
+<h2>Decision</h2>
+<ol>
+<li>
+<p><strong>Define a narrow <code>NamespaceStore</code> trait</strong> — the L2 analog of <code>MetadataStore</code>. Its contract is a <em>capability</em>, not a product: globally-linearizable multi-key transactions over the namespace keyspace (path resolution, atomic inode+dirent create, atomic rename, delete, list), plus a <strong>monotonic global commit version</strong> the consistency fence reads (ADR-0015). The architecture depends only on this trait; <code>server</code> wires the concrete (ADR-0010).</p>
+</li>
+<li>
+<p><strong>Default backend: TiDB</strong> — the SQL surface over the TiKV stack already chosen for L4 (ADR-0008). It is Apache-2.0 and CNCF-graduated (passes ADR-0003); it reuses the L4 storage substrate, so a provider operates <em>one</em> engine family rather than two; it delivers geo-distributed external consistency, multi-key transactions, and a global commit timestamp suited to the version fence; and its SQL surface fits the relational namespace (tree, ACLs, sharing, quotas) ergonomically.</p>
+</li>
+<li>
+<p><strong>Alternatives behind the trait:</strong> <strong>YugabyteDB</strong> (Apache-2.0, PostgreSQL-compatible) as a second fully-open option; <strong>PostgreSQL</strong> for single-region / small / dev (not natively geo-distributed-strong, so not a fleet default). <strong>CockroachDB</strong> fits the trait but is <strong>not</strong> a default — its 2024 move to a source-available (non-OSI) license fails the ADR-0003 license test.</p>
+</li>
+<li>
+<p><strong>L2 and L4 are distinct deployments, not one store.</strong> They may share the TiKV family but differ in <em>scope of consistency</em>: L4 is linearizable <strong>within one zone</strong> (the commit point); L2 is linearizable <strong>globally across regions</strong>. The two traits stay separate because conflating them would either burden L4 with global consensus or under-constrain L2.</p>
+</li>
+<li>
+<p><strong>Below the multi-zone tier there is no separate L2.</strong> In a single-zone deployment the namespace <em>is</em> the zonal store: <code>NamespaceStore</code> is backed by the same embedded redb as L4 in the single-binary and small profiles, and becomes a distinct geo-distributed TiDB deployment only at the provider-fleet tier. The global control plane is therefore a composition choice — consistent with the build order placing L2/L3 last (section 9).</p>
+</li>
+</ol>
+<h2>Consequences</h2>
+<ul>
+<li>The replaceability principle now covers the architecture's largest external dependency; &quot;swap the namespace store&quot; is a composition change in <code>server</code>, not a refactor.</li>
+<li>One storage-engine family (TiKV) spans L2 and L4 in production — less operational surface, shared tooling and skills — while the trait preserves the exit.</li>
+<li>The single-binary / dev profile gains a real L2 story (folded into redb) instead of an unstated gap; what is tested locally still exercises the namespace path.</li>
+<li>The contract names the one capability L2 truly needs — globally-linearizable multi-key transactions plus a global version — keeping a non-SQL backend (FoundationDB-class) open if SQL ergonomics ever stop earning their operational weight.</li>
+<li>A second trait to keep honest under DST (ADR-0009): the global-consistency semantics must be simulatable and pinned by at least two implementations before any embedded-global backend is trusted — the rule already applied to coordination (openraft) and metadata.</li>
+<li><strong>[OPEN]</strong> the exact <code>NamespaceStore</code> method set, and whether placement / zone-registry / replica-catalog are records inside it or dedicated services over it.</li>
+<li><strong>[OPEN]</strong> whether cross-zone sharing (a dirent pointing at a remote inode) resolves through L2 alone or needs a cross-zone transaction.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>

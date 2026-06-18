@@ -96,8 +96,8 @@ L5  Bootstrap &amp; coordination  service discovery, leader election, locks, con
 <tbody>
 <tr>
 <td>Global namespace DB</td>
-<td>TiDB/TiKV (Spanner-class; Apache-2.0, CNCF)</td>
-<td>Directory tree, file→home-zone mapping, ACLs, sharing, quotas. Synchronously consensus-replicated.</td>
+<td>redb (single-zone) / TiDB (multi-region), behind <code>NamespaceStore</code> trait (ADR-0020)</td>
+<td>Directory tree, file→home-zone mapping, ACLs, sharing, quotas. Globally linearizable, synchronously geo-replicated.</td>
 </tr>
 <tr>
 <td>Placement service</td>
@@ -117,7 +117,7 @@ L5  Bootstrap &amp; coordination  service discovery, leader election, locks, con
 </tbody>
 </table>
 <p>Holds <em>metadata about metadata</em> — kilobytes per file. Consulted on namespace and placement operations (create, rename, share, delete, &quot;where do I read this&quot;), which are rare relative to data operations and ideally cached by clients.</p>
-<p>The default L2 backend is the Apache-2.0, CNCF <strong>TiKV</strong> stack — <strong>TiDB</strong> for the SQL surface over it — with <strong>YugabyteDB</strong> or <strong>PostgreSQL</strong> as alternatives behind the <code>MetadataStore</code> trait (ADR-0008). CockroachDB is Spanner-class and works as a backend, but it is <strong>not</strong> a default: it moved to a source-available (non-OSI) licence in 2024, which is at odds with the project's fully-open, sovereignty-friendly substrate goal.</p>
+<p>The default L2 backend is the Apache-2.0, CNCF <strong>TiKV</strong> stack — <strong>TiDB</strong> for the SQL surface over it — with <strong>YugabyteDB</strong> or <strong>PostgreSQL</strong> as alternatives behind the <code>NamespaceStore</code> trait (ADR-0020). CockroachDB is Spanner-class and works as a backend, but it is <strong>not</strong> a default: it moved to a source-available (non-OSI) licence in 2024, which is at odds with the project's fully-open, sovereignty-friendly substrate goal.</p>
 <hr />
 <h2>L3 — Cross-zone replication</h2>
 <p>Turns independent single-datacenter systems into one geographically distributed system, without ever sitting on the foreground write path.</p>
@@ -248,7 +248,7 @@ L5  Bootstrap &amp; coordination  service discovery, leader election, locks, con
 <tr>
 <td>Pluggability seams</td>
 <td>trait definitions, no impls</td>
-<td><code>traits</code> (<code>ChunkStore</code>, <code>MetadataStore</code>, <code>Coordination</code>)</td>
+<td><code>traits</code> (<code>ChunkStore</code>, <code>MetadataStore</code>, <code>NamespaceStore</code>, <code>Coordination</code>)</td>
 </tr>
 <tr>
 <td>Telemetry</td>
