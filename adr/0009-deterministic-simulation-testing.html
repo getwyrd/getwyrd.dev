@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>0009. Deterministic simulation testing as first-class — Wyrd</title>
+<title>0009. Testing strategy — Wyrd</title>
 <meta name="description" content="The project&#x27;s pitch is a provably-atomic commit protocol. The credibility engine for that claim is the FoundationDB-style methodology: run the entire zone — metadata, D servers,...">
-<meta property="og:title" content="0009. Deterministic simulation testing as first-class — Wyrd">
+<meta property="og:title" content="0009. Testing strategy — Wyrd">
 <meta property="og:description" content="The project&#x27;s pitch is a provably-atomic commit protocol. The credibility engine for that claim is the FoundationDB-style methodology: run the entire zone — metadata, D servers,...">
 <meta property="og:type" content="article">
 <link rel="stylesheet" href="/assets/style.css">
@@ -37,16 +37,21 @@
   <main>
     <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
     <article class="prose">
-<h1>0009. Deterministic simulation testing as first-class</h1>
+<h1>0009. Testing strategy</h1>
 <h2>Context</h2>
-<p>The project's pitch is a provably-atomic commit protocol. The credibility engine for that claim is the FoundationDB-style methodology: run the entire zone — metadata, D servers, custodians, faults, clock skew — in a single-threaded simulated world where every bug reproduces from a seed. The Rust ecosystem (madsim, turmoil) supports this well. The constraint it imposes — components written against abstract time/network/disk traits — is nearly impossible to retrofit.</p>
+<p>The project's pitch is a provably-atomic commit protocol. The credibility engine for that claim is the FoundationDB-style methodology: run the entire zone — metadata, D servers, custodians, faults, clock skew — in a single-threaded simulated world where every bug reproduces from a seed. The Rust ecosystem (madsim, turmoil) supports this well. The constraint it imposes — components written against abstract time/network/disk traits — is nearly impossible to retrofit, so it must be a day-one commitment. And a testing strategy is only as good as its enforcement: how the tests run in CI is part of the same decision.</p>
 <h2>Decision</h2>
-<p>Treat deterministic simulation testing (DST) as a first-class architectural principle, not a test-time afterthought. Components are written against abstract time/network/disk abstractions in a <code>testkit</code> crate that the others test <em>against</em>. The DST harness and the commit-protocol property tests attach at Milestone 0 and grow with the system. Jepsen-style fault injection begins as soon as there is a networked path.</p>
+<p><strong>Deterministic simulation testing (DST) is the spine, from Milestone 0.</strong> Components are written against abstract time/network/disk abstractions in a <code>testkit</code> crate that the rest test <em>against</em>. The DST harness and the commit-protocol property tests attach at M0 and grow with the system. Jepsen-style fault injection begins as soon as there is a networked path.</p>
+<p><strong>Tooling: madsim is the primary runtime.</strong> madsim simulates time, scheduling, network, and randomness — the whole runtime — and is therefore the constraint that shapes every async pattern in the code; turmoil may supplement network-specific scenarios. The DST tier runs in-process and is <strong>never containerised</strong>: a container reintroduces the real clock, scheduler, and network that DST exists to remove, breaking seed-reproducibility. It runs as <code>cargo test</code> / <code>cargo xtask</code>, on a laptop and in CI.</p>
+<p><strong>Two tiers, kept distinct.</strong> (1) <em>DST correctness</em> — in-process, deterministic, seed-reproducible, from M0, no containers. (2) <em>Integration, Jepsen, and performance</em> — real networked backends (gRPC D servers, TiKV, etcd) under containers/VMs, non-deterministic, from the first networked milestone (M2). Tier 2 validates that the abstractions Tier 1 simulates match reality; it complements DST, it does not replace it.</p>
+<p><strong>CI runs and enforces the strategy — GitHub Actions, <code>xtask</code>-driven.</strong> CI logic lives in <code>cargo xtask</code> (ADR-0016), not YAML, so the same checks run on a laptop; the existing <code>adr-immutability</code> and <code>docs</code> workflows already follow this shape. Every pull request gates on <code>cargo fmt --check</code> / <code>clippy -D warnings</code> / <code>build</code> / <code>test</code> (the DST property tests run here), <code>cargo xtask conformance</code> (the format reader against <code>specs/conformance/</code>, ADR-0002), <strong>DCO</strong> sign-off (ADR-0003 §1), and <strong><code>cargo-deny</code></strong> — a permissive-license allowlist denying AGPL/BSL/SSPL, plus <code>cargo-audit</code> (RUSTSEC advisories) — which makes the automatable part of the dependency-selection license test a machine-checked wall (ADR-0003 §2). The deterministic tier runs on GitHub-hosted runners every PR; Tier 2 runs from M2 on nightly/heavier runners. <code>Cargo.lock</code> is committed for reproducibility (ADR-0016), and <strong>a DST seed that finds a bug is committed as a permanent regression test</strong> (the FoundationDB / TigerBeetle pattern).</p>
 <h2>Consequences</h2>
 <ul>
-<li>The atomicity claim is backed by reproducible, seed-driven fault tests.</li>
-<li>Interface shapes are constrained from day one (must be simulatable) — accepted, because retrofitting is impractical.</li>
+<li>The atomicity claim is backed by reproducible, seed-driven fault tests, and the rules around it — DCO, the dependency-license wall, format conformance, ADR immutability — are machine-enforced in CI rather than honour-system; a contribution that breaks one fails the build.</li>
+<li>Interface shapes are constrained from day one (must be simulatable) and async patterns are constrained to the madsim runtime — accepted, because retrofitting determinism is impractical.</li>
 <li><code>testkit</code> is a real dependency, not a helper, so DST does not rot as code grows.</li>
+<li>The container question is settled: the correctness tier never uses containers; containers/VMs belong only to the non-deterministic integration tier (M2+).</li>
+<li>CI logic in <code>cargo xtask</code> is runnable locally and not locked to GitHub; the <code>cargo-deny</code> license allowlist is a small list to maintain, accepted as the mechanism that makes ADR-0003's license test real.</li>
 </ul>
 
     </article>
