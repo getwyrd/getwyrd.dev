@@ -39,7 +39,7 @@
     <article class="prose">
 <h1>Proposal: Milestone 0 — the walking skeleton (implementation plan)</h1>
 <blockquote>
-<p>This is the bootstrap proposal: the implementation plan for the project's first vertical slice. It is filed as a proposal because the template fields map cleanly onto an implementation plan and the process is deliberately lightweight this early (see <code>../README.md</code>). It records <em>how</em> M0 is built; the <em>why</em> of the architecture lives in the ADRs it references.</p>
+<p>This is the bootstrap proposal: the implementation plan for the project's first vertical slice. It is filed as a proposal because the template fields map cleanly onto an implementation plan and the process is deliberately lightweight this early (see <code>../README.md</code>). It records <em>how</em> M0 is built; the <em>why</em> of the architecture lives in the ADRs it references. M0 is the first slice of the whole <a href="/proposals/draft/0002-implementation-arc.html">implementation arc</a> (proposal 0002), which orders every milestone it begins.</p>
 </blockquote>
 <h2>Motivation</h2>
 <p>Milestone 0 proves the <strong>commit protocol — the entire differentiator</strong> — end to end in a single process: one atomic write and one read, with the commit shown atomic under fault injection in simulation. Per the build strategy ([architecture §4.2][s4], [§9][s9]) this is a <strong>vertical slice</strong>, not bottom-up: the layers that matter for one real operation, wired thinly, then widened by risk in later milestones.</p>
@@ -248,16 +248,18 @@ graph TB
 <h2>Backward compatibility</h2>
 <ul>
 <li><strong>On-disk format</strong>: the byte layout is fixed by [ADR-0019][a19] / [the spec][spec] (still <strong>v0 / unstable</strong> until validated, then stamped <code>v1</code>); M0 implements it. No existing data to migrate.</li>
-<li><strong>Deferred-with-reserved-seats</strong> honored now because retrofitting is expensive ([§9][s9]): append/CAS/watch primitives ([ADR-0007][a7]) accommodated by the ledger + schema shape; the <code>meta:version</code> fence counter reserved ([ADR-0015][a15]); trait seams for etcd/TiKV/openraft.</li>
+<li><strong>Deferred-with-reserved-seats</strong> honored now because retrofitting is expensive ([§9][s9]): append/CAS/watch primitives ([ADR-0007][a7]) accommodated by the ledger + schema shape; the <code>meta:version</code> fence counter reserved ([ADR-0015][a15]); trait seams for etcd/TiKV/openraft; and the chunk format's <strong>encryption reservation</strong> (<code>flags</code>, <code>encryption_scheme</code>, header extension), which the M0 writer fills with zeros ([ADR-0019][a19], [ADR-0021][a21]).</li>
 <li><strong>API / deployments</strong>: none yet, so nothing to stay compatible with.</li>
 </ul>
 <h2>Open questions</h2>
+<p>All of M0's originally-open questions are now dispositioned (cf. proposal 0002's open-questions triage):</p>
 <ul>
-<li>Small-file <strong>inline threshold</strong> ([§5][s5] mentions inlining): implement in M0 or defer to the EC widening step?</li>
-<li>Does the minimal S3 surface stay in <code>server</code> for M0, or warrant a <code>gateway-s3</code> crate immediately?</li>
-<li>redb key encoding (byte order of <code>&lt;id&gt;</code>, dirent name normalization).</li>
+<li><strong>Small-file inline threshold</strong> ([§5][s5]) — <strong>deferred to measurement</strong> (empirical; set against M1+ benchmarks), so it is <em>not</em> implemented in M0.</li>
+<li><strong>Minimal S3 in <code>server</code> vs a <code>gateway-s3</code> crate</strong> — <strong>combined <code>server</code> at M0</strong>, split later under the crate-evolution rule ([ADR-0016][a16]).</li>
+<li><strong>redb key encoding</strong> (byte order of <code>&lt;id&gt;</code>, dirent name normalization) — <strong>settled during M0</strong> as an implementation detail of the first metadata backend, recorded in-code and in the architecture doc.</li>
 </ul>
-<p>[s4]: ../../architecture/04-solution-strategy.md [s5]: ../../architecture/05-building-block-view.md [s9]: ../../architecture/09-build-order-and-roadmap.md [spec]: ../../specs/chunk-format/v1.md [a2]: ../../adr/0002-spec-first-on-disk-format-only.md [a7]: ../../adr/0007-reserve-append-cas-watch.md [a9]: ../../adr/0009-deterministic-simulation-testing.md [a10]: ../../adr/0010-pluggable-deployment-substrate.md [a15]: ../../adr/0015-consistency-contract.md [a16]: ../../adr/0016-monorepo-and-crate-structure.md [a3]: ../../adr/0003-apache-2-license-and-dco.md [a8]: ../../adr/0008-tikv-metadata-and-pluggable-backends.md [a11]: ../../adr/0011-durability-telemetry-and-declarative-management.md [a12]: ../../adr/0012-opentelemetry-instrumentation.md [a13]: ../../adr/0013-api-first-management.md [a14]: ../../adr/0014-single-binary-dev-only.md [a19]: ../../adr/0019-chunk-format-layout.md [a20]: ../../adr/0020-global-namespace-store.md</p>
+<p>No open question blocks M0.</p>
+<p>[s4]: ../../architecture/04-solution-strategy.md [s5]: ../../architecture/05-building-block-view.md [s9]: ../../architecture/09-build-order-and-roadmap.md [spec]: ../../specs/chunk-format/v1.md [a2]: ../../adr/0002-spec-first-on-disk-format-only.md [a7]: ../../adr/0007-reserve-append-cas-watch.md [a9]: ../../adr/0009-deterministic-simulation-testing.md [a10]: ../../adr/0010-pluggable-deployment-substrate.md [a15]: ../../adr/0015-consistency-contract.md [a16]: ../../adr/0016-monorepo-and-crate-structure.md [a3]: ../../adr/0003-apache-2-license-and-dco.md [a8]: ../../adr/0008-tikv-metadata-and-pluggable-backends.md [a11]: ../../adr/0011-durability-telemetry-and-declarative-management.md [a12]: ../../adr/0012-opentelemetry-instrumentation.md [a13]: ../../adr/0013-api-first-management.md [a14]: ../../adr/0014-single-binary-dev-only.md [a19]: ../../adr/0019-chunk-format-layout.md [a20]: ../../adr/0020-global-namespace-store.md [a21]: ../../adr/0021-encryption-at-rest-and-key-management.md</p>
 
     </article>
   </main>
