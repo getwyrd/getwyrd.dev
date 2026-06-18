@@ -86,6 +86,7 @@
 <li><strong>The single-binary / NAS-class profile is for development and evaluation only</strong>, not a supported production tier (ADR-0014). Production durability begins at the real multi-node backends with proper failure-domain separation.</li>
 <li>The system provides storage primitives. Application-level concerns (collaborative-editing merge logic, OT/CRDT engines) are out of scope, though the storage primitives needed to support them (atomic append, compare-and-set, change notification) are reserved from the start (ADR-0007).</li>
 </ul>
+<p>These and the other deliberate exclusions are catalogued in section 11 (conscious exclusions).</p>
 
     </article>
   </main>

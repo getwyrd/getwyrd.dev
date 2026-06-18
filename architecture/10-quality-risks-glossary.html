@@ -49,6 +49,7 @@
 <th>#</th>
 <th>Scenario</th>
 <th>Measure</th>
+<th>Goal</th>
 </tr>
 </thead>
 <tbody>
@@ -56,50 +57,59 @@
 <td>Q1</td>
 <td>A D server is lost from a zone</td>
 <td>All affected chunks return to full redundancy within time-to-repair budget T, with no read errors during repair (reads reconstruct from survivors)</td>
+<td>1</td>
 </tr>
 <tr>
 <td>Q2</td>
 <td>Silent bit rot corrupts a fragment</td>
 <td>Scrubber detects it within scrub-cycle period P, before the data is needed; reconstruction follows</td>
+<td>1</td>
 </tr>
 <tr>
 <td>Q3</td>
 <td>A write is interrupted at any point</td>
 <td>No torn state observable; either the old version or the new, never a hybrid; orphaned fragments collected by GC</td>
+<td>1</td>
 </tr>
 <tr>
 <td>Q4</td>
 <td>A zone is lost entirely</td>
 <td>Under-replicated files re-replicated from survivors within budget; bounded by cross-region bandwidth</td>
+<td>1</td>
 </tr>
 <tr>
 <td>Q5</td>
 <td>Concurrent writers to the same file</td>
 <td>Exactly one commit wins (version conflict); the other retries or fails cleanly</td>
+<td>1</td>
 </tr>
 <tr>
 <td>Q6</td>
 <td>Aggregate write throughput vs. cluster size</td>
 <td>Scales close to linearly with D-server count, divided by EC amplification (~1.5× for RS(6,3))</td>
+<td>2</td>
 </tr>
 <tr>
 <td>Q7</td>
 <td>Small-file (sub-threshold) workload</td>
 <td>Dominated by metadata-op rate, not byte rate; served by the inline path; scales with the metadata tier</td>
+<td>2</td>
 </tr>
 <tr>
 <td>Q8</td>
 <td>Rolling upgrade across a version-skewed fleet</td>
-<td>No downtime, no data errors, neighbors interoperate across one version gap</td>
+<td>No downtime, no data errors, neighbors interoperate across one version gap (section 8.7)</td>
+<td>3</td>
 </tr>
 <tr>
 <td>Q9</td>
 <td>Operator drains a D server</td>
 <td>Data evacuated while maintaining redundancy and failure-domain invariants throughout; resumable; observable progress</td>
+<td>3</td>
 </tr>
 </tbody>
 </table>
-<p>These belong in CI as load/fault tests where feasible (Q1–Q3, Q5–Q7) and in the DR runbook drills otherwise (Q4, Q8, Q9).</p>
+<p>These belong in CI as load/fault tests where feasible (Q1–Q3, Q5–Q7) and in the DR runbook drills otherwise (Q4, Q8, Q9). Goals 4 (scale range) and 5 (replaceability) are validated <em>structurally</em> — the same binary running every deployment profile (section 7) and backend swaps as composition tests — rather than by a load/fault scenario.</p>
 <h2>11. Risks and technical debt</h2>
 <table>
 <thead>
@@ -157,6 +167,8 @@
 <li>Cross-provider / untrusted federation (ADR-0005) — reversible, with stated cost.</li>
 <li>Full POSIX semantics over EC storage (FUSE is second-class).</li>
 <li>Single-binary as a production tier (ADR-0014).</li>
+<li>Application-level logic (collaborative-editing merge / OT / CRDT) — only the storage primitives are in scope, with append / CAS / watch reserved (ADR-0007).</li>
+<li>The observability storage / visualization stack — shipped as a reference, never a dependency the binary is aware of (ADR-0012).</li>
 </ul>
 <h2>12. Glossary</h2>
 <table>
@@ -174,6 +186,10 @@
 <tr>
 <td>Zone</td>
 <td>One datacenter/region's complete L4+L5 stack. The unit of atomicity and intra-provider federation.</td>
+</tr>
+<tr>
+<td>Control plane</td>
+<td>L2 specifically — the global namespace, placement, and zone registry (section 5). Distinct from the <em>management surface</em> (the operator API, ADR-0013), which is occasionally also called &quot;control&quot;.</td>
 </tr>
 <tr>
 <td>D server</td>
