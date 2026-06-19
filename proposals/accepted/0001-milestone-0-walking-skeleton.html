@@ -29,7 +29,7 @@
 <div class="wrap">
   <header class="doc-header">
     <p class="doc-class">Enhancement Proposal</p>
-    <p class="doc-meta">Status: draft · 13.06.2026 12:16</p>
+    <p class="doc-meta">Status: accepted · 13.06.2026 12:16</p>
   </header>
 </div>
 
@@ -39,7 +39,7 @@
     <article class="prose">
 <h1>Proposal: Milestone 0 — the walking skeleton (implementation plan)</h1>
 <blockquote>
-<p>This is the bootstrap proposal: the implementation plan for the project's first vertical slice. It is filed as a proposal because the template fields map cleanly onto an implementation plan and the process is deliberately lightweight this early (see <code>../README.md</code>). It records <em>how</em> M0 is built; the <em>why</em> of the architecture lives in the ADRs it references. M0 is the first slice of the whole <a href="/proposals/draft/0002-implementation-arc.html">implementation arc</a> (proposal 0002), which orders every milestone it begins.</p>
+<p>This is the bootstrap proposal: the implementation plan for the project's first vertical slice. It is filed as a proposal because the template fields map cleanly onto an implementation plan and the process is deliberately lightweight this early (see <code>../README.md</code>). It records <em>how</em> M0 is built; the <em>why</em> of the architecture lives in the ADRs it references. M0 is the first slice of the whole <a href="/proposals/accepted/0002-implementation-arc.html">implementation arc</a> (proposal 0002), which orders every milestone it begins.</p>
 </blockquote>
 <h2>Motivation</h2>
 <p>Milestone 0 proves the <strong>commit protocol — the entire differentiator</strong> — end to end in a single process: one atomic write and one read, with the commit shown atomic under fault injection in simulation. Per the build strategy ([architecture §4.2][s4], [§9][s9]) this is a <strong>vertical slice</strong>, not bottom-up: the layers that matter for one real operation, wired thinly, then widened by risk in later milestones.</p>
