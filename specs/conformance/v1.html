@@ -43,7 +43,7 @@
 </blockquote>
 <p>Test vectors that any implementation of the on-disk format (<code>../chunk-format/v1.md</code>, decided in <a href="/adr/0019-chunk-format-layout.html">ADR-0019</a>) MUST satisfy. They live <em>with</em> the spec, in the repository, so the spec and the reference implementation stay honest with each other mechanically: the <code>chunk-format</code> crate is run against these vectors in CI (<code>cargo xtask conformance</code>).</p>
 <h2>Layout</h2>
-<p>The vectors below are produced and checked in during <strong>Milestone 0</strong> (proposal 0001, step M0.2): the <code>chunk-format</code> crate lands the first valid and invalid vectors and wires <code>cargo xtask conformance</code> into CI.</p>
+<p>The first valid and invalid vectors are landed and wired into CI as of <strong>Milestone 0.2</strong> (proposal 0001). They are produced deterministically by <code>cargo xtask gen-vectors</code> and committed to the repository; CI runs the read-only <code>cargo xtask conformance</code> check, which the <code>chunk-format</code> reference reader must pass, on every pull request.</p>
 <pre><code>conformance/
   vectors/
     v1/
@@ -54,9 +54,81 @@
       &lt;name&gt;.fragment      # malformed fragments a conforming reader MUST reject
       &lt;name&gt;.reason.txt    # why it must be rejected
 </code></pre>
+<h3><code>.fragment</code></h3>
+<p>Raw fragment bytes, exactly as a D server stores them. They are stored verbatim (marked <code>binary</code> in <code>.gitattributes</code>) so they round-trip byte-for-byte on every platform — the bytes are the contract.</p>
+<h3><code>.expected.json</code></h3>
+<p>The interpretation a conforming reader MUST produce for the sibling <code>.fragment</code>. To stay language-neutral and lossless, <code>chunk_id</code> and <code>payload_length</code> are <strong>decimal strings</strong> (both exceed JSON's safe-integer range) and the payload is <strong>lowercase hex</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>field</th>
+<th>JSON type</th>
+<th>notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>format_version</code></td>
+<td>number</td>
+<td>u16</td>
+</tr>
+<tr>
+<td><code>flags</code></td>
+<td>number</td>
+<td>u8</td>
+</tr>
+<tr>
+<td><code>checksum_algo</code></td>
+<td>string</td>
+<td><code>crc32c</code> | <code>blake3</code></td>
+</tr>
+<tr>
+<td><code>encryption_scheme</code></td>
+<td>string</td>
+<td><code>none</code></td>
+</tr>
+<tr>
+<td><code>ec_scheme_type</code></td>
+<td>string</td>
+<td><code>none</code> | <code>replication</code> | <code>reed-solomon</code></td>
+</tr>
+<tr>
+<td><code>ec_k</code></td>
+<td>number</td>
+<td>u8</td>
+</tr>
+<tr>
+<td><code>ec_m</code></td>
+<td>number</td>
+<td>u8</td>
+</tr>
+<tr>
+<td><code>ec_fragment_index</code></td>
+<td>number</td>
+<td>u16</td>
+</tr>
+<tr>
+<td><code>chunk_id</code></td>
+<td>string</td>
+<td>decimal u128</td>
+</tr>
+<tr>
+<td><code>payload_length</code></td>
+<td>string</td>
+<td>decimal u64</td>
+</tr>
+<tr>
+<td><code>payload_hex</code></td>
+<td>string</td>
+<td>lowercase hex of the stored payload</td>
+</tr>
+</tbody>
+</table>
+<h3><code>.reason.txt</code></h3>
+<p>The first line MUST be <code>error: &lt;Variant&gt;</code>, naming the reference reader's rejection kind (e.g. <code>error: BadMagic</code>), so a vector cannot pass merely by being rejected for the <em>wrong</em> reason. Any following lines are human-readable prose.</p>
 <h2>Rules</h2>
 <ul>
-<li>A conforming <strong>reader</strong> MUST parse and verify every vector under <code>vectors/</code> to match its <code>.expected.json</code>, and MUST reject every fragment under <code>invalid/</code>.</li>
+<li>A conforming <strong>reader</strong> MUST parse and verify every vector under <code>vectors/</code> to match its <code>.expected.json</code>, and MUST reject every fragment under <code>invalid/</code> with the error named on the first line of its <code>.reason.txt</code>.</li>
 <li>A conforming <strong>writer</strong> MUST produce fragments the reference reader accepts.</li>
 <li>Adding or changing a vector is part of the strict spec change process (a format version bump). Vectors are append-only within a format version.</li>
 </ul>
