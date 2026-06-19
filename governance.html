@@ -28,7 +28,7 @@
      whole block, or nothing when there is neither a class label nor meta. -->
 <div class="wrap">
   <header class="doc-header">
-    <p class="doc-meta">Status: draft · 17.06.2026 00:56</p>
+    <p class="doc-meta">Status: ratified · 17.06.2026 00:56</p>
   </header>
 </div>
 
@@ -38,30 +38,84 @@
     <article class="prose">
 <h1>Governance</h1>
 <blockquote>
-<p><strong>Status: DRAFT — skeleton, not yet ratified.</strong> This records the project's decision-making structure. Only the parts already anchored in an accepted ADR are firm; everything marked <strong>[OPEN]</strong> is a placeholder for a decision the maintainers have not yet made, and is not binding.</p>
+<p><strong>Status: RATIFIED.</strong> This records the project's decision-making structure — roles, the architecture board, and the decision and amendment processes. Ratified by the founding maintainer (the sole maintainer during bootstrap) per the amendment rule below; further changes follow that process.</p>
 </blockquote>
 <h2>Purpose</h2>
 <p>Wyrd is an open-source project built initially by a small team and dependent on outside contributors (see <a href="/adr/0001-record-architecture-decisions.html">ADR-0001</a>). This document makes explicit <em>who holds which responsibilities</em> and <em>how decisions are made</em>, so that authority is stated rather than assumed.</p>
 <p>It complements, and does not override, the per-class processes documented elsewhere: architecture decisions follow <a href="/adr/0001-record-architecture-decisions.html">ADR-0001</a>, enhancement proposals follow <code>../design/proposals/</code>, and specifications follow <code>../design/specs/</code>.</p>
 <h2>Roles</h2>
-<h3>Contributors</h3>
-<p>Anyone who opens an issue or a pull request. Contributions are accepted under the project's license and DCO sign-off (ADR-0003). No special status is required to contribute.</p>
-<h3>Maintainers</h3>
-<p>Maintainers review and merge contributions, triage issues, and elect the architecture board (below).</p>
+<p>Participation is a ladder of four levels, each earned from the one below. Higher rungs carry more authority and more responsibility; all of them rest on the same contribution-under-DCO basis (ADR-0003). The architecture board (further below) is <strong>not</strong> a rung on this ladder — it is a body drawn from the maintainers.</p>
+<table>
+<thead>
+<tr>
+<th>Level</th>
+<th>In one line</th>
+<th>GitHub mapping</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Contributor</strong></td>
+<td>anyone who opens an issue or PR</td>
+<td>— (any account)</td>
+</tr>
+<tr>
+<td><strong>Associate</strong></td>
+<td>a trusted contributor with triage rights, on the path to maintainer</td>
+<td>repo <strong>Triage</strong></td>
+</tr>
+<tr>
+<td><strong>Maintainer</strong></td>
+<td>reviews and <strong>merges</strong>, triages, elects the architecture board</td>
+<td><code>maintainers</code> team, <strong>Maintain</strong></td>
+</tr>
+<tr>
+<td><strong>Founding maintainer</strong></td>
+<td>the genesis seed that bootstraps the project</td>
+<td>org <strong>Owner / Admin</strong></td>
+</tr>
+</tbody>
+</table>
+<h3>Contributor</h3>
+<p>Anyone who opens an issue or a pull request. Contributions are accepted under the project's license and DCO sign-off (ADR-0003), and everyone who participates is held to the <a href="/code-of-conduct.html">Code of Conduct</a>. No special status is required, and most participants never need more.</p>
+<h3>Associate</h3>
+<p>A contributor recognised for sustained, quality work, granted <strong>triage</strong> rights — labelling, assigning, and shepherding issues and pull requests, and reviewing — but <strong>without merge authority</strong>. It is the deliberate step between Contributor and Maintainer: trusted people help run the project before they hold the keys, and it is where a prospective maintainer is observed.</p>
 <ul>
-<li><strong>How one becomes a maintainer</strong> — criteria and the nomination / confirmation procedure: <strong>[OPEN]</strong>.</li>
-<li><strong>Day-to-day decision rule</strong> for routine changes (e.g. lazy consensus on pull requests): <strong>[OPEN]</strong>.</li>
-<li><strong>Inactivity / removal policy:</strong> <strong>[OPEN]</strong>.</li>
+<li><strong>How one becomes an Associate</strong> — <strong>nominated by a maintainer</strong> for a track record of good contributions, and approved once a <strong>second maintainer agrees</strong> (two maintainers suffice).</li>
+<li><strong>Inactivity:</strong> an Associate is removed after <strong>six months</strong> of inactivity, and may later return as <strong>emeritus</strong> (below).</li>
 </ul>
+<h3>Maintainer</h3>
+<p>Maintainers review and <strong>merge</strong> contributions, triage, set day-to-day direction, and <strong>elect the architecture board</strong> (below). <strong>New maintainers are elected by the existing maintainers</strong>, normally promoted from Associates.</p>
+<ul>
+<li><strong>How one becomes a maintainer</strong> — elected by the existing maintainers, from candidates with a <strong>proven track record as a Contributor or Associate spanning at least a year</strong>; confirmation is by a <strong>two-thirds majority of the existing maintainers</strong>.</li>
+<li><strong>Day-to-day decision rule</strong> — a maintainer decides <strong>individually</strong> on routine pull requests; only changes that touch a <strong>spec, proposal, or ADR</strong> go to the architecture board.</li>
+<li><strong>Inactivity:</strong> a Maintainer is removed after <strong>one year</strong> of inactivity, and may later return as <strong>emeritus</strong> (below).</li>
+<li><strong>Cadence:</strong> the maintainers hold at least one meeting a year — the <em>&quot;state of the solution&quot;</em> — to review the project's direction.</li>
+</ul>
+<h3>Founding maintainer</h3>
+<p>A rule that maintainers are elected by maintainers needs a seed. <strong>Eduard Ralph is the founding (first) maintainer</strong>, by virtue of starting the project; the maintainer group grows from there by election. The founding maintainer is a full Maintainer who additionally holds <strong>bootstrap authority</strong> until the maintainer group and the board are established — sole maintainer, and sole elector and <strong>chair</strong> of the initial board. This authority is <strong>transitional</strong> and dissolves once the board is constituted (after which the board elects its own chair); the founding maintainer holds <strong>no standing power</strong> beyond it.</p>
+<p>The founding maintainer may be elected board chair like any member, but does not hold it automatically. The founding-maintainer role <strong>voids after one year of inactivity</strong> and is then <strong>left empty</strong> — not re-filled or inherited; the project then continues under the maintainers and the board.</p>
+<h3>Emeritus</h3>
+<p>A former <strong>Associate</strong> or <strong>Maintainer</strong> — removed for inactivity, or having stepped down — holds <strong>emeritus</strong> standing. An emeritus may be <strong>re-elected to their former level without re-proving the track record</strong> it normally requires (the year as Contributor or Associate for a Maintainer; the contribution record for an Associate). The level's confirmation step still applies — a second maintainer's agreement for an Associate, a two-thirds maintainer vote for a Maintainer.</p>
 <h3>Architecture board</h3>
-<p>The body with authority to <strong>accept</strong> and <strong>supersede</strong> ADRs, per <a href="/adr/0001-record-architecture-decisions.html">ADR-0001</a>. Its members are <strong>elected by the maintainers</strong>.</p>
+<p>The body with authority to <strong>accept</strong> and <strong>supersede</strong> the project's binding decisions — <strong>ADRs</strong> (per <a href="/adr/0001-record-architecture-decisions.html">ADR-0001</a>), <strong>specifications</strong>, and <strong>enhancement proposals</strong>. Its members are <strong>elected by the maintainers</strong> and <strong>may be drawn from any participation level</strong> — a board seat reflects judgement on the architecture, not rank on the ladder.</p>
 <ul>
-<li><strong>Size:</strong> <strong>[OPEN]</strong>.</li>
-<li><strong>Term and re-election cadence:</strong> <strong>[OPEN]</strong>.</li>
-<li><strong>Election procedure</strong> — how maintainers nominate and vote: <strong>[OPEN]</strong>.</li>
-<li><strong>Decision rule for accepting an ADR</strong> — quorum, majority, or full consensus of the board: <strong>[OPEN]</strong>.</li>
-<li><strong>Chair / tie-breaking:</strong> <strong>[OPEN]</strong>.</li>
+<li><strong>Size:</strong> <strong>at least three</strong> members.</li>
+<li><strong>Chair:</strong> <strong>elected by the board, unanimously</strong> (during bootstrap the founding maintainer chairs — see below).</li>
+<li><strong>Decision rule</strong> — the board accepts (and supersedes) ADRs through the ADR-0001 lifecycle, and ratifies specifications and enhancement proposals through their own folder processes; ratification is by a <strong>two-thirds majority</strong> of the members, recorded as agreement on the pull request.</li>
+<li><strong>Bootstrap — fewer than three members.</strong> Until the board reaches three, the <strong>chair (the founding maintainer) may make acceptance decisions</strong>. To remain consistent with ADR-0001 — acceptance is never a single maintainer's act — these interim decisions are <strong>provisional</strong>: the board reviews and confirms them once it is constituted. <em>(If instead the chair's bootstrap acceptances are meant to be final, that is a true exception to ADR-0001 and must be enacted by a superseding ADR, not this document.)</em></li>
+<li><strong>Term:</strong> elected members serve <strong>two years</strong> and may stand for re-election (the founding maintainer chairs <em>ex officio</em>, independent of these terms).</li>
+<li><strong>Election procedure:</strong> board members are elected by a <strong>majority of the maintainers</strong>.</li>
 </ul>
+<h3>Removal for cause</h3>
+<p>Separately from the inactivity rules above, anyone may be removed for <strong>cause</strong> — a serious or sustained breach of the <a href="/code-of-conduct.html">Code of Conduct</a>, or acting against the project's interests — whether or not they are active:</p>
+<ul>
+<li>An <strong>Associate</strong> is removed by the agreement of <strong>two maintainers</strong>.</li>
+<li>A <strong>Maintainer</strong> is removed by a <strong>two-thirds vote of the other maintainers</strong>.</li>
+<li>A <strong>board member</strong> is removed by a <strong>two-thirds vote of the maintainers</strong>; the vacated seat is re-filled by the normal election.</li>
+<li>The <strong>founding maintainer</strong>, being a Maintainer, is removed under the Maintainer rule once other maintainers exist; during bootstrap, with no other maintainer, the role can lapse only through inactivity.</li>
+</ul>
+<p>This is the enforcement backstop the Code of Conduct refers to: deliberate and documented, never summary.</p>
 <h2>Decision-making</h2>
 <table>
 <thead>
@@ -80,12 +134,12 @@
 <tr>
 <td>Enhancement proposal</td>
 <td><code>../design/proposals/</code> (draft → accepted)</td>
-<td><strong>[OPEN]</strong> — board, maintainers, or both</td>
+<td>Architecture board</td>
 </tr>
 <tr>
 <td>Specification version bump</td>
 <td><code>../design/specs/</code> (strict change process)</td>
-<td><strong>[OPEN]</strong></td>
+<td>Architecture board</td>
 </tr>
 <tr>
 <td>Routine code change</td>
@@ -95,12 +149,21 @@
 <tr>
 <td>Changes to <em>this</em> document</td>
 <td>See below</td>
-<td><strong>[OPEN]</strong></td>
+<td>Unanimous maintainers</td>
+</tr>
+<tr>
+<td>Removal for cause</td>
+<td><em>Removal for cause</em> (above)</td>
+<td>Two maintainers (Associate); two-thirds (Maintainer, board)</td>
 </tr>
 </tbody>
 </table>
+<p>A <strong>new feature</strong> is never a routine change: it enters through an enhancement proposal (<code>../design/proposals/</code>) and is therefore the <strong>architecture board's</strong> decision, not an individual maintainer's merge.</p>
+<p>An ADR — and likewise a specification or proposal — is moved to <strong>Accepted</strong> only when it carries <strong>no unresolved <code>[OPEN]</code> items</strong>: open questions must be resolved, or deferred to a named follow-up, before ratification.</p>
 <h2>Amending this document</h2>
-<p><strong>[OPEN]</strong> — the process for changing governance itself (who approves, and by what majority) is not yet decided. Until it is, this document remains a DRAFT and is authoritative only for the parts that restate an accepted ADR.</p>
+<p>Changes are made by pull request and require the <strong>approval of all maintainers</strong> (unanimous). During bootstrap, with a single maintainer, that is the founding maintainer's approval alone.</p>
+<h2>Contact</h2>
+<p>Questions or concerns about governance, conduct, or project policy: <strong>policy@getwyrd.dev</strong>.</p>
 
     </article>
   </main>
