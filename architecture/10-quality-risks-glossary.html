@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>10–12. Quality, risks, and glossary — Wyrd</title>
+<title>10–13. Quality, risks, glossary, and testing strategy — Wyrd</title>
 <meta name="description" content="Concrete, measurable scenarios that operationalize the quality goals . Numbers are targets to be set during implementation; the shape is fixed">
-<meta property="og:title" content="10–12. Quality, risks, and glossary — Wyrd">
+<meta property="og:title" content="10–13. Quality, risks, glossary, and testing strategy — Wyrd">
 <meta property="og:description" content="Concrete, measurable scenarios that operationalize the quality goals . Numbers are targets to be set during implementation; the shape is fixed">
 <meta property="og:type" content="article">
 <link rel="stylesheet" href="/assets/style.css">
@@ -37,9 +37,9 @@
   <main>
     <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
     <article class="prose">
-<h1>10–12. Quality, risks, and glossary</h1>
+<h1>10–13. Quality, risks, glossary, and testing strategy</h1>
 <blockquote>
-<p>Living document. Combines arc42 sections 10 (quality scenarios), 11 (risks and technical debt), and 12 (glossary), trimmed to what earns its maintenance.</p>
+<p>Living document. Combines arc42 sections 10 (quality scenarios), 11 (risks and technical debt), and 12 (glossary), plus Wyrd's testing strategy (section 13), trimmed to what earns its maintenance.</p>
 </blockquote>
 <h2>10. Quality scenarios</h2>
 <p>Concrete, measurable scenarios that operationalize the quality goals (section 1.3). Numbers are targets to be set during implementation; the <em>shape</em> is fixed.</p>
@@ -253,6 +253,132 @@
 </tr>
 </tbody>
 </table>
+<h2>13. Testing strategy</h2>
+<blockquote>
+<p>How Wyrd is verified, across tiers from reproducible simulation to real multi-region hardware. This subsection describes the <em>approach</em>; the DST decision itself is ADR-0009, the quality scenarios it must satisfy are above (section 10), and the milestone ordering that each tier attaches to is in section 9 and proposal 0002 (the implementation arc).</p>
+</blockquote>
+<h3>13.1 The principle: simulation is primary, real environments are complementary</h3>
+<p>Correctness is the project's reason to exist, so the <strong>primary</strong> verification mechanism is <strong>deterministic simulation testing</strong> (DST, ADR-0009): the whole zone — metadata, D servers, custodians, faults, clock skew — run single-threaded in a simulated world where every bug reproduces from a seed. DST owns the things that matter most and that real hardware tests <em>badly</em>: atomicity under fault injection, race conditions, partition handling, commit-protocol invariants. These are verified reproducibly, in CI, in seconds.</p>
+<p>Real environments are the <strong>second line</strong>, and they exist to catch precisely what simulation structurally cannot:</p>
+<ul>
+<li><strong>Real performance</strong> — actual latency, real EC encode/decode throughput on real CPUs, real disk and network throughput, tail latencies, and the linear-throughput-scaling claim (scenario Q6).</li>
+<li><strong>Real I/O and OS behaviour</strong> — honest fsync semantics, real filesystem quirks, io_uring, page cache, the real network stack under load.</li>
+<li><strong>Unmodeled faults</strong> — the failures we did <em>not</em> think to inject: a disk failing slowly rather than cleanly, a NIC corrupting rather than dropping, an OOM-killer intervening, clock skew weirder than the model.</li>
+<li><strong>Real integration</strong> — actual etcd, actual TiKV, actual gRPC over a real network, behaving as they really do rather than as their in-memory fakes do.</li>
+</ul>
+<p>A real environment is therefore never used to test correctness the simulation already covers. If validating the commit protocol's atomicity seems to need a real cluster, that is a signal something is wrong — that is DST's job.</p>
+<p><strong>The compounding loop.</strong> Every real-world discovery is promoted back into DST: a fault or workload shape found on real hardware is encoded as a new seed-driven DST scenario, becoming a permanent, free, reproducible regression test. The real tiers are <em>fault-discovery</em> tools; their findings become cheap simulation tests. This is the highest-leverage idea in the strategy — it turns expensive, one-off real-world findings into permanent CI coverage.</p>
+<h3>13.2 The tiers</h3>
+<p>The tiers escalate in realism and cost. Each catches what the one below cannot; none replaces DST as the correctness authority. They attach to the implementation arc (proposal 0002) at the milestone where they first add value, so test investment stays matched to the milestone that needs it.</p>
+<h4>Tier 0 — Deterministic simulation (from M0, always)</h4>
+<p><code>testkit</code> and the commit-protocol property tests (ADR-0009). The correctness authority. Runs in CI from the first milestone and grows with every subsequent one. Everything below is complementary to this, never a substitute.</p>
+<h4>Tier 1 — Local software-defined distributed testing (from M2)</h4>
+<p>A single powerful workstation running a logical cluster of many processes — multiple D servers, a metadata store, coordination — as real separate processes over real gRPC, with software fault injection. This is the workhorse tier and covers most day-to-day distributed testing at near-zero marginal cost:</p>
+<ul>
+<li><strong>Many D-server processes on one host</strong> — exercises control-plane, placement, custodian, and repair logic at higher logical node counts than physical hardware would afford.</li>
+<li><strong>Network fault injection</strong> — <code>tc netem</code> (latency, jitter, loss, reordering, corruption), <code>iptables</code>/<code>nftables</code> partitioning (real split-brain between specific node pairs), cgroup throttling (the <em>slow-not-dead</em> node, the nastiest real fault and the one clean kills miss).</li>
+<li><strong>Disk fault injection</strong> — device-mapper targets (<code>dm-flakey</code>, <code>dm-error</code>) and FUSE fault injectors to make a virtual block device intermittently fail, corrupt, or drop writes — testing the scrubber and checksum-verification paths against real block-layer misbehaviour, deterministically.</li>
+<li><strong>Clock faults</strong> — <code>libfaketime</code> and deliberate NTP manipulation to inject skew, drift, and jumps, testing failover and monotonic-read survival under the condition that breaks naive implementations.</li>
+<li><strong>Consistency testing — Jepsen</strong> — Jepsen against a handful of local containers, with its nemesis injecting partitions, clock skew, and pauses, validates the consistency contract (ADR-0015) under real (not modelled) partitions. This is the real-cluster complement to Tier 0 for consistency specifically, and a clean public Jepsen result is itself a credibility artifact, like the conformance vectors. Begins as soon as there is a networked path (section 9, M2–M3).</li>
+</ul>
+<p>The reference host for this tier is a single beefy workstation (see 13.3). Its EC-performance numbers are <em>honest</em> because the silicon is real (server-class cores with SIMD, real NVMe) — but it is one machine, so the one thing it cannot validate is throughput scaling <em>across independent nodes</em> (Q6), which needs Tier 3.</p>
+<h4>Tier 2 — First real-world hardware experience (from M2–M3)</h4>
+<p>A single real, owned machine used as the primary local distributed-test host and the first &quot;does this deploy and operate as claimed on real silicon&quot; environment: real fsync, real NVMe latency, real SIMD-accelerated erasure coding, real OS behaviour. It validates honest single-node performance and real I/O semantics that the in-memory fakes abstract away, and it is the day-to-day host for the Tier-1 software-defined testing above. It is a <em>single failure domain</em>, so it proves real-silicon behaviour and single-node performance, not failure-domain independence (that is Tier 3).</p>
+<h4>Tier 3 — Real multi-node, multi-region (from M5)</h4>
+<p>Rented, on-demand, separate machines in separate real failure domains and — for the cross-zone milestones — separate real regions, so the two things one machine structurally cannot provide become real rather than simulated:</p>
+<ul>
+<li><strong>Real failure-domain independence</strong> — genuinely separate power, network, and kernels, for true yank-a-node / sever-a-link / kill-a-disk physical-fault testing across independent hardware.</li>
+<li><strong>Real inter-region WAN latency</strong> — for the cross-zone replication (L3) and the home-zone-authority consistency contract (ADR-0015) under real failover, which a rig on one desk (all nodes on one LAN) cannot produce convincingly.</li>
+<li><strong>Throughput scaling across nodes</strong> — the Q6 linear-scaling claim, the one performance claim that genuinely requires multiple independent nodes.</li>
+</ul>
+<p>This tier is rented on demand for specific test campaigns (a weekend of benchmarking, a cross-region consistency run) and torn down after, so it has no idle cost. It is the natural place for a prospective operational partner's own infrastructure to enter — testing on a real provider's hardware is both more realistic and the kind of engagement that turns a partner into an adopter.</p>
+<h3>13.3 Reference environments</h3>
+<p>The tiers above are deliberately tool- and vendor-neutral; what follows are the concrete environments the project uses, recorded so the strategy is reproducible. They are reference choices, not requirements — the strategy stands on any equivalent hardware.</p>
+<table>
+<thead>
+<tr>
+<th>Tier</th>
+<th>Reference environment</th>
+<th>Role</th>
+<th>Cost shape</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>CI runners</td>
+<td>DST, property tests, conformance</td>
+<td>free, always on</td>
+</tr>
+<tr>
+<td>1</td>
+<td>The Tier-2 workstation</td>
+<td>Software-defined faults, Jepsen, logical-scale</td>
+<td>free marginal use</td>
+</tr>
+<tr>
+<td>2</td>
+<td>A single high-core workstation with real NVMe and SIMD (e.g. a 16-core Zen 5 / Strix Halo-class mini-PC with PCIe-4 NVMe)</td>
+<td>Primary local test host; honest single-node performance and real I/O</td>
+<td>owned; justified independently of Wyrd, used here as free marginal capacity</td>
+</tr>
+<tr>
+<td>3</td>
+<td>On-demand EU bare-metal and cloud VMs across real regions (e.g. Hetzner Falkenstein / Nuremberg / Helsinki)</td>
+<td>Failure-domain independence; real inter-region WAN; cross-node scaling</td>
+<td>rented per campaign, torn down after</td>
+</tr>
+</tbody>
+</table>
+<p>Two notes on the reference choices:</p>
+<ul>
+<li><strong>The single workstation is free marginal capacity, not a Wyrd purchase.</strong> Its value to storage testing is the 16 real cores (SIMD-accelerated EC) and the real NVMe (honest fsync); its AI-oriented features (large unified-memory bandwidth, iGPU, NPU) are irrelevant to storage and should not be counted as test value. It earns its place as a capable local host, not as a rig bought for the purpose.</li>
+<li><strong>Sovereignty alignment.</strong> Tier 3 on EU bare-metal (Hetzner, Scaleway, OVH, or a Sovereign Cloud Stack provider) keeps the entire performance-and-WAN test story on sovereign infrastructure — on-message for the project's constraints, and cheaper than the US hyperscalers besides. Using a US hyperscaler for the multi-region rig would be a (minor) sovereignty compromise worth noting if ever chosen.</li>
+</ul>
+<h3>13.4 Mapping to the arc</h3>
+<table>
+<thead>
+<tr>
+<th>Milestone (proposal 0002)</th>
+<th>Tiers active</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>M0 — walking skeleton</td>
+<td>Tier 0</td>
+</tr>
+<tr>
+<td>M1 — erasure coding</td>
+<td>Tier 0; Tier 1/2 for first honest EC benchmarks</td>
+</tr>
+<tr>
+<td>M2 — networked D servers</td>
+<td>Tier 0; Tier 1 (software faults), Tier 2 (real host); Jepsen begins</td>
+</tr>
+<tr>
+<td>M3 — custodians</td>
+<td>Tier 0–2; Jepsen consistency; disk-fault injection for scrub/repair</td>
+</tr>
+<tr>
+<td>M4 — production metadata backend</td>
+<td>Tier 0–2 against real TiKV</td>
+</tr>
+<tr>
+<td>M5 — cross-zone replication</td>
+<td>+ Tier 3 (real multi-region WAN)</td>
+</tr>
+<tr>
+<td>M6 — global control plane</td>
+<td>Tier 0–3; cross-region consistency contract</td>
+</tr>
+<tr>
+<td>M7 — failover &amp; DR, drilled</td>
+<td>Tier 0–3; real zone-loss on independent hardware</td>
+</tr>
+</tbody>
+</table>
+<p>The escalation is deliberate: the expensive Tier-3 rig is not stood up until the cross-zone milestones genuinely require real WAN and real failure-domain independence, and even then only on demand.</p>
 
     </article>
   </main>
