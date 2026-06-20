@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proposal: Milestone 2 — networked D servers (implementation plan) — Wyrd</title>
+<meta name="description" content="M2 proves that the direct client→D-server data path works over the network —">
+<meta property="og:title" content="Proposal: Milestone 2 — networked D servers (implementation plan) — Wyrd">
+<meta property="og:description" content="M2 proves that the direct client→D-server data path works over the network —">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Enhancement Proposal</p>
+    <p class="doc-meta">Status: draft · 20.06.2026 14:42</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>Proposal: Milestone 2 — networked D servers (implementation plan)</h1>
+<blockquote>
+<p>The implementation plan for the second <em>widening</em> step of the <a href="/proposals/accepted/0002-implementation-arc.html">implementation
+arc</a> (proposal 0002). <a href="/proposals/draft/0003-milestone-1-erasure-coding.html">Proposal
+0003</a> built (in plan) real Reed-Solomon
+erasure coding in the client data path, evolving the <code>ChunkStore</code> to a
+<strong>fragment-addressed</strong> trait. M2 keeps that slice intact and replaces its one
+remaining placeholder — the <strong>in-process filesystem <code>ChunkStore</code></strong> — with
+<strong>networked gRPC D servers behind the unchanged trait</strong>, so the client writes
+the <em>n</em> fragments of a chunk <strong>directly and in parallel</strong> to distinct storage
+servers and reads back <strong>any <em>k</em> that arrive first</strong>. It records <em>how</em> M2 is
+built; the <em>why</em> of the data-path design lives in the architecture and the ADRs
+it references (<a href="/architecture/06-runtime-view.html">§6.1</a>, <a href="/adr/0009-deterministic-simulation-testing.html">ADR-0009</a>, <a href="/adr/0010-pluggable-deployment-substrate.html">ADR-0010</a>). M2 is
+implementation-first behind versioned protobuf (<a href="/adr/0002-spec-first-on-disk-format-only.html">ADR-0002</a>): the gRPC
+surface is a <strong>wire contract</strong>, discovered by building it — <strong>no new spec</strong> is
+required (spec-first effort is reserved for the on-disk format only).</p>
+</blockquote>
+<h2>Motivation</h2>
+<p>M2 proves that the <strong>direct client→D-server data path works over the network</strong> —
+the basis of the throughput-scaling claim (<a href="/architecture/06-runtime-view.html">§6.1</a>: &quot;bulk data crosses no
+shared component&quot;; arc M2). Until now every <code>ChunkStore</code> call has been an
+in-process function call; M2 turns it into a real gRPC round-trip to a separate
+process, <strong>without changing the trait</strong>. The risk this retires is precise: that
+the in-process abstraction hid a problem the real gRPC <code>ChunkStore</code> will expose —
+serialization, connection lifecycle, partial-failure, deadlines, backpressure —
+and so proving the <strong>trait seam is real</strong> (arc M2). If the seam holds, every
+consumer above it (<code>core</code>'s write/read paths, the gateway) is validated against
+the real transport with no edit.</p>
+<p>The ordering principle of the arc is <strong>risk retired, not features delivered</strong>.
+M0 retired atomic-commit-across-paths; M1 retired the coding math. M2 retires the
+<strong>networking</strong> risk <em>in isolation from coding</em> — exactly the separation M1's
+in-process proof was designed to enable. Proving the coding in one process first
+(<a href="/proposals/draft/0003-milestone-1-erasure-coding.html">0003</a> Motivation) meant a failure now isolates cleanly to the <em>transport</em>
+and not to the surrounding plumbing or the EC loop. This is why networking comes
+<strong>after</strong> coding: each risk is validated alone, against an already-working slice.</p>
+<p>M2 is the milestone where the system first spans <strong>more than one process</strong> and
+the first hardware beyond a laptop appears (<a href="/architecture/07-deployment-view.html">§7.1</a>). It is the natural first
+<strong>split point</strong> of the build (<a href="/architecture/09-build-order-and-roadmap.html">§9</a>; arc: &quot;M2 and M3 have the most independent
+surface&quot;). It is a <strong>soft stopping point</strong> (arc): a small-multi-node system
+exists, but it carries <strong>no production durability promise</strong> — a co-located or
+single-chassis profile cannot deliver independent failure domains (<a href="/adr/0014-single-binary-dev-only.html">ADR-0014</a>).
+The first deployable product is still M4.</p>
+<h2>Design</h2>
+<h3>Scope boundary</h3>
+<p><strong>In scope</strong> — exactly what retires the networking risk:</p>
+<ul>
+<li>A <strong>gRPC <code>ChunkStore</code> service</strong> in the <code>wyrd.v0</code> protobuf package — <code>PutFragment</code>,
+<code>GetFragment</code>, <code>Health</code> rpcs, <strong>fragment-addressed</strong> to match the M1 trait — and
+the <code>build.rs</code> switch from <code>prost-build</code> to <code>tonic</code>-codegen (<a href="/adr/0002-spec-first-on-disk-format-only.html">ADR-0002</a>).</li>
+<li>A new <strong><code>chunkstore-grpc</code></strong> crate: a client <code>GrpcChunkStore</code> implementing
+<code>traits::ChunkStore</code> over tonic, and the D-server-side service hosting an
+injected <code>S: ChunkStore</code> (in production, <code>FsChunkStore</code>).</li>
+<li>The <strong>D server as a role/subcommand</strong> of the existing <code>server</code> binary
+(<a href="/adr/0014-single-binary-dev-only.html">ADR-0014</a>/<a href="/adr/0016-monorepo-and-crate-structure.html">ADR-0016</a>), hosting the gRPC service over its local
+filesystem store; the gateway's <code>ChunkStore</code> becomes the gRPC <strong>client</strong>.</li>
+<li><strong>Parallel fan-out write</strong> (commit after all <em>n</em> ack, fail-closed) and the
+<strong>any-<em>k</em>-arrive-first</strong> parallel read with re-read-on-failure — the read policy
+M1 explicitly deferred (<a href="/architecture/06-runtime-view.html">§6.2</a>; <a href="/proposals/draft/0003-milestone-1-erasure-coding.html">0003</a> Open questions).</li>
+<li><strong>Minimal placement</strong>: spread a chunk's <em>n</em> fragments across <em>n</em> <strong>distinct</strong>
+D-server endpoints, discovered through the <strong>L5 <code>Coordination</code> seam</strong> (<a href="/adr/0010-pluggable-deployment-substrate.html">ADR-0010</a>).</li>
+<li><strong>Tier-1 DST over a simulated network</strong> (madsim + <code>madsim-tonic</code>, no containers)
+and the <strong>birth of Tier-2</strong> integration tests against real gRPC D servers under
+containers (<a href="/adr/0009-deterministic-simulation-testing.html">ADR-0009</a>).</li>
+</ul>
+<p><strong>Out of scope</strong> — deferred to the milestone that actually retires their risk,
+their hooks already present where retrofit is expensive:</p>
+<ul>
+<li><strong>Failure-domain-aware placement / durability math</strong> → custodians (M3) and the
+placement service (L2, M6). M2 spreads fragments across <em>distinct endpoints</em>,
+<strong>not</strong> independent failure domains (<a href="/architecture/07-deployment-view.html">§7.3</a>); the RS(6,3) durability math is
+<strong>not claimed</strong>. M2 proves the <em>data path</em>, not the <em>placement guarantee</em>.</li>
+<li><strong>Write-back repair, scrub, rebalance, repair-vs-serve throttling</strong> → M3
+custodians (<a href="/architecture/06-runtime-view.html">§6.3</a>, <a href="/architecture/08-crosscutting-concepts.html">§8.9</a>). There are no repair reads to throttle until
+custodians exist; the read-retry path is the <strong>reserved seat</strong> that throttling
+later attaches to, built so as not to foreclose it.</li>
+<li><strong>Degraded-write tolerance</strong> (commit with &lt; <em>n</em>, let custodians backfill) → M3.
+M2 commits only after <strong>all <em>n</em></strong> ack; a partial fan-out <strong>fails closed</strong>
+(<a href="/architecture/08-crosscutting-concepts.html">§8.9</a>: &quot;never a silent half-write&quot;).</li>
+<li><strong>Durability telemetry / observability</strong> → arrives with the custodians at M3
+(<a href="/adr/0011-durability-telemetry-and-declarative-management.html">ADR-0011</a>). M2 sits on the <strong>request plane</strong> only; it emits no
+under-replicated count, repair-queue depth, or scrub coverage. Verified by DST
+and integration, not metrics — as M0/M1.</li>
+<li><strong>mTLS / provider-CA PKI</strong> → reserved composition seam (<a href="/adr/0005-single-provider-closed-federation.html">ADR-0005</a>). M2
+introduces the first real network link; it <strong>structures</strong> the tonic transport so
+mTLS can be configured in (a <code>server</code>-level concern, <a href="/adr/0010-pluggable-deployment-substrate.html">ADR-0010</a>), but the
+dev/DST profiles run plaintext. The D server stays <strong>identity-dumb and
+tenant-oblivious</strong> (<a href="/architecture/08-crosscutting-concepts.html">§8.5</a>) — it trusts that a request reaching it was
+already authorized at the gateway.</li>
+<li><strong>Real etcd-backed dynamic discovery</strong> → a composition swap behind the unchanged
+<code>Coordination</code> trait (<a href="/adr/0006-etcd-for-coordination.html">ADR-0006</a>); M2 uses the in-memory concrete and static
+endpoints, not etcd.</li>
+<li><strong>Production metadata backend (TiKV)</strong> → M4; <strong>cross-zone layers</strong> → M5–M7.</li>
+</ul>
+<h3>What carries over from M0/M1, unchanged</h3>
+<p>Networking slots into <strong>phase 2 (the data path) only</strong>. Everything that <em>is</em> the
+commit guarantee is untouched — M2 widens phase-2 <strong>transport</strong>, exactly as M1
+widened phase-2 <em>coding</em>:</p>
+<ul>
+<li>The four-phase write/commit protocol (<a href="/architecture/05-building-block-view.html">§5</a>): intent → data path → commit →
+release. The commit point is still <strong>one redb write transaction at the home
+zone</strong>; concurrent writers still conflict there and exactly one wins (<a href="/adr/0015-consistency-contract.html">ADR-0015</a>).
+The network data path does <strong>not</strong> move or weaken the commit point.</li>
+<li>The redb metadata model — <code>inode</code> / <code>dirent</code> / <code>pending:&lt;chunk_id&gt;</code> ledger /
+<code>meta:version</code> fence — and the M1 chunk map (per-chunk EC scheme + logical length,
+<em>n</em> fragments). In M2's single-zone profiles the namespace folds into the same
+embedded store (<a href="/adr/0020-global-namespace-store.html">ADR-0020</a>); there is no separate L2 to entangle.</li>
+<li>The <strong><code>ChunkStore</code> trait itself is unchanged</strong> — already fragment-addressed
+(<code>FragmentId { chunk: ChunkId, index: u16 }</code>) from M1. M2 implements this exact
+contract over gRPC; there is <strong>no Rust trait change left to make</strong>. The
+<em>protobuf request messages</em>, however, are still chunk-addressed from M0 and must
+be fragment-addressed to match (see below).</li>
+<li>The EC coding loop (<code>reed-solomon-simd</code>, encode → <em>n</em> shards, reconstruct from
+any <em>k</em>) is untouched. M2 changes only <em>where the bytes go</em> between coding and
+commit.</li>
+</ul>
+<h3>Where the network sits in the data path</h3>
+<p>The client library is the only thing that changes shape: the <code>ChunkStore</code> call
+that was a function call becomes a gRPC round-trip, and the sequential loop
+becomes a parallel fan-out. The bytes cross <strong>no shared component</strong> — straight
+from client to the distinct D servers (<a href="/architecture/06-runtime-view.html">§6.1</a>).</p>
+<pre><code>write:  chunk ──[erasure-code: k+m]──► n fragments ──┬─► gRPC PutFragment ─► D server 0 (FsChunkStore)
+                                                      ├─► gRPC PutFragment ─► D server 1
+        (fan-out, all n in parallel)                 └─► … ─► D server n-1
+                                          ──[await all n ack]──► commit (one redb txn, unchanged)
+
+read:   ──┬─► gRPC GetFragment ─► D server i ──┐
+          ├─► gRPC GetFragment ─► …            ├─[first k that verify]─► [decode] ─► [truncate] ─► bytes
+          └─► gRPC GetFragment ─► …            ┘   (re-read elsewhere on miss/corrupt/timeout)
+        (fan-out to n; reconstruct from whichever k arrive first; cancel the rest)
+</code></pre>
+<p>Both directions are <strong>direct, client→D-server</strong>, the same no-shared-component rule
+(<a href="/architecture/06-runtime-view.html">§6.1</a>, <a href="/architecture/06-runtime-view.html">§6.2</a>). In M2's single-zone profile, home-zone resolution and the
+chunk-map fetch fold into the local metadata store, so M2's genuinely new code is
+the data-path steps — the fan-out put and the any-<em>k</em> get.</p>
+<h3>The gRPC <code>ChunkStore</code> (the load-bearing change)</h3>
+<p>The <code>proto</code> package today (<code>wyrd.v0</code>) defines <strong>message shapes only</strong>: there is no
+<code>service</code> keyword and the <code>build.rs</code> uses <code>prost-build</code>, not tonic. M2 adds the
+transport:</p>
+<pre><code class="language-protobuf">// wyrd.v0, additive — evolved by addition behind versioned protobuf (ADR-0002)
+message FragmentId { ChunkId chunk = 1; uint32 index = 2; }   // matches traits::FragmentId
+
+service ChunkStore {
+  rpc PutFragment (FragmentPutRequest) returns (FragmentPutResponse);
+  rpc GetFragment (FragmentGetRequest) returns (FragmentGetResponse);
+  rpc Health      (HealthRequest)      returns (HealthResponse);
+}
+</code></pre>
+<ul>
+<li><strong>Fragment-addressing the wire.</strong> The M0 <code>ChunkPutRequest</code>/<code>ChunkGetRequest</code>
+carry a bare <code>ChunkId</code> — chunk-addressed, a mismatch with the fragment-addressed
+trait they would serve. M2 therefore <strong>replaces the request messages</strong> (the
+<code>FragmentPutRequest</code>/<code>FragmentGetRequest</code> above), not only wraps them in a
+service: each put/get now carries a <code>FragmentId</code>. This is the natural unit M1
+designed the trait around — each fragment independently placed and fetched.</li>
+<li><strong><code>build.rs</code> switch.</strong> The descriptor-compile step moves from <code>prost-build</code> to
+<code>tonic</code>-codegen (<code>tonic-prost-build</code>), now emitting <strong>client + server</strong> stubs and
+<strong>keeping the <code>protox</code> no-<code>protoc</code> frontend</strong> if compatible. The package stays
+<code>wyrd.v0</code>; the service is <strong>additive</strong> (<a href="/architecture/08-crosscutting-concepts.html">§8.7</a>: fields never repurposed,
+one-version-gap interop) — no <code>format_version</code>-style break, no new spec.</li>
+<li><strong><code>Health</code> over the wire</strong> is the unchanged M0 trait method transported as-is —
+for <strong>connection/discovery liveness only</strong>, <strong>self-reported and trusted</strong>
+(<a href="/adr/0005-single-provider-closed-federation.html">ADR-0005</a>). It is <strong>not</strong> durability telemetry, under-replication
+signalling, or proof-of-storage — all of which are M3 (<a href="/adr/0011-durability-telemetry-and-declarative-management.html">ADR-0011</a>).</li>
+<li><strong>tonic</strong> is pinned once in <code>[workspace.dependencies]</code>; under <code>--cfg madsim</code> it
+resolves to <strong><code>madsim-tonic</code></strong> (dep-aliasing) so the <em>same client code</em> runs on
+the simulated network in Tier-1 (see DST).</li>
+</ul>
+<h3>D server: the networked storage role</h3>
+<p>The new <strong><code>chunkstore-grpc</code></strong> crate hosts both sides of the seam (coarse-then-split,
+<a href="/adr/0016-monorepo-and-crate-structure.html">ADR-0016</a> — a single firming boundary sharing the generated stubs; its server
+side is the coarse start of the architecture's named <strong><code>dserver</code></strong> crate <a href="/architecture/05-building-block-view.html">§5</a>):</p>
+<ul>
+<li><strong><code>client</code></strong> — <code>GrpcChunkStore</code>, a <code>traits::ChunkStore</code> impl that dials a
+D-server endpoint and translates <code>put_fragment</code> / <code>get_fragment</code> / <code>health</code> into
+tonic client calls. It is a <em>consumer</em> of the trait it implements: it depends on
+<code>traits</code> + <code>proto</code>, <strong>never</strong> on <code>chunkstore-fs</code> (<a href="/adr/0016-monorepo-and-crate-structure.html">ADR-0016</a>).</li>
+<li><strong><code>server</code></strong> — the D-server service, generic over an injected <code>S: ChunkStore</code>, so
+it hosts <code>FsChunkStore</code> in production and a fault-injecting fake under DST. It
+<strong>verifies checksums on put</strong> (<a href="/architecture/05-building-block-view.html">§5</a> write step 2) and reports self-reported
+<code>Health</code>, staying <strong>deliberately dumb</strong> — no placement, no metadata, no identity
+(<a href="/architecture/05-building-block-view.html">§5</a> L4 table, <a href="/architecture/08-crosscutting-concepts.html">§8.5</a>).</li>
+</ul>
+<p>The <strong>D server is a role/subcommand of the existing <code>server</code> binary</strong>
+(<a href="/adr/0014-single-binary-dev-only.html">ADR-0014</a> single-binary-dev, <a href="/adr/0016-monorepo-and-crate-structure.html">ADR-0016</a> coarse-then-split) — a
+<code>d-server</code> subcommand that opens a local <code>FsChunkStore</code> and serves it over gRPC.
+Splitting it into a separately-published binary is reserved for the production
+role-split, not M2 risk. The gateway's composition (the one place that knows
+concretes, <a href="/adr/0010-pluggable-deployment-substrate.html">ADR-0010</a>) swaps <code>FsChunkStore</code> for <code>GrpcChunkStore</code> in the
+networked profile — the trait bound <code>C: ChunkStore</code> and every caller in <code>core</code> are
+<strong>untouched</strong>: composition swaps the concrete, the callers never know.</p>
+<h3>Placement &amp; discovery, minimal</h3>
+<p>M2 introduces exactly one placement primitive: <strong>flat fan-out of a chunk's <em>n</em>
+fragments across multiple D-server endpoints</strong>, <em>preferring</em> distinct endpoints so a
+single D-server loss costs at most one fragment and any-<em>k</em> read stays meaningful.
+This is <strong>best-effort selection, not an enforced placement guarantee</strong> — not even
+endpoint-distinctness is a DST-gated invariant. It is the floor that the read policy
+and the direct-path throughput claim require, and nothing more.</p>
+<p>M2 <strong>does not claim</strong> failure-domain spread (rack/power/switch) or the durability
+math. Architecture <a href="/architecture/07-deployment-view.html">§7.3</a> assigns domain-spread enforcement to the <strong>placement
+service (L2, M6)</strong> and the <strong>custodians (L4, M3)</strong>; <a href="/adr/0010-pluggable-deployment-substrate.html">ADR-0010</a>/<a href="/adr/0014-single-binary-dev-only.html">ADR-0014</a>
+put placement and durability <em>authority</em> there, not in M2's fan-out. M2's
+distinctness is <strong>endpoint-distinct, not domain-distinct</strong>.</p>
+<p>Discovery goes <strong>only through the L5 <code>Coordination</code> trait</strong> (<code>register</code> /
+<code>discover</code> under a group key), <strong>never</strong> an orchestrator API (<a href="/adr/0010-pluggable-deployment-substrate.html">ADR-0010</a>,
+<a href="/architecture/07-deployment-view.html">§7.2</a>). This generalizes the gateway's existing <code>announce</code>/<code>nodes</code> shape: D
+servers register their endpoints under a discovery group; the <code>GrpcChunkStore</code>
+client resolves them via <code>discover</code>. M2 uses the <strong>in-memory <code>Coordination</code>
+concrete</strong> for Tier-1 DST (deterministic, <code>Clock</code>-driven lease expiry) and
+<strong>static/configured endpoints</strong> for the Tier-2 integration test. Where M0's
+registration had no renewal loop (&quot;a networked node would renew&quot;), M2 is where a
+real D server first needs <strong>leased registration with renewal</strong> — stale endpoints
+now route real bytes. Real etcd dynamic discovery is a pure composition swap behind
+the same trait (<a href="/adr/0006-etcd-for-coordination.html">ADR-0006</a>), not M2 risk; the concrete stays wired only in
+<code>server</code> (<a href="/adr/0010-pluggable-deployment-substrate.html">ADR-0010</a>).</p>
+<h3>Parallel write &amp; any-<em>k</em> read</h3>
+<p><strong>Write — parallel fan-out, commit after all <em>n</em> ack.</strong> M2 replaces <code>core</code>'s
+sequential nested put-loop with a concurrent fan-out: for each chunk, fire all <em>n</em>
+<code>put_fragment</code> calls at once and join on every one. The commit point is unchanged —
+the single atomic metadata transaction runs <strong>only after all <em>n</em> ack</strong> (<a href="/architecture/06-runtime-view.html">§6.1</a>).
+On a partial fan-out (any put fails or times out), the write <strong>fails closed</strong>: it
+aborts <em>before</em> the commit, surfaces a retryable error, and leaves the acked
+fragments as <strong>leased garbage</strong> the pending-ledger sweep reclaims (<a href="/architecture/08-crosscutting-concepts.html">§8.9</a>:
+&quot;never a silent half-write&quot;; <a href="/architecture/05-building-block-view.html">§5</a>: &quot;failures here are harmless garbage&quot;).</p>
+<p><strong>Read — any-<em>k</em>-arrive-first.</strong> M2 replaces the in-order serial fetch with a
+parallel one: fire <code>get_fragment</code> to all <em>n</em> indices, reconstruct as soon as the
+first <em>k</em> fragments <strong>verify their checksums</strong>, then cancel the outstanding
+fetches (<a href="/architecture/06-runtime-view.html">§6.2</a>). A fragment that fails its checksum or times out is treated as
+<strong>absent</strong>, and the client <strong>re-reads elsewhere</strong> — turning EC into a tail-latency
+<em>advantage</em> rather than a tax. <code>EcScheme::None</code> stays a single fetch. The read-retry
+path is the <strong>reserved seat</strong> where M3's repair-vs-serve throttling later attaches.</p>
+<p><strong>Error taxonomy.</strong> The gRPC <code>ChunkStore</code> distinguishes four failures, mapped from
+tonic <code>Status</code> codes onto the trait's <code>Result&lt;T, BoxError&gt;</code> as a small typed enum
+(so callers branch on kind, not strings):</p>
+<ul>
+<li><strong>Unavailable D server</strong> (<code>UNAVAILABLE</code> / transport error) → retry elsewhere.</li>
+<li><strong>Not-found</strong> (<code>get_fragment</code>) → <code>Ok(None)</code>, <em>not</em> an error — preserves the
+trait's <code>Option</code> contract.</li>
+<li><strong>Integrity failure</strong> (checksum mismatch; verified D-server-side on put, client-side
+on read) → treated as <strong>absent</strong> on read, re-read elsewhere.</li>
+<li><strong>Timeout</strong> (deadline exceeded) → treated as a slow/dead fragment, re-read elsewhere.</li>
+</ul>
+<p>What stays unchanged: the commit is still <em>one</em> metadata transaction at the home
+zone; concurrent-writer-one-wins and never-a-hybrid-read (<a href="/adr/0015-consistency-contract.html">ADR-0015</a>) are
+untouched; the read never surfaces uncommitted fragments. M2 moves <em>bytes over the
+wire</em> — it does not move the commit or weaken linearizability.</p>
+<h3>DST and integration tests (the heart of M2)</h3>
+<p><a href="/adr/0009-deterministic-simulation-testing.html">ADR-0009</a> is M2's defining ADR: madsim &quot;simulates time, scheduling, network,
+and randomness — the whole runtime,&quot; and &quot;Jepsen-style fault injection begins as
+soon as there is a networked path&quot; — that path is M2. The madsim runner and the seed
+sweep <strong>already exist</strong> — the <code>dst</code> crate runs the commit protocol on madsim under
+<code>--cfg madsim</code>, and <code>cargo xtask dst</code> re-runs it across a seed sweep
+(<code>MADSIM_TEST_NUM</code>, currently 50). M2 <strong>extends</strong> them with a <strong>network</strong> seam; it
+does not introduce madsim. <code>testkit</code> grows a network abstraction alongside its existing <code>Clock</code>/<code>Disk</code>
+seams; <code>madsim-tonic</code> (cfg-aliased) lets the <em>real</em> <code>GrpcChunkStore</code> code run on
+the simulated network.</p>
+<p><strong>Tier-1 — DST over the simulated network</strong> (deterministic, seed-reproducible, no
+containers, in the sweep). Determinism must hold <em>despite</em> the new parallelism:
+<code>select</code>/<code>join</code> ordering is seed-driven, not wall-clock. The properties asserted:</p>
+<ol>
+<li><strong>Parallel-write durability</strong> — after a successful fan-out commit, all <em>n</em>
+fragments are readable on their distinct D servers.</li>
+<li><strong>k-of-<em>n</em> over the network with drops</strong> — reconstruct byte-identical when
+madsim drops/delays up to <em>m</em> fragment fetches.</li>
+<li><strong>Re-read-on-corruption</strong> — a checksum-failing fragment is treated as absent and
+re-read elsewhere; the read still succeeds.</li>
+<li><strong>Fail-closed partial write</strong> — a partial fan-out (injected drop/partition/timeout)
+<strong>aborts pre-commit</strong> and leaves only leased garbage; <strong>no half-committed chunk</strong>
+(<a href="/architecture/08-crosscutting-concepts.html">§8.9</a>).</li>
+<li><strong>Commit suite re-run over the network</strong> — the M0/M1 commit-protocol property
+suite (concurrent-writer-one-wins, atomicity, no-hybrid-read) re-runs <strong>unchanged</strong>
+with the gRPC <code>ChunkStore</code>, <strong>proving the trait seam is real</strong> (arc M2).</li>
+</ol>
+<p>A DST seed that finds a bug is committed as a permanent regression test (the
+M0/<a href="/adr/0009-deterministic-simulation-testing.html">ADR-0009</a> rule).</p>
+<p><strong>Tier-2 — integration against real backends, born at M2</strong> (<a href="/adr/0009-deterministic-simulation-testing.html">ADR-0009</a>,
+<a href="/proposals/accepted/0001-milestone-0-walking-skeleton.html">0001</a>). The in-process store is swapped for <strong>real networked gRPC D servers</strong>
+running under docker-compose / testcontainers; the test drives a write and read
+end-to-end over real tonic — real HTTP/2 framing, real prost (de)serialization of
+the fragment-addressed messages, real connection lifecycle and backpressure.
+Tier-2 <strong>validates that the abstractions Tier-1 simulates match reality</strong>; it is
+non-deterministic and does not replace the deterministic spine. This is the first
+hardware beyond a laptop (<a href="/architecture/07-deployment-view.html">§7.1</a>) and the first container job in CI.</p>
+<h3>Benchmarks</h3>
+<p>The throughput-scaling claim (<a href="/architecture/10-quality-risks-glossary.html">§10</a> Q6: &quot;scales close to linearly with
+D-server count, divided by EC amplification&quot;) becomes <strong>first measurable</strong> at M2 —
+but only on real hardware in Tier-2, <strong>not</strong> in the deterministic CI tier (CI
+wall-clock is noisy and the simulated network has no physical throughput). M2 adds
+a criterion/Tier-2 <strong>aggregate write/read throughput</strong> benchmark across D-server
+counts, wired as <code>cargo xtask bench</code> (<a href="/adr/0016-monorepo-and-crate-structure.html">ADR-0016</a>) and entering CI as
+<strong>tracked numbers for regression visibility, not a hard gate</strong>. The <em>number</em> lands
+on real hardware; M2's in-CI obligation is only to prove the data path <strong>does not
+build a shared bottleneck</strong> that would preclude Q6.</p>
+<h3>Crate touch-points</h3>
+<p>Building on the workspace as it stands after M1 (<code>chunk-format</code>, <code>traits</code>, <code>proto</code>,
+<code>core</code>, <code>chunkstore-fs</code>, <code>metadata-redb</code>, <code>coordination-mem</code>, <code>testkit</code>, <code>server</code>,
+<code>dst</code>, <code>xtask</code>):</p>
+<ul>
+<li><strong><code>proto</code></strong> — add the <code>FragmentId</code> message, <strong>fragment-address</strong> the put/get
+requests, add the <code>ChunkStore</code> <strong>service</strong>; <code>build.rs</code> <code>prost-build</code> →
+<code>tonic</code>-codegen (keep <code>protox</code>); <code>Cargo.toml</code> gains <code>tonic</code>.</li>
+<li><strong><code>chunkstore-grpc</code></strong> (<strong>new</strong>) — <code>client</code> (<code>GrpcChunkStore: ChunkStore</code>) +
+<code>server</code> (tonic service over injected <code>S: ChunkStore</code>); deps <code>traits</code>, <code>proto</code>,
+<code>tonic</code>, <code>bytes</code>, <code>async-trait</code>; cfg-aliased <code>madsim-tonic</code>.</li>
+<li><strong><code>core</code></strong> — trait unchanged; <code>write_fragments</code> → <strong>parallel fan-out</strong>,
+<code>read_chunk</code> → <strong>any-<em>k</em>-arrive-first</strong> with re-read-on-failure; typed transport
+error enum.</li>
+<li><strong><code>server</code></strong> — the networked-profile composition swaps <code>wyrd-chunkstore-fs</code> for
+<code>wyrd-chunkstore-grpc</code>; new <strong><code>d-server</code> subcommand</strong> hosting <code>FsChunkStore</code>
+behind the service; D-server endpoint discovery via <code>Coordination::discover</code>.</li>
+<li><strong><code>testkit</code></strong> — a <strong>network seam</strong> (drop/delay/partition fault points) alongside
+the existing <code>Clock</code>/<code>Disk</code> seams.</li>
+<li><strong><code>dst</code></strong> — network-DST tests under <code>--cfg madsim</code> + <code>madsim-tonic</code>; new seeds.</li>
+<li><strong><code>xtask</code></strong> — Tier-2 integration runner (docker-compose/testcontainers); throughput
+<code>bench</code>.</li>
+<li><strong><code>Cargo.toml</code></strong> (workspace) — pin <code>tonic</code> (and <code>madsim-tonic</code>) once in
+<code>[workspace.dependencies]</code>; add <code>crates/chunkstore-grpc</code> to <code>members</code>.</li>
+<li><strong><code>deny.toml</code></strong> — <code>tonic</code> drags in <code>hyper</code>/<code>h2</code>/<code>tower</code> (<code>prost</code> already allowed);
+extend <code>[licenses].allow</code> for vetted transitives (<a href="/adr/0003-apache-2-license-and-dco.html">ADR-0003</a> gate); any
+test-only <code>madsim-tonic</code> advisory follows the existing <code>RUSTSEC-2025-0141</code>
+<code>ignore</code> precedent.</li>
+</ul>
+<h2>Alternatives considered</h2>
+<ul>
+<li><strong>A bulk-data hop through the gateway</strong> instead of client→D-server direct:
+rejected. It defeats the &quot;bulk data crosses no shared component&quot; property that
+<em>is</em> the throughput-scaling claim (<a href="/architecture/06-runtime-view.html">§6.1</a>, <a href="/architecture/10-quality-risks-glossary.html">§10</a> Q6) — the whole reason
+M2 exists.</li>
+<li><strong>Keeping the M0 chunk-addressed proto messages and wrapping them in a service</strong>:
+rejected. The trait is fragment-addressed; a chunk-addressed wire cannot serve it.
+The request messages must grow a <code>FragmentId</code> — fragment-addressing is the unit
+M1 designed for independent placement and fetch (<a href="/proposals/draft/0003-milestone-1-erasure-coding.html">0003</a>).</li>
+<li><strong>A non-tonic / hand-rolled gRPC or a non-gRPC RPC</strong>: rejected. tonic is the
+de-facto prost-based Rust standard and the <code>proto</code> crate is already prost; gRPC
+is implementation-first behind versioned protobuf (<a href="/adr/0002-spec-first-on-disk-format-only.html">ADR-0002</a>). The named
+D-server reimplementation seam is its protobuf contract (<a href="/adr/0004-rust-as-implementation-language.html">ADR-0004</a>).</li>
+<li><strong>A separate published D-server binary</strong>: deferred. Single-binary-dev
+(<a href="/adr/0014-single-binary-dev-only.html">ADR-0014</a>) and coarse-then-split (<a href="/adr/0016-monorepo-and-crate-structure.html">ADR-0016</a>) bless a <code>d-server</code>
+<strong>subcommand</strong>; the binary split waits for the production role-split.</li>
+<li><strong>Real etcd discovery in M2</strong>: deferred to a composition swap (<a href="/adr/0006-etcd-for-coordination.html">ADR-0006</a>).
+In-memory <code>Coordination</code> serves Tier-1 DST and static endpoints serve Tier-2;
+etcd is a production backend behind the same trait, not M2 risk.</li>
+<li><strong>Failure-domain-aware placement (and durability math) in M2</strong>: that is L2
+(M6) + custodians (M3) (<a href="/architecture/07-deployment-view.html">§7.3</a>). M2 spreads across distinct endpoints only;
+claiming the durability math here would assert a guarantee M2's topology cannot
+yet keep (<a href="/adr/0014-single-binary-dev-only.html">ADR-0014</a>).</li>
+<li><strong>A ChunkStore-level in-sim fake for Tier-1</strong> (no tonic in DST): kept as the
+explicit <strong>fallback</strong>, not the primary. It sidesteps the <code>madsim-tonic</code> version
+risk entirely but tests a <em>fake</em>, not the wire code, pushing all
+transport-correctness onto the non-deterministic tier — inverting <a href="/adr/0009-deterministic-simulation-testing.html">ADR-0009</a>'s
+intent. Primary is <code>madsim-tonic</code> (real wire code under deterministic faults); the
+fake is the documented retreat if the PR-1 version spike shows <code>madsim-tonic</code>
+cannot track a shippable <code>tonic</code>.</li>
+</ul>
+<h2>Graduation criteria (definition of done)</h2>
+<ul>
+<li>The in-process filesystem store is <strong>replaced by networked gRPC D servers behind
+the unchanged <code>ChunkStore</code> trait</strong> — <code>core</code> and the gateway compile and pass with
+no caller edit.</li>
+<li>A file written via S3 PUT under <code>rs(6,3)</code> against a <strong>multi-D-server</strong> networked
+profile reads back <strong>byte-identical</strong> via GET — the client <strong>writing the 9
+fragments directly and in parallel</strong> to distinct D servers, the read
+reconstructing from <strong>whichever 6 arrive first</strong>.</li>
+<li>A chunk's <em>n</em> fragments are written <strong>directly and in parallel to multiple
+networked D servers</strong> (distinct-endpoint selection best-effort, not a gated
+placement guarantee); D servers are discovered through the <strong>L5 <code>Coordination</code>
+seam</strong>, never an orchestrator API.</li>
+<li><strong>Fail-closed write</strong> proven: an injected partial fan-out <strong>aborts before commit</strong>,
+leaves only leased garbage, and never commits a half-written chunk.</li>
+<li><strong>Any-<em>k</em> read with drops/corruption</strong> proven over the simulated network: up to
+<em>m</em> dropped/corrupt fragments still read byte-identical, re-reading elsewhere.</li>
+<li>The <strong>M0/M1 commit-protocol property suite still passes</strong> with the gRPC
+<code>ChunkStore</code> under madsim network simulation — seed-reproducible, seeds committed.</li>
+<li><strong>Tier-2 integration</strong> stands up: real gRPC D servers under containers, an
+end-to-end write/read over real tonic green in CI.</li>
+<li>M2 emits <strong>no durability telemetry</strong> (deferred to M3) and <strong>claims no
+failure-domain durability math</strong>.</li>
+<li><code>fmt</code>/<code>clippy</code> clean; <code>Cargo.lock</code> updated; <code>cargo-deny</code> passes with <code>tonic</code> and
+its vetted transitives.</li>
+</ul>
+<h3>Suggested PR sequence (each with its own definition of done)</h3>
+<p>Each step is one PR, tracked under the <strong>M2</strong> milestone:</p>
+<ol>
+<li><strong><code>madsim-tonic</code> / <code>tonic</code> version spike + proto service</strong> — pin the newest
+<code>tonic</code> that <code>madsim-tonic</code> supports; add the <code>FragmentId</code> message,
+fragment-address the requests, add the <code>ChunkStore</code> service; switch <code>build.rs</code> to
+tonic-codegen; clear the <code>cargo-deny</code> license wall. <em>DoD:</em> <code>proto</code> builds client
+<ul>
+<li>server stubs; the version-compat matrix is settled; <code>cargo-deny</code> green.</li>
+</ul>
+</li>
+<li><strong><code>chunkstore-grpc</code> crate</strong> — <code>GrpcChunkStore</code> client + the D-server service over
+an injected <code>S: ChunkStore</code>; checksum-verify on put; <code>Health</code> over the wire.
+<em>DoD:</em> a round-trip <code>put</code>/<code>get</code>/<code>health</code> against an in-process tonic server passes.</li>
+<li><strong><code>d-server</code> role + discovery</strong> — the <code>server</code> subcommand hosting <code>FsChunkStore</code>;
+leased registration + <code>discover</code> through the <code>Coordination</code> seam. <em>DoD:</em> a D
+server registers and is discovered; the gateway resolves <em>n</em> distinct endpoints.</li>
+<li><strong>Parallel fan-out write</strong> — <code>core::write_fragments</code> → concurrent puts,
+commit-after-all-<em>n</em>-ack, fail-closed on partial. <em>DoD:</em> an <code>rs(6,3)</code> write fans
+out to distinct D servers; commit still atomic; partial fan-out aborts pre-commit.</li>
+<li><strong>Any-<em>k</em>-arrive-first read</strong> — <code>core::read_chunk</code> → parallel fetch, reconstruct
+from first <em>k</em> that verify, re-read elsewhere, cancel the rest; typed error enum.
+<em>DoD:</em> an <code>rs(6,3)</code> GET is byte-identical; reconstructs with up to <em>m</em> missing/slow.</li>
+<li><strong>Tier-1 network DST</strong> — <code>testkit</code> network seam + <code>madsim-tonic</code>; drop/delay/
+partition/corruption properties; the commit suite re-run over gRPC. <em>DoD:</em> all
+green in the 50-seed sweep; bug-finding seeds committed.</li>
+<li><strong>Tier-2 integration + throughput bench</strong> — docker-compose/testcontainers D
+servers; end-to-end write/read over real tonic; the tracked throughput benchmark.
+<em>DoD:</em> the container integration test passes in CI; first throughput data points
+recorded.</li>
+</ol>
+<h2>Backward compatibility</h2>
+<ul>
+<li><strong>On-disk format</strong> — <strong>unchanged</strong>. M2 transports M1's fragments over the wire; it
+does not touch the fragment layout or <code>format_version</code>. The format stays
+v0/unstable; no production data exists to migrate.</li>
+<li><strong>Wire contract</strong> — the gRPC <code>ChunkStore</code> is a <strong>new</strong> inter-component contract in
+<code>wyrd.v0</code>, <strong>evolved by addition</strong> (<a href="/architecture/08-crosscutting-concepts.html">§8.7</a>): fields are never repurposed, so
+neighbours interoperate across a one-version gap. The fragment-addressing of the
+request messages is a change to <strong>never-yet-shipped</strong> shapes (no transport
+existed), not a break of a deployed contract.</li>
+<li><strong>Trait / internal API</strong> — the <code>ChunkStore</code> trait is <strong>unchanged</strong> (already
+fragment-addressed at M1); M2 only adds a new concrete (<code>GrpcChunkStore</code>) behind
+it. The swap is composition-local (<a href="/adr/0010-pluggable-deployment-substrate.html">ADR-0010</a>); consumers see only the trait.</li>
+<li><strong>Public API / deployments</strong> — none yet (the first deployable product is M4);
+nothing to stay compatible with. The single-binary profile remains dev/eval-only
+(<a href="/adr/0014-single-binary-dev-only.html">ADR-0014</a>).</li>
+</ul>
+<h2>Open questions</h2>
+<ul>
+<li><strong>Placement record vs. stateless selection</strong> — M2's <em>own</em> read path, after a
+process restart, must resolve each fragment index back to the endpoint that holds
+it, so <em>some</em> location record is M2-intrinsic. The open question is its shape:
+stateless per-read selection (re-discover and probe any sufficient set), or a
+chunk's fragment <em>i</em> <strong>recorded</strong> at commit (a placement map in the chunk map)?
+Current lean: record placement at commit; M3 custodians will <em>also</em> consume it for
+scrub/reconstruct, but the M2 read need stands on its own. Confirm the shape at M3.</li>
+<li><strong>Lease TTL / renewal cadence and mid-write staleness</strong> — what TTL and renewal
+interval does a registered D server use, and how does the client handle a
+discovered-but-dead endpoint mid-write — <strong>abort-and-fail-closed</strong> (M2) vs.
+<strong>re-place</strong> (M3)? M2 takes abort-and-fail-closed; re-place is degraded-write
+tolerance, deferred.</li>
+<li><strong><code>madsim-tonic</code> version tracking</strong> — can <code>madsim-tonic</code> track a <code>tonic</code> recent
+enough to ship? Settled empirically in PR-1; the ChunkStore-level in-sim fake is
+the recorded fallback if not (<a href="/adr/0009-deterministic-simulation-testing.html">ADR-0009</a>).</li>
+<li><strong>mTLS seat shape</strong> — the transport reserves an mTLS termination point
+(<a href="/adr/0005-single-provider-closed-federation.html">ADR-0005</a>, status <em>Proposed</em>); whether that seat is configured at the tonic
+channel or wrapped a layer up is left to the PKI slice, not decided here.</li>
+<li><strong>Note on Proposed ADRs</strong> — M2's telemetry-deferral (<a href="/adr/0011-durability-telemetry-and-declarative-management.html">ADR-0011</a>) and
+trust-boundary (<a href="/adr/0005-single-provider-closed-federation.html">ADR-0005</a>) claims rest on <strong>Proposed</strong> (not yet Accepted)
+ADRs; M2 leans hardest on <a href="/adr/0009-deterministic-simulation-testing.html">ADR-0009</a> (Accepted). Recorded for traceability.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>
