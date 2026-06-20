@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proposal: Milestone 1 — erasure coding (implementation plan) — Wyrd</title>
+<meta name="description" content="M1 proves that real Reed-Solomon encode/decode and reconstruction-from-any-k">
+<meta property="og:title" content="Proposal: Milestone 1 — erasure coding (implementation plan) — Wyrd">
+<meta property="og:description" content="M1 proves that real Reed-Solomon encode/decode and reconstruction-from-any-k">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Enhancement Proposal</p>
+    <p class="doc-meta">Status: draft · 20.06.2026 02:14</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>Proposal: Milestone 1 — erasure coding (implementation plan)</h1>
+<blockquote>
+<p>The implementation plan for the first <em>widening</em> step of the <a href="/proposals/accepted/0002-implementation-arc.html">implementation
+arc</a> (proposal 0002). <a href="/proposals/accepted/0001-milestone-0-walking-skeleton.html">Proposal
+0001</a> built the walking
+skeleton — one atomic write and read in a single process, the commit protocol
+proven under fault injection. M1 keeps that slice intact and replaces its one
+placeholder — <code>replication(1)</code>/<code>none</code> durability — with <strong>real Reed-Solomon
+erasure coding in the client data path</strong>. It records <em>how</em> M1 is built; the
+<em>why</em> of the EC design lives in the ADRs it references (<a href="/adr/0008-tikv-metadata-and-pluggable-backends.html">ADR-0008</a>,
+<a href="/adr/0019-chunk-format-layout.html">ADR-0019</a>, <a href="/adr/0021-encryption-at-rest-and-key-management.html">ADR-0021</a>). M1 is implementation-first behind the
+already-specified format (<a href="/adr/0002-spec-first-on-disk-format-only.html">ADR-0002</a>): no new spec is required, because the
+EC-scheme identifiers were fixed in <code>chunk-format/v1.md</code> as part of the format
+prerequisite.</p>
+</blockquote>
+<h2>Motivation</h2>
+<p>M1 proves that <strong>real Reed-Solomon encode/decode and reconstruction-from-any-<em>k</em>
+works in the client data path</strong> (<a href="/architecture/09-build-order-and-roadmap.html">§9</a> widening step 1; arc M1). This is the
+hottest, most failure-critical loop in the system: every byte written is
+erasure-coded and every byte read may be reconstructed, so a correctness bug here
+is silent data corruption at scale.</p>
+<p>The ordering principle of the arc is <strong>risk retired, not features delivered</strong>.
+M0 retired the largest risk — that atomic commit across separate metadata and
+data paths is hard. M1 retires the <em>next</em>: that the coding math, the
+stripe/fragment layout, and the any-<em>k</em> reconstruction are correct. It is
+de-risked <strong>against the already-working slice</strong> rather than in the abstract — the
+M0 commit protocol gives EC a correct write path to encode into and a correct
+read path to reconstruct out of, so a failure isolates cleanly to the coding
+loop and not to the surrounding plumbing. This is why EC comes before networked
+D servers (M2): proving the coding in one process separates the <em>EC-correctness</em>
+risk from the <em>networking</em> risk, and each is validated alone.</p>
+<p>M1 is a <strong>soft stopping point</strong> (arc): the system becomes space-efficient
+(≈1.5× overhead instead of replication's 2–3×) but is still single-process and
+not yet deployable. The first deployable product is M4.</p>
+<h2>Design</h2>
+<h3>Scope boundary</h3>
+<p><strong>In scope</strong> — exactly what retires the EC-correctness risk:</p>
+<ul>
+<li>Real Reed-Solomon encode/decode in the client, via <strong><code>reed-solomon-simd</code></strong> (the
+decided library, <a href="/adr/0003-apache-2-license-and-dco.html">ADR-0003</a>/<a href="/adr/0004-rust-as-implementation-language.html">ADR-0004</a>), parameterized over RS(<em>k</em>,<em>m</em>).</li>
+<li>The chunk → stripe → fragment model: a chunk is one RS stripe of <em>n</em> = <em>k</em>+<em>m</em>
+fragments, written through the <code>ChunkStore</code>.</li>
+<li><strong>Evolving the <code>ChunkStore</code> trait</strong> from chunk-addressed to <strong>fragment-addressed</strong>
+(the load-bearing structural change — see below).</li>
+<li>The read path: gather any <em>k</em> of <em>n</em> fragments, verify checksums, reconstruct,
+return byte-identical data; survive up to <em>m</em> fragment losses without read error.</li>
+<li>Producing real <code>ec_scheme_type = 2</code> (reed-solomon) fragments and landing a
+Reed-Solomon <strong>conformance vector</strong>.</li>
+<li>DST property tests for the coding loop and EC benchmarks in CI.</li>
+</ul>
+<p><strong>Out of scope</strong> — deferred to the milestone that actually retires their risk,
+their hooks already present where retrofit is expensive:</p>
+<ul>
+<li><strong>Networked D servers / real failure domains</strong> → M2. M1's <em>n</em> fragments
+co-locate in the single in-process filesystem store; there is no placement and
+no domain spread yet (<a href="/architecture/07-deployment-view.html">§7</a>, <a href="/architecture/08-crosscutting-concepts.html">§8.9</a>). M1 proves the <em>coding</em>, not the
+<em>placement</em>, so durability math (<a href="/architecture/07-deployment-view.html">§7</a>: fragments in independent failure
+domains) is not yet claimed.</li>
+<li><strong>Write-back repair / healing</strong> → M3 (custodians). M1 does <strong>read-time
+reconstruction</strong> (<a href="/architecture/06-runtime-view.html">§6.2</a>) only: it reconstructs to satisfy a read, it does
+<strong>not</strong> rebuild the lost fragment back into the store. Scrub → reconstruct →
+re-place → commit-point-atomic location update is the custodian loop
+(<a href="/architecture/06-runtime-view.html">§6.3</a>), the <em>second</em> home of correctness risk, retired later with real
+data to maintain.</li>
+<li><strong>Production metadata backend (TiKV)</strong> → M4; <strong>cross-zone layers</strong> → M5–M7.</li>
+<li><strong>Small-file inlining</strong> → its own later slice. M1 stays EC-only; it ships the
+benchmarks that make the inline-threshold decision measurable, but does not
+build the inlining mechanism (it does not retire the EC risk).</li>
+<li><strong>Telemetry / observability</strong> → arrives with the custodians at M3
+(<a href="/adr/0011-durability-telemetry-and-declarative-management.html">ADR-0011</a>); M1 is verified by DST, not metrics, exactly as M0.</li>
+</ul>
+<h3>What carries over from M0, unchanged</h3>
+<p>EC slots into <strong>phase 2 (the data path) only</strong>. Everything that <em>is</em> the
+differentiator is untouched:</p>
+<ul>
+<li>The four-phase write/commit protocol (<a href="/architecture/05-building-block-view.html">§5</a>): intent → data path → commit →
+release. The commit point is still <strong>one redb write transaction</strong>; concurrent
+writers still conflict there and exactly one wins.</li>
+<li>The redb metadata model: <code>inode</code> / <code>dirent</code> / <code>pending:&lt;chunk_id&gt;</code> ledger /
+<code>meta:version</code> fence.</li>
+<li>Minimal S3 PUT/GET, in-memory <code>Coordination</code>, the test-invoked ledger sweep.</li>
+</ul>
+<p>The only metadata change is additive: the committed <strong>chunk map</strong> now records, per
+chunk, the EC scheme (<code>ec_scheme_type</code>, <em>k</em>, <em>m</em>) and the chunk's <strong>logical
+length</strong> (pre-padding), and references <em>n</em> fragments instead of one. The
+atomicity is unchanged — still the single transaction that writes the chunk map,
+sets <code>COMMITTED</code>, and bumps the version conditional on the prior. M1 widens the
+proven slice <strong>without disturbing the proof</strong>.</p>
+<h3>Where EC sits in the data path</h3>
+<pre><code>write:  chunk ──[erasure-code: k data + m parity shards]──► n fragments ──► ChunkStore.put ──► commit (unchanged)
+read:   ChunkStore.get (any k of n) ──[verify checksums]──► [decode/reconstruct] ──[truncate to logical length]──► bytes
+</code></pre>
+<p>EC is the client-library layer directly above the <code>ChunkStore</code> and below the
+(future) client-side encryption: per <a href="/adr/0021-encryption-at-rest-and-key-management.html">ADR-0021</a>, the client encrypts
+<em>before</em> erasure coding and decrypts <em>after</em> reconstruction, so EC always
+operates on the stored bytes. M1 has no encryption, so it codes plaintext; the
+ordering is fixed now so the encryption slice (later) inserts cleanly above EC.</p>
+<h3>The chunk → stripe → fragment model</h3>
+<p>A file is split into <strong>chunks</strong> (the unit of placement and erasure coding,
+<a href="/architecture/10-quality-risks-glossary.html">§10 glossary</a>). Each chunk is encoded as exactly one <strong>stripe</strong>:</p>
+<ol>
+<li>The chunk's bytes are divided into <strong><em>k</em> equal-size data shards</strong> (zero-padded
+to equal length, and to the library's alignment requirement). <code>reed-solomon-simd</code>
+computes <strong><em>m</em> parity shards</strong> of the same size, giving <em>n</em> = <em>k</em>+<em>m</em> shards.</li>
+<li>Each shard is wrapped in the v1 fragment header (<a href="/specs/chunk-format/v1.html">spec</a>) with
+<code>ec_scheme_type = 2</code>, <code>ec_k = k</code>, <code>ec_m = m</code>, <code>ec_fragment_index = 0..n-1</code>, all
+<em>n</em> sharing the chunk's u128 <code>chunk_id</code>; the payload is the shard bytes; the
+<code>payload_checksum</code> (crc32c) is over the stored shard.</li>
+<li>The chunk's <strong>logical length</strong> is recorded in the chunk-map metadata, so the
+reader strips padding after reconstruction. The per-fragment <code>payload_length</code>
+is the <em>shard's</em> stored length; the chunk's logical length is authoritative
+metadata. (The header's EC fields MUST agree with that metadata — <a href="/specs/chunk-format/v1.html">spec</a>;
+the writer fills both from the same source, a disagreement is detectable
+corruption.)</li>
+</ol>
+<p>Reconstruction: gather <strong>any <em>k</em></strong> of the <em>n</em> fragments, verify each fragment's
+header and payload checksums, feed the surviving data+parity shards (by index) to
+<code>reed-solomon-simd</code> to recover the missing data shards, concatenate the <em>k</em> data
+shards, and truncate to the logical length.</p>
+<h3>The <code>ChunkStore</code> trait evolution (the load-bearing change)</h3>
+<p>M0's <code>ChunkStore</code> is deliberately coarse — its own doc comment says the
+signatures &quot;will firm up as the commit protocol and the DST harness pin the
+semantics.&quot; It addresses a fragment by <strong><code>chunk_id</code> alone</strong>:</p>
+<pre><code class="language-rust">async fn put_fragment(&amp;self, id: ChunkId, fragment: Bytes) -&gt; Result&lt;()&gt;;
+async fn get_fragment(&amp;self, id: ChunkId) -&gt; Result&lt;Option&lt;Bytes&gt;&gt;;
+</code></pre>
+<p>RS(<em>k</em>,<em>m</em>) maps one <code>chunk_id</code> to <strong><em>n</em> fragments</strong>, so this firms up at M1 to
+<strong>fragment-addressed</strong>: the key becomes <code>FragmentId { chunk: ChunkId, index: u16 }</code>
+(the <code>ec_fragment_index</code> of the stored fragment). This is the natural addressing
+unit for M2's networked D servers — each fragment is independently placed and
+fetched — so the change is made <strong>once</strong>, here, and M2's gRPC <code>ChunkStore</code>
+inherits the same contract. It subsumes M0's <code>replication(1)</code> cleanly (index 0).</p>
+<ul>
+<li>The <code>chunkstore-fs</code> implementation keys storage by <code>(chunk_id, index)</code>
+(e.g. a per-chunk directory with one file per index).</li>
+<li>The read path knows <em>n</em> from the chunk map's scheme, so it fetches indices
+<code>0..n</code> and takes the first <em>k</em> that return <strong>and</strong> verify; no separate listing
+operation is required at M1. (A <code>list</code>/<code>has</code> affordance may be added when M2's
+networked discovery needs it.)</li>
+<li>The trait stays behind the seam (<a href="/adr/0010-pluggable-deployment-substrate.html">ADR-0010</a>): this is a composition-local
+change to <code>traits</code> + <code>chunkstore-fs</code>, not a refactor of consumers.</li>
+</ul>
+<h3>The on-disk format and conformance</h3>
+<p>The EC fields were <strong>specified at M0</strong> (reserved-and-decided, <a href="/adr/0019-chunk-format-layout.html">ADR-0019</a>);
+M1 is the first writer to <strong>populate</strong> <code>ec_scheme_type = 2</code>. Producing
+reed-solomon fragments therefore <em>exercises an already-specified code point</em> — a
+<strong>backward-compatible</strong> use of the format that &quot;MUST be accompanied by new
+conformance vectors&quot; but is <strong>not</strong> a <code>format_version</code> increment (<a href="/specs/chunk-format/v1.html">spec</a>,
+Versioning). M1 lands at least one RS vector under
+<code>specs/conformance/vectors/v1/</code> (a reed-solomon data shard, and a parity shard,
+with <code>ec_scheme_type: &quot;reed-solomon&quot;</code>, <code>ec_k: 6</code>, <code>ec_m: 3</code>, and the
+<code>ec_fragment_index</code>), generated via <code>cargo xtask gen-vectors</code> and checked by
+<code>cargo xtask conformance</code>. The format <strong>stays v0/unstable</strong> through M1 (decided):
+the real RS path is new enough that retaining the freedom to adjust the layout is
+worth more than an early freeze; <code>v1</code> is stamped later at a deliberate trigger
+(see Open questions), not as a side effect of this milestone.</p>
+<h3>Default scheme and configuration</h3>
+<p><code>durability</code> becomes a real selectable value: <code>rs(k,m)</code> joins <code>none</code> and
+<code>replication(n)</code>. The <strong>default is <code>rs(6,3)</code></strong> — the scheme the architecture
+already uses as its running example (<a href="/architecture/08-crosscutting-concepts.html">§8.2</a> redundancy model; the <a href="/architecture/10-quality-risks-glossary.html">§10</a>
+Q6 ≈1.5× throughput scenario), so the docs stay self-consistent. The code is
+parameterized over (<em>k</em>,<em>m</em>) and tested across a matrix regardless; the default
+only fixes the config default and the headline conformance vector. Backend
+selection remains composition-in-<code>server</code> (<a href="/adr/0008-tikv-metadata-and-pluggable-backends.html">ADR-0008</a>), not a runtime flag.
+The <strong>chunk/stripe size</strong> stays a hardcoded default — it is the deferred
+empirical open question, now the subject of M1's benchmarks (see Open questions).</p>
+<h3>DST and property tests (the heart of M1)</h3>
+<p>Reed-Solomon encode/decode is pure, deterministic computation — an ideal fit for
+the <code>testkit</code> DST harness (<a href="/adr/0009-deterministic-simulation-testing.html">ADR-0009</a>). The property tests assert:</p>
+<ol>
+<li><strong>Roundtrip</strong> — <code>decode(encode(chunk))</code> is byte-identical, across a matrix of
+(<em>k</em>,<em>m</em>) and chunk sizes including the edges: empty, 1 byte, exactly <em>k</em>
+bytes, a non-shard-aligned size, and large multi-shard.</li>
+<li><strong>Reconstruct-from-any-<em>k</em></strong> — for the default RS(6,3), <em>enumerate</em> all
+C(9,6) = 84 <em>k</em>-subsets and decode each to the original; for wider schemes,
+sample subsets deterministically by seed. This is the literal arc criterion
+&quot;read back by reconstructing from any <em>k</em>.&quot;</li>
+<li><strong>Loss survival</strong> — deleting up to <em>m</em> fragments (any combination) still reads
+byte-identical; deleting <em>m</em>+1 yields a <strong>clean typed error</strong> (insufficient
+fragments), never a panic or corrupted bytes. The error-vs-corruption
+distinction is itself a property.</li>
+<li><strong>Corruption detection</strong> — a bit-flipped fragment fails its <code>payload_checksum</code>,
+is <strong>excluded</strong> by the read path (treated as missing) and reconstructed around
+if ≥ <em>k</em> remain, else a clean error. A checksum-failing shard is <strong>never</strong> fed
+to the decoder (which would silently produce garbage). This ties EC to the
+format's integrity guarantee.</li>
+<li><strong>Commit-protocol integration under EC</strong> — the full M0 property suite re-run
+with the EC data path swapped in: a file written via S3 PUT under <code>rs(6,3)</code>
+reads back byte-identical via GET; concurrent writers → exactly one commit
+wins; a reader sees pre- or post-commit, never a hybrid; crash between phases
+3 and 4 → the file is fully visible or not at all, and no committed chunk-map
+entry references a fragment the sweep would reclaim — now with <em>n</em> fragments
+per chunk instead of one.</li>
+<li><strong>Mixed-era read</strong> — a chunk written under M0's <code>replication(1)</code>/<code>none</code> and a
+chunk written under <code>rs(6,3)</code> both read correctly through the same read path,
+driven by the per-chunk/per-fragment scheme — the <a href="/adr/0008-tikv-metadata-and-pluggable-backends.html">ADR-0008</a> mixed-era
+claim validated in miniature.</li>
+</ol>
+<p>A DST seed that finds a bug is committed as a permanent regression test (the
+M0/<a href="/adr/0009-deterministic-simulation-testing.html">ADR-0009</a> rule).</p>
+<h3>Benchmarks in CI</h3>
+<p>Criterion micro-benchmarks for <strong>encode</strong>, <strong>decode</strong> (no loss), and
+<strong>reconstruct</strong> (with loss) across schemes {RS(4,2), RS(6,3), RS(10,4)} and shard
+sizes, wired as <code>cargo xtask bench</code> (logic in Rust, <a href="/adr/0016-monorepo-and-crate-structure.html">ADR-0016</a>) and run in
+CI. They enter CI as <strong>tracked</strong> numbers for regression visibility, <strong>not</strong> as a
+hard pass/fail gate — CI-runner wall-clock is noisy, and the throughput-scaling
+claim is only truly measurable on real hardware at M2+ (the M0 proposal's point).
+The pure-CPU coding loop is the one performance number meaningful even on a
+laptop, and it is the first real data point informing the deferred chunk/stripe
+size (Open questions).</p>
+<h3>Crate touch-points</h3>
+<p>Building on the M0 layout (<code>chunk-format</code>, <code>traits</code>, <code>proto</code>, <code>core</code>,
+<code>chunkstore-fs</code>, <code>metadata-redb</code>, <code>testkit</code>, <code>server</code>, <code>xtask</code>):</p>
+<ul>
+<li><strong><code>traits</code></strong> — <code>ChunkStore</code> → fragment-addressed (<code>FragmentId</code>).</li>
+<li><strong><code>core</code></strong> — a small <code>erasure</code> module wrapping <code>reed-solomon-simd</code>; the client
+write/read paths gain encode/decode.</li>
+<li><strong><code>chunkstore-fs</code></strong> — fragment-addressed storage.</li>
+<li><strong><code>chunk-format</code></strong> — round-trip <code>ec_scheme_type = 2</code>; new RS vectors.</li>
+<li><strong><code>testkit</code></strong> — a fault-injection hook to drop/corrupt a stored fragment.</li>
+<li><strong><code>xtask</code></strong> — <code>bench</code> command; RS vector generation.</li>
+<li><strong><code>server</code></strong> — <code>durability = rs(k,m)</code> config; chunk map carries scheme +
+logical length (metadata schema is implementation-first, <a href="/adr/0002-spec-first-on-disk-format-only.html">ADR-0002</a>).</li>
+<li><strong>deps</strong> — add <code>reed-solomon-simd</code>; confirm it under the <code>cargo-deny</code>
+permissive-license allowlist (<a href="/adr/0003-apache-2-license-and-dco.html">ADR-0003</a>).</li>
+</ul>
+<h2>Alternatives considered</h2>
+<ul>
+<li><strong>Per-fragment distinct <code>chunk_id</code>s</strong> instead of <code>(chunk_id, index)</code>: rejected.
+The glossary and format define a fragment as a piece of a chunk that <em>shares</em>
+the chunk's id with a per-stripe index (<a href="/architecture/10-quality-risks-glossary.html">§10</a>, <a href="/specs/chunk-format/v1.html">spec</a>); distinct ids
+would break the self-describing stripe grouping and the metadata model.</li>
+<li><strong>Stuffing all <em>n</em> fragments into one blob under the M0 chunk-addressed key</strong>:
+rejected. It defeats the independent per-fragment placement and fetch that M2's
+networked D servers need, and the any-<em>k</em>-arrive-first tail-latency advantage of
+the read path (<a href="/architecture/06-runtime-view.html">§6.2</a>).</li>
+<li><strong>Write-back repair/healing in M1</strong>: deferred to M3. M1's risk is coding
+correctness, not the maintenance loop; conflating them widens M1 past the risk
+it exists to retire.</li>
+<li><strong>Networked D servers (and thus real failure domains) in M1</strong>: that is M2.
+Proving the coding in-process first isolates EC-correctness from networking risk
+— the arc's risk-ordering.</li>
+<li><strong>A dedicated EC ADR</strong>: not minted. The EC decisions are already on record — the
+library (<a href="/adr/0003-apache-2-license-and-dco.html">ADR-0003</a>/<a href="/adr/0004-rust-as-implementation-language.html">ADR-0004</a>), the scheme encoding (<a href="/adr/0019-chunk-format-layout.html">ADR-0019</a>),
+per-zone config and mixed-era (<a href="/adr/0008-tikv-metadata-and-pluggable-backends.html">ADR-0008</a>), order-vs-encryption
+(<a href="/adr/0021-encryption-at-rest-and-key-management.html">ADR-0021</a>) — and M1 is implementation-first behind them (<a href="/adr/0002-spec-first-on-disk-format-only.html">ADR-0002</a>),
+so the data-path and trait-evolution details are recorded here and in-code. (Whether
+the <code>ChunkStore</code> fragment-addressing warrants its own ADR once M2 confirms the
+networked shape is an Open question.)</li>
+</ul>
+<h2>Graduation criteria (definition of done)</h2>
+<ul>
+<li>A file written via S3 PUT under <code>durability = rs(6,3)</code> reads back <strong>byte-identical</strong>
+via GET — the data path erasure-coding the chunk into 9 fragments, the read
+reconstructing from any 6.</li>
+<li><strong>Reconstruct-from-any-<em>k</em></strong> proven: decoding from every <em>k</em>-subset (enumerated
+for RS(6,3)) yields the original.</li>
+<li><strong>Up to <em>m</em> fragment losses survived</strong> without read error; <em>m</em>+1 losses produce
+a clean typed error, never corruption.</li>
+<li>A <strong>bit-flipped fragment is excluded by its checksum</strong> and the read reconstructs
+from the remaining <em>k</em> (or errors cleanly) — never returns garbage.</li>
+<li>The M0 <strong>commit-protocol property suite still passes</strong> with the EC data path
+(one-writer-wins, no-hybrid-read, crash-3–4 atomicity), seed-reproducible.</li>
+<li>At least one <strong>reed-solomon conformance vector</strong> lands under <code>specs/conformance/</code>
+and the reference reader accepts it; the format <strong>stays v0/unstable</strong>.</li>
+<li><strong>EC micro-benchmarks</strong> (encode/decode/reconstruct across schemes and sizes) run
+in CI as tracked numbers.</li>
+<li><code>fmt</code>/<code>clippy</code> clean; <code>Cargo.lock</code> updated; <code>cargo-deny</code> passes with
+<code>reed-solomon-simd</code>.</li>
+</ul>
+<h3>Suggested PR sequence (each with its own definition of done)</h3>
+<p>Each step is one PR, tracked under the <strong>M1</strong> milestone:</p>
+<ol>
+<li><strong><code>ChunkStore</code> → fragment-addressed</strong> (<code>FragmentId{chunk,index}</code>); update
+<code>chunkstore-fs</code> and the M0 <code>replication(1)</code> write/read to the new key (index 0).
+<em>DoD:</em> existing M0 tests pass through the new addressing.</li>
+<li><strong><code>erasure</code> coder</strong> over <code>reed-solomon-simd</code> (encode chunk → <em>n</em> shards, decode
+any-<em>k</em> → chunk), pure and DST-friendly. <em>DoD:</em> roundtrip + any-<em>k</em> property
+tests green across the (<em>k</em>,<em>m</em>) matrix.</li>
+<li><strong>Write path</strong> — client erasure-codes the chunk in phase 2 and writes <em>n</em>
+fragments; chunk map records scheme + logical length; commit unchanged. <em>DoD:</em>
+an <code>rs(6,3)</code> PUT stages 9 fragments; commit still atomic.</li>
+<li><strong>Read path</strong> — gather any <em>k</em> (checksum-verify, exclude bad), reconstruct,
+truncate, return. <em>DoD:</em> an <code>rs(6,3)</code> GET is byte-identical; reconstructs with
+up to <em>m</em> missing.</li>
+<li><strong><code>chunk-format</code> RS vectors</strong> — round-trip <code>ec_scheme_type = 2</code>; land the RS
+conformance vector(s) via <code>xtask gen-vectors</code> and wire into the conformance
+check. <em>DoD:</em> the reference reader accepts the RS vector.</li>
+<li><strong>DST campaign</strong> — loss-survival, corruption-detection, <em>m</em>+1-clean-error, the
+M0 property suite re-run under EC, and the mixed-era read. <em>DoD:</em> all green,
+seeds committed.</li>
+<li><strong>Benchmarks</strong> — criterion EC benches + <code>cargo xtask bench</code>, into CI as tracked
+numbers. <em>DoD:</em> benches run in CI; first encode/decode/reconstruct data points
+recorded.</li>
+</ol>
+<h2>Backward compatibility</h2>
+<ul>
+<li><strong>On-disk format</strong> — the EC fields were specified at M0; M1 is the first to
+populate <code>ec_scheme_type = 2</code>, a <strong>backward-compatible</strong> use of an already-decided
+code point (new conformance vectors, <strong>no</strong> <code>format_version</code> increment). The
+format <strong>stays v0/unstable</strong>; no production data exists to migrate.</li>
+<li><strong>Mixed-era data</strong> — chunks written under M0's <code>none</code>/<code>replication(1)</code> remain
+readable: the per-chunk scheme in the chunk map and fragment header drives the
+read path (<a href="/adr/0008-tikv-metadata-and-pluggable-backends.html">ADR-0008</a>), validated by M1's mixed-era test.</li>
+<li><strong>Trait / internal API</strong> — the <code>ChunkStore</code> fragment-addressing change is
+internal (pre-1.0, no published API) and composition-local; M2's gRPC
+<code>ChunkStore</code> is designed to the new contract from the start.</li>
+<li><strong>Public API / deployments</strong> — none yet (the first deployable product is M4);
+nothing to stay compatible with.</li>
+</ul>
+<h2>Open questions</h2>
+<ul>
+<li><strong>Chunk/stripe size</strong> — stays <strong>deferred to measurement</strong> (proposal 0002). M1
+produces the first benchmarks that <em>inform</em> it, but the value remains a
+hardcoded default <strong>set against, not frozen by</strong>, M1's numbers, because the
+throughput/overhead trade also depends on real disk and network behavior at M2+.</li>
+<li><strong><code>v1</code>-stamping trigger</strong> — with M1 staying v0, what <em>will</em> stamp <code>v1</code>: a second
+independent reader implementation, or a dedicated sustained fault-injection
+campaign distinct from M1's correctness suite? Recorded here, not decided.</li>
+<li><strong>Dedicated EC / fragment-addressing ADR</strong> — whether the <code>ChunkStore</code> evolution
+warrants its own ADR once M2 confirms the networked shape, or whether this
+proposal plus in-code records suffice (current lean: the latter,
+<a href="/adr/0002-spec-first-on-disk-format-only.html">ADR-0002</a>).</li>
+<li><strong>Partial-availability read policy</strong> — M1 fetches indices <code>0..n</code> from the single
+store and takes the first <em>k</em> that verify; the tail-latency-optimal &quot;whichever
+<em>k</em> arrive first&quot; policy (<a href="/architecture/06-runtime-view.html">§6.2</a>) only becomes meaningful with networked D
+servers (M2), where fragments have independent latencies. M1's single-store
+policy is a placeholder.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>
