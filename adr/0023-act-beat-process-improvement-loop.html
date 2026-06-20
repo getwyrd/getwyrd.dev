@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0023. Adopt the Act beat: a process-improvement loop — Wyrd</title>
+<meta name="description" content="Wyrd&#x27;s quality process is strong on three of the four PDCA beats and silent on the fourth. Plan is carried by specs, ADRs, and proposals, each with its own change process. Do is...">
+<meta property="og:title" content="0023. Adopt the Act beat: a process-improvement loop — Wyrd">
+<meta property="og:description" content="Wyrd&#x27;s quality process is strong on three of the four PDCA beats and silent on the fourth. Plan is carried by specs, ADRs, and proposals, each with its own change process. Do is...">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Proposed · 20.06.2026 13:40</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>0023. Adopt the Act beat: a process-improvement loop</h1>
+<h2>Context</h2>
+<p>Wyrd's quality process is strong on three of the four PDCA beats and silent on the fourth. <em>Plan</em> is carried by specs, ADRs, and proposals, each with its own change process. <em>Do</em> is constrained from day one by deterministic simulation testing against the <code>testkit</code> abstractions (ADR-0009). <em>Check</em> is the single-sourced <code>cargo xtask ci</code> gate wall — fmt, clippy, build, test, conformance, cargo-deny — run identically on a laptop and in CI (ADR-0009, ADR-0016), backed by <code>require-issue</code>, DCO, and ADR-immutability.</p>
+<p>What has no home is <em>Act</em>: the deliberate step where a <strong>recurring</strong> defect class or process friction is turned into a systemic guardrail rather than fixed instance by instance. DST already embodies exactly this reflex for correctness — a seed that finds a bug is committed as a permanent regression test, so the bug cannot return unnoticed. But there is no analogue for the lessons that are not a single reproducible bug: a review miss that recurs, a class of CI flake, an onboarding friction, a convention violated because it was never written down. Without a place to record these and a rule that each produces an action, the same lesson is re-learned every cycle and never compounds into a rule.</p>
+<p>The decision is whether to adopt the fourth beat, and how to do so without ceremony that outweighs the payoff at the current founding-maintainer, bootstrap scale (GOVERNANCE). It is deliberately independent of adopting any external PDCA tooling — this is the one beat Wyrd lacks, and it stands alone.</p>
+<h2>Decision</h2>
+<p><strong>We will adopt a lightweight Act beat, recorded append-only in <code>docs/process/act-log.md</code>.</strong> Each entry MUST name three things: the <strong>trigger</strong> (what recurred or went wrong), the <strong>root-cause class</strong> (not the single instance), and a concrete <strong>outcome</strong> — exactly one of: a new or changed <code>cargo xtask</code> gate; a new test, lint, or written convention; a checklist item; a follow-up ADR or proposal; or an explicit <em>&quot;no action, accepted&quot;</em> with its reason. An Act entry that names no outcome is not done.</p>
+<p><strong>Cadence is milestone-driven, with ad-hoc entries for notable incidents.</strong> A short retrospective accompanies each milestone close — the proposals already mark those boundaries (proposal 0002 and the per-milestone plans) — and an entry may be written at any time when an incident warrants one. The log is kept short on purpose; the discipline matters more than the ceremony.</p>
+<p><strong>The Act beat routes into Wyrd's existing artifacts; it does not replace them.</strong> Durable, machine-checkable rules become <code>xtask</code> gates so they are single-sourced and enforced (ADR-0016, ADR-0009); normative decisions become ADRs; structural change becomes proposals; correctness lessons remain DST regression seeds (ADR-0009). The act-log is the <strong>ledger and index</strong> of process change — what was learned and which guardrail it produced — not a parallel rulebook that gates could drift from.</p>
+<p><strong>The log is distinct in kind from an ADR.</strong> An ADR records a <em>decision and its why</em> and is immutable once Accepted; an act-log entry records a <em>process lesson and the guardrail it produced</em>. The log is therefore <strong>not</strong> immutability-gated — it is a working ledger, edited as an entry gains its outcome — but entries are not deleted, only superseded by later ones.</p>
+<h2>Consequences</h2>
+<ul>
+<li>A recurring lesson gains exactly one home and a rule that forces it toward a concrete guardrail; the project compounds process quality the way DST compounds correctness coverage, instead of re-learning the same lesson each cycle.</li>
+<li>A small recurring cost lands at milestone boundaries. The standing risk is the log decaying into an unread graveyard — mitigated by the &quot;every entry names an outcome&quot; rule and by tying cadence to milestone closes that already happen.</li>
+<li>Adopting the beat natively keeps Wyrd's gates single-sourced in <code>xtask</code> and the tree free of a second toolchain or license burden; it also de-risks a later, fuller PDCA-harness adoption by proving the highest-value beat first, without committing to Python, Copier, Obsidian, or a relicense (see <code>docs/process/pdca-harness-adoption-plan.md</code>).</li>
+<li>One new directory, <code>docs/process/</code>, enters the tree; the log is plain Markdown, consistent with docs-live-with-code and diagrams-as-code conventions.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>
