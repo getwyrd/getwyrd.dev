@@ -29,7 +29,7 @@
 <div class="wrap">
   <header class="doc-header">
     <p class="doc-class">Enhancement Proposal</p>
-    <p class="doc-meta">Status: draft · 20.06.2026 14:42</p>
+    <p class="doc-meta">Status: accepted · 20.06.2026 14:42</p>
   </header>
 </div>
 
@@ -40,7 +40,7 @@
 <h1>Proposal: Milestone 2 — networked D servers (implementation plan)</h1>
 <blockquote>
 <p>The implementation plan for the second <em>widening</em> step of the <a href="/proposals/accepted/0002-implementation-arc.html">implementation
-arc</a> (proposal 0002). <a href="/proposals/draft/0003-milestone-1-erasure-coding.html">Proposal
+arc</a> (proposal 0002). <a href="/proposals/accepted/0003-milestone-1-erasure-coding.html">Proposal
 0003</a> built (in plan) real Reed-Solomon
 erasure coding in the client data path, evolving the <code>ChunkStore</code> to a
 <strong>fragment-addressed</strong> trait. M2 keeps that slice intact and replaces its one
@@ -69,7 +69,7 @@ the real transport with no edit.</p>
 M0 retired atomic-commit-across-paths; M1 retired the coding math. M2 retires the
 <strong>networking</strong> risk <em>in isolation from coding</em> — exactly the separation M1's
 in-process proof was designed to enable. Proving the coding in one process first
-(<a href="/proposals/draft/0003-milestone-1-erasure-coding.html">0003</a> Motivation) meant a failure now isolates cleanly to the <em>transport</em>
+(<a href="/proposals/accepted/0003-milestone-1-erasure-coding.html">0003</a> Motivation) meant a failure now isolates cleanly to the <em>transport</em>
 and not to the surrounding plumbing or the EC loop. This is why networking comes
 <strong>after</strong> coding: each risk is validated alone, against an already-working slice.</p>
 <p>M2 is the milestone where the system first spans <strong>more than one process</strong> and
@@ -94,7 +94,7 @@ injected <code>S: ChunkStore</code> (in production, <code>FsChunkStore</code>).<
 filesystem store; the gateway's <code>ChunkStore</code> becomes the gRPC <strong>client</strong>.</li>
 <li><strong>Parallel fan-out write</strong> (commit after all <em>n</em> ack, fail-closed) and the
 <strong>any-<em>k</em>-arrive-first</strong> parallel read with re-read-on-failure — the read policy
-M1 explicitly deferred (<a href="/architecture/06-runtime-view.html">§6.2</a>; <a href="/proposals/draft/0003-milestone-1-erasure-coding.html">0003</a> Open questions).</li>
+M1 explicitly deferred (<a href="/architecture/06-runtime-view.html">§6.2</a>; <a href="/proposals/accepted/0003-milestone-1-erasure-coding.html">0003</a> Open questions).</li>
 <li><strong>Minimal placement</strong>: spread a chunk's <em>n</em> fragments across <em>n</em> <strong>distinct</strong>
 D-server endpoints, discovered through the <strong>L5 <code>Coordination</code> seam</strong> (<a href="/adr/0010-pluggable-deployment-substrate.html">ADR-0010</a>).</li>
 <li><strong>Tier-1 DST over a simulated network</strong> (madsim + <code>madsim-tonic</code>, no containers)
@@ -367,7 +367,7 @@ M2 exists.</li>
 <li><strong>Keeping the M0 chunk-addressed proto messages and wrapping them in a service</strong>:
 rejected. The trait is fragment-addressed; a chunk-addressed wire cannot serve it.
 The request messages must grow a <code>FragmentId</code> — fragment-addressing is the unit
-M1 designed for independent placement and fetch (<a href="/proposals/draft/0003-milestone-1-erasure-coding.html">0003</a>).</li>
+M1 designed for independent placement and fetch (<a href="/proposals/accepted/0003-milestone-1-erasure-coding.html">0003</a>).</li>
 <li><strong>A non-tonic / hand-rolled gRPC or a non-gRPC RPC</strong>: rejected. tonic is the
 de-facto prost-based Rust standard and the <code>proto</code> crate is already prost; gRPC
 is implementation-first behind versioned protobuf (<a href="/adr/0002-spec-first-on-disk-format-only.html">ADR-0002</a>). The named
