@@ -270,6 +270,9 @@
 <p><strong>The compounding loop.</strong> Every real-world discovery is promoted back into DST: a fault or workload shape found on real hardware is encoded as a new seed-driven DST scenario, becoming a permanent, free, reproducible regression test. The real tiers are <em>fault-discovery</em> tools; their findings become cheap simulation tests. This is the highest-leverage idea in the strategy — it turns expensive, one-off real-world findings into permanent CI coverage.</p>
 <h3>13.2 The tiers</h3>
 <p>The tiers escalate in realism and cost. Each catches what the one below cannot; none replaces DST as the correctness authority. They attach to the implementation arc (proposal 0002) at the milestone where they first add value, so test investment stays matched to the milestone that needs it.</p>
+<blockquote>
+<p><strong>Tier numbering — two distinct schemes.</strong> These Tier 0–3 labels are this strategy's <em>realism-and-cost</em> ladder. They are <strong>not</strong> the same as the &quot;Tier-1&quot;/&quot;Tier-2&quot; labels in the code and CI (proposal 0004's test taxonomy, e.g. <code>cargo xtask integration</code>): proposal 0004's &quot;Tier-1&quot; is the in-process DST/wire suite and its &quot;Tier-2&quot; is the container integration test — both of which run <em>within</em> this strategy's Tier 0–1, not on the Tier 2 single real machine below. Read a bare &quot;Tier 2&quot; by its source: this section's silicon tier, or the code's container suite.</p>
+</blockquote>
 <h4>Tier 0 — Deterministic simulation (from M0, always)</h4>
 <p><code>testkit</code> and the commit-protocol property tests (ADR-0009). The correctness authority. Runs in CI from the first milestone and grows with every subsequent one. Everything below is complementary to this, never a substitute.</p>
 <h4>Tier 1 — Local software-defined distributed testing (from M2)</h4>
