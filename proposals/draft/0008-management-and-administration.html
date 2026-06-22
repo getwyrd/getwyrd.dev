@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proposal: Management and administration — the operator surface — Wyrd</title>
+<meta name="description" content="observable, and the dangerous-but-routine operations (draining, upgrades,">
+<meta property="og:title" content="Proposal: Management and administration — the operator surface — Wyrd">
+<meta property="og:description" content="observable, and the dangerous-but-routine operations (draining, upgrades,">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Enhancement Proposal</p>
+    <p class="doc-meta">Status: draft · 23.06.2026 01:30</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>Proposal: Management and administration — the operator surface</h1>
+<blockquote>
+<p>Draft. The operator-facing <strong>management and administration surface</strong> for Wyrd:
+the API-first management plane (ADR-0013), the observability planes and audit
+log (ADR-0011, ADR-0012), the day-2 operations (§8.4), and multi-tenancy
+administration (ADR-0022). M3 built the <em>engine</em> — the declarative
+desired-state hook (<code>crates/custodian/src/desired_state.rs</code>) and the
+durability-plane telemetry (<code>crates/custodian/src/telemetry.rs</code>) — and
+deliberately deferred the operator-facing <em>surface</em> to ADR-0013. This proposal
+builds that surface. It is the <strong>first real implementation</strong> of the management
+contract, so it <strong>proposes to ratify ADR-0011, ADR-0012, and ADR-0013</strong> (all
+still Proposed) — Proposed → Accepted, subject to the architecture board. It is
+scoped to <strong>single-zone</strong> management — the M0–M4 product; the cross-zone global
+control plane (L2) is M6 and is explicitly out of scope.</p>
+</blockquote>
+<h2>Motivation</h2>
+<p><strong>Operability is quality goal #3</strong> — &quot;the durability state of the system must be
+observable, and the dangerous-but-routine operations (draining, upgrades,
+recovery) must be safe, resumable, and observable&quot; (§1.3). The rationale is that
+at fleet scale draining, upgrading, and recovering &quot;happen continuously, and they
+are where data loss and outages actually originate, not steady-state serving&quot;; an
+operator must be able to answer <em>&quot;is my data meeting its durability policy right
+now?&quot;</em> and run these procedures so that &quot;a half-finished drain must resume, not
+fall off a cliff&quot; (§1.3; Q8–Q9).</p>
+<p>M3 delivered the <strong>mechanism</strong> for this — the custodians reconcile, and they emit
+the durability plane from their first commit (ADR-0011; proposal 0005). But M3
+deliberately built <strong>only the hook</strong>: a <code>desired:dserver:&lt;id&gt;</code> ledger entry the
+operator writes and a <code>ReconciliationStatus</code> the rebalance loop computes
+(<code>crates/custodian/src/desired_state.rs:10-11</code> — &quot;The full API-first management
+surface and its CLI are ADR-0013, deferred&quot;). There is <strong>no operator-facing API,
+no CLI, no auth, and no tenant administration</strong> yet: the only network service in
+the workspace is the <code>ChunkStore</code> gRPC for the data path
+(<code>crates/proto/proto/wyrd/v0/chunk.proto</code>), and the only binary surface is a
+hand-rolled dev-only CLI with four subcommands (<code>crates/server/src/cli.rs:57-60</code>,
+documented dev-only at <code>:1-9</code>).</p>
+<p>This proposal closes that gap. It builds the <strong>operator surface</strong> on top of the
+M3 engine: an API-first management plane, its thin CLI, its authentication, the
+three observability planes and the audit log, the four first-class day-2
+operations, and multi-tenancy administration. It is the first implementation of
+the management contract that ADR-0011/0012/0013 describe. All three remain
+<strong>status: Proposed</strong> today; M3 <em>recommended</em> ratifying ADR-0011/0012 in its Open
+questions but <strong>deferred the act</strong>, and M4 needed no flip (its load-bearing ADRs
+were already Accepted, 0007:31-33). So per the ADR lifecycle — where Proposed →
+Accepted is &quot;the act of acceptance … intentional, not an automatic consequence of
+merging&quot; (ADR-0001) — this proposal, as the first real implementation of all three
+contracts, is the natural vehicle to actually <strong>perform the flip</strong>, subject to the
+architecture board (see Open questions on whether they may ratify ahead of the
+foundational set).</p>
+<h2>Design</h2>
+<p>The whole surface follows one principle and one altitude. The principle is
+<strong>declarative reconciliation, not imperative administration</strong>: an operator
+expresses <em>desired state</em> and the custodians reconcile reality toward it. The
+altitude is the architecture's own charter for the API — &quot;mostly read/write
+desired state + observe reconciliation progress: a small, safe, auditable
+surface&quot; (§8.4). Every part below is a consequence of holding to those two.</p>
+<p>A terminology note the glossary itself flags (§12): the <strong>control plane</strong> is L2
+(the global namespace, placement, zone registry); the <strong>management surface</strong> is
+the operator API (ADR-0013). They are distinct and this proposal is about the
+<em>latter</em>. Single-zone, there is no separate L2 — desired state folds into the
+zonal store (ADR-0020 decision 5) — but the surface is the same.</p>
+<h3>The model — declarative reconciliation, built on the M3 hook</h3>
+<p>M3 already encodes the model in <code>crates/custodian/src/desired_state.rs</code>: the
+operator writes desired state (<code>set_lifecycle</code> / <code>clear_lifecycle</code> over the
+<code>desired:dserver:&lt;id&gt;</code> ledger), the rebalance loop reconciles, and the
+<strong>&quot;policy changed&quot; vs &quot;policy satisfied&quot;</strong> distinction is made observable by
+<code>ReconciliationStatus { NotRequested, Pending, Satisfied }</code> — where <em>Satisfied</em>
+is computed from the committed placement records, not asserted
+(<code>desired_state.rs:78-150</code>). This is the binding contract of ADR-0011's
+declarative-management rule, stated in its Consequences (and in §8.4): &quot;'Policy
+changed' (recorded) and 'policy satisfied' (replicas exist) are distinct,
+observable moments.&quot;</p>
+<p>The management surface is the generalization of this hook to every desired-state
+object, exposed over an API. It invents no reconciliation logic; it <strong>wraps the
+existing custodian functions</strong> and the loops M3 built. Crucially, the management
+plane <strong>never drives D servers directly</strong> and never issues imperative, ordered
+placement commands — that would violate the custodians' placement authority
+(ADR-0010: &quot;placement and durability authority must live in the custodians&quot;; §7.3)
+and ADR-0011 rule 2. It writes desired state; the custodians own convergence.</p>
+<h3>The management API — the source of truth (ADR-0013)</h3>
+<p>ADR-0013 is the charter: &quot;A clean gRPC/REST management API is the source of truth
+for desired state and reconciliation status. Ship a thin CLI over it for v1.
+Defer a web UI. The API is the authoritative interface; CLI, dashboards, and any
+future UI are consumers of it.&quot; The API is therefore the system of record — even
+for telemetry, &quot;the management API is the system of record; Grafana is one
+consumer&quot; (ADR-0012).</p>
+<ul>
+<li><strong>Shape.</strong> A new <code>Management</code> gRPC service, defined in a new proto beside
+<code>chunk.proto</code> / <code>commit.proto</code> (the <code>proto</code> crate is the existing wire seam). A
+REST/JSON surface is offered as a gateway over the same service (gRPC-first; see
+Open questions). The method set is deliberately minimal and maps to the model:
+<em>write desired state</em> (drain/decommission a D server, set a tenant's policy
+bundle, register added capacity), <em>read desired state</em>, and <em>observe
+reconciliation</em> (the <code>changed</code>-vs-<code>satisfied</code> status per object, plus the
+durability/capacity planes and the audit/event stream). It wraps the M3
+<code>desired_state</code> functions and the telemetry handle as RPCs.</li>
+<li><strong><code>changed</code> vs <code>satisfied</code> as a first-class field.</strong> Every desired-state object
+carries an observed-reconciliation status (the Kubernetes
+generation/observed-generation shape); the existing per-file <code>meta:version</code>
+counter (§8.1) is the natural generation/fence hook. The operator's <em>&quot;is my
+change done yet?&quot;</em> is answered by reading the status, never inferred.</li>
+<li><strong>Where it lives.</strong> Following ADR-0016 coarse-then-split (trait boundaries from
+day one; only <code>server</code> wires concretes), the management role starts as a new
+subcommand + tonic role module in <code>server</code> — the exact precedent the networked
+<code>d-server</code> role set (<code>crates/server/src/dserver.rs</code>) — and splits into a
+dedicated <code>management</code> crate when the boundary firms. Either way it depends
+<strong>only on the <code>traits</code> seam and the custodian desired-state functions</strong>, never a
+concrete backend (ADR-0016). The server is <strong>stateless</strong>, so it is
+orchestrator-friendly and horizontally scalable, discovering peers through L5
+coordination, never an orchestrator API (ADR-0010).</li>
+</ul>
+<h3>The thin CLI — a consumer, not a second source of truth (ADR-0013)</h3>
+<p>A thin CLI ships over the API for v1: a clap-based gRPC client carrying <strong>no
+management logic of its own</strong>. It is distinct from today's bespoke dev-only
+parser (<code>crates/server/src/cli.rs:568-601</code>), which stays for local dev. &quot;Automation-
+friendly and scriptable from day one&quot; (ADR-0013) is the property to preserve — the
+CLI, any future dashboards, and the deferred web UI are all consumers of the one
+API.</p>
+<h3>Management-plane authentication and authorization</h3>
+<p>The management API authenticates with <strong>OIDC + mTLS</strong> — the only external surface
+that adds mTLS on top of an identity token (§8.5). The design:</p>
+<ul>
+<li><strong>A separate listener</strong> (a recommendation of this proposal, not a quoted
+architecture fact). The management plane is its own socket/endpoint with its own
+(stronger) auth profile, distinct from the data-plane S3/WebDAV/SDK gateway. §3.2
+lists Management as a distinct inbound <em>interface</em> — a logical separation; the
+architecture does not pin process topology, so the separate listener is our
+inference, not a stated requirement. &quot;The gateway is the authentication boundary&quot;
+(§8.5) is a statement about <em>layering</em> (auth happens at L1, never re-checked
+below), not about co-locating every surface in one process. A separate listener lets the operator network-restrict management
+(admin VLAN / private ingress) and scale it independently, and matches its
+larger blast radius (it can drain a zone or rewrite a tenant's replication
+factor).</li>
+<li><strong>mTLS is a composition, not a new PKI.</strong> The management-plane mTLS reuses the
+<strong>same provider-CA / SPIFFE-SPIRE fabric</strong> that authenticates services
+(ADR-0005, ADR-0025) — &quot;the mTLS fabric is an internal PKI, not a
+cross-organization trust system&quot; (ADR-0005). mTLS proves the calling client is a
+sanctioned operator endpoint inside the provider's one trust domain and gives a
+fail-closed channel; <strong>OIDC layered on top identifies the human/automation
+principal</strong> behind that endpoint, so the audit log records <em>who</em> acted, not
+merely a network position. A request missing <strong>either</strong> factor fails closed,
+mirroring the fabric's no-plaintext-fallback rule (ADR-0025).</li>
+<li><strong>Authorization.</strong> A small declarative RBAC over the API's verbs — <em>read-only</em>
+(observe), <em>operator</em> (desired-state edits: drain/add capacity, rolling upgrade,
+tenant policy CRUD, backup/restore), and a separately-gated <em>high-consequence</em>
+subset (tenant deletion / crypto-erase, GC-affecting actions) — keeping the
+surface &quot;small, safe, auditable&quot; (§8.4). An operator role may be <strong>scoped to a
+tenant subtree</strong> (a support engineer who may adjust only one tenant's quota),
+realized as a scope claim on the OIDC principal checked against the tenant's L2
+record — the same <em>L2-records-policy, L1-enforces</em> pattern the data plane uses
+(ADR-0022). <strong>Tenant administration is a different plane:</strong> a tenant has its own
+identity domain / OIDC realm and operates within its own namespace through the
+data surfaces (ADR-0022, which keeps the policy/ACL tier centralized in L2); the
+provider operator sets the tenant's <em>policy bundle</em> through the management API. In
+v1 a tenant does <strong>not</strong> call the operator management API (self-service
+delegation is a deliberate later option — see Open questions).</li>
+</ul>
+<h3>Observability — three planes and the audit log (ADR-0011, ADR-0012)</h3>
+<p>This builds directly on M3's <code>DurabilityTelemetry</code>
+(<code>crates/custodian/src/telemetry.rs</code>): OpenTelemetry via <code>tracing</code> +
+<code>tracing-opentelemetry</code>, <strong>dual-exported</strong> over both a Prometheus-scrapeable
+registry and OTLP push, with <strong>no backend hardcoded</strong> (<code>ExporterConfig { Prometheus, Otlp, Both }</code>, <code>telemetry.rs:27-61</code>; ADR-0012). The proposal extends
+emission to the full §8.3 plane model:</p>
+<ul>
+<li><strong>Request plane</strong> — RED metrics per layer + traces (the data-path surfaces M2/M4
+add).</li>
+<li><strong>Durability plane</strong> — the differentiator, &quot;the part that must be designed in&quot;:
+the <strong>five single-zone metrics</strong> M3 already emits — under-replicated chunk
+count, repair-queue depth, time-to-repair distribution, scrub coverage,
+scrub-detected corruption rate. (The sixth ADR-0011 metric, replication lag per
+zone pair, has no zone pair single-zone and is <strong>deferred to M5</strong>, per proposal
+0005.) This plane answers the headline operability query directly.</li>
+<li><strong>Capacity plane</strong> — per-server / per-zone / <strong>per-failure-domain</strong> utilization
+and growth rate (§8.3, §8.9); the leading indicator for the add-capacity
+decision.</li>
+<li><strong>The append-only audit/event log</strong> — significant state transitions: placement,
+repairs, admissions, <strong>policy changes, deletions</strong> (§8.3). It is both the
+operational-debugging record and the <strong>compliance / GDPR-deletion proof</strong> (§6.7,
+§14), and is bound to the OIDC operator principal so every desired-state change
+records <em>who</em>.</li>
+</ul>
+<p>The <strong>management API is the system of record</strong>; OTel/Prometheus/Grafana are
+replaceable consumers. Curated Grafana dashboards (durability, capacity, request)
+ship as version-controlled artifacts under <code>deploy/grafana/</code> — &quot;a gift, not a
+gate&quot; (ADR-0012). The instrumentation <strong>seam</strong> and the metric/audit inventory are
+v1; <strong>polished dashboards and alerting are explicitly later and cheap to add once
+the hooks emit</strong> (ADR-0011). Validation reuses M3's in-process read-back
+(<code>DurabilityTelemetry::gather_prometheus</code>, <code>telemetry.rs:135-142</code>) plus a live
+scrape / OTLP collector run off-Check.</p>
+<h3>Day-2 operations — first-class: safe, resumable, observable (§8.4)</h3>
+<p>§8.4 names exactly four operations that &quot;must be first-class, safe, resumable, and
+observable.&quot; Each is a desired-state write reconciled by the custodians, with both
+the <em>changed</em> and <em>satisfied</em> moments observable.</p>
+<ul>
+<li><strong>Add / drain capacity.</strong> Drain &quot;separates real storage systems from toys&quot;
+(§8.4) and is the worked example of the whole model. It already exists in M3 as
+<code>set_lifecycle(Draining | Decommissioning)</code> + the rebalance loop; the management
+API exposes it and its <code>ReconciliationStatus</code>. The acceptance bar is Q9: data
+evacuated <strong>while maintaining redundancy and failure-domain invariants
+throughout</strong> (not merely at the end), <strong>resumable</strong>, with <strong>observable
+progress</strong>. <em>Add capacity</em> registers a new D server / failure domain (the
+least-specified op — see Open questions); the capacity plane is its leading
+indicator and a drain must respect per-failure-domain room (§8.9).</li>
+<li><strong>Rolling upgrades.</strong> &quot;Version skew is the normal state&quot; (§8.4). Safety rests on
+two compatibility axes already decided (ADR-0002): the <strong>wire</strong> is versioned
+protobuf evolved by addition with one-version-gap interop (so upgrade one
+version at a time, never skip), and the <strong>on-disk format</strong> is version-tagged and
+read-never-rejected (no flag-day reformat). The new <code>Management</code> service obeys
+the same evolve-by-addition rule. The acceptance bar is Q8: <strong>no downtime, no
+data errors, neighbours interoperate across one version gap</strong> — validated under
+DST with mixed-version nodes, a CI mixed-version matrix, and a DR drill (§8.7,
+§10). Where an upgrade touches placement (e.g. drain-before-upgrade of a
+stateful D server), it is expressed as desired state; the custodians keep
+placement authority.</li>
+<li><strong>Policy changes as managed rollouts.</strong> A policy edit is <em>changed</em> when recorded
+and <em>satisfied</em> only when reality (replicas, placement) matches — &quot;different
+moments&quot; (§8.4). The API models this as the per-object reconciliation status, so
+an operator watches a replication-factor change converge.</li>
+<li><strong>Backup / restore.</strong> Asymmetric by layer (§8.2). §8.2 applies the
+out-of-band-backup principle system-wide; the per-data-shape <em>mechanism</em> is the
+synthesis this proposal draws from it together with the restore ordering of
+§6.4–6.5: <strong>chunk data is not separately byte-backed-up</strong> — it is EC-durable
+intra-zone and re-replicated from survivors by the custodians once the map
+exists, so out-of-band backup is reserved for the small, precious,
+non-reconstructible data: the <strong>metadata</strong> (the zonal L4 store — &quot;small but
+precious; losing it orphans all chunks&quot;) and the <strong>audit log</strong>, because
+&quot;backups must not depend on the system they back up&quot; and &quot;replication faithfully
+replicates logical disasters (bad migration, errant delete)&quot; (§8.2). Restore
+follows a strict order (§6.5): (1) L5 coordination, (2) L2/L4 metadata from the
+independent backup, (3) L3 verify + re-replicate the bytes from survivors —
+restoring bytes before the map is useless. The DR ordering is a <strong>runbook that
+must be written and drilled</strong> before it is needed. (Single-zone backup/restore
+is in scope here; the multi-zone disaster-recovery <em>drill</em> is M7.)</li>
+</ul>
+<h3>Multi-tenancy administration (ADR-0022)</h3>
+<p>A tenant is &quot;the unit of isolation, policy, and billing — a namespace partition
+plus an identity domain,&quot; owning a subtree of the namespace, a credential set, and
+a <strong>policy bundle: residency, replication factor, encryption, quotas, rate
+limits</strong> (ADR-0022). The operator administers that bundle through the management
+API as <strong>desired state</strong>; tenant lifecycle, quota, and per-tenant replication
+factor are reconciled like any other policy. Per-tenant durability is the
+per-zone scheme — none / replication(n) / rs(k,m) (ADR-0008) — within a zone;
+synchronous N-zone replication is a per-tenant opt-in but is <strong>cross-zone (M5+)</strong>.</p>
+<p>Isolation is enforced <strong>at L1 and L2, never below</strong> (ADR-0022): the gateway (L1)
+authenticates the tenant and checks quota (bytes / object count; hard rejects,
+soft warns, at admission) and rate (per-tenant token bucket); authorization
+resolves against L2 ACLs; D servers and the metadata store stay tenant-oblivious,
+trusting an admitted request. The management API's job is to make the tenant
+policy bundle a first-class desired-state object; the runtime enforcement points
+already have a home.</p>
+<h3>Single-zone now, the global control plane (L2) later — the scope fence</h3>
+<p>A single-zone deployment <strong>has</strong> desired state and reconciliation; it is folded
+into the zonal store rather than a geo-distributed L2 (ADR-0020: &quot;In a single-zone
+deployment the namespace IS the zonal store … becomes a distinct geo-distributed
+TiDB deployment only at the provider-fleet tier&quot;). This proposal targets that
+single-zone product (the M0–M4 result). The <strong>same desired-state / reconciliation
+API shape</strong> extends across zones later: only the <em>backend</em> changes (zonal store →
+geo-distributed TiDB L2) and <em>cross-zone verbs</em> are added — the per-zone-pair
+replication-lag metric arrives with cross-zone replication at <strong>M5</strong>; placement
+across zones and residency redirect arrive with the global control plane at
+<strong>M6</strong>. The v1 API must be designed so the cross-zone surface is <strong>additive, not a
+re-architecture</strong> — consistent with ADR-0020 calling the global plane &quot;a
+composition choice.&quot;</p>
+<h3>Phasing — v1 vs deferred</h3>
+<p><strong>v1 (this proposal):</strong> the gRPC management API + thin CLI; OIDC+mTLS management
+auth + operator RBAC; the three telemetry planes (five single-zone durability
+metrics, capacity, request) on the dual Prometheus/OTLP seam; the append-only
+audit log; the four day-2 ops (drain/decommission, rolling upgrade,
+policy-as-rollout, single-zone backup/restore); multi-tenancy administration of
+the policy bundle. (M3 already shipped the telemetry seam and the
+drain/decommission hook; v1 generalizes the hook into the API and fills in the
+rest.)</p>
+<p><strong>Deferred:</strong> the <strong>web UI</strong> (a consumer of the v1 API — ADR-0013; its browser
+transport and auth prerequisites are recorded in Open questions); <strong>polished
+dashboards and alerting</strong> (&quot;a gift, not a gate&quot; — ADR-0012; &quot;later and cheap&quot;
+— ADR-0011); the <strong>cross-zone global control plane</strong> (L2 placement, geo namespace)
+→ <strong>M6</strong> (and the per-zone-pair replication-lag metric with cross-zone replication
+→ <strong>M5</strong>); <strong>Zanzibar-class fine-grained authorization</strong> (v1 is
+POSIX-ish ACLs + bucket/prefix policy, §8.5); <strong>tenant self-service admin
+delegation</strong> (this proposal keeps administration operator-only in v1; ADR-0022
+keeps the policy tier centralized, so delegation is a deliberate later option).</p>
+<h2>Alternatives considered</h2>
+<ul>
+<li><strong>CLI-first or UI-first management</strong> — rejected (ADR-0013). The audience is
+Kubernetes-shaped; the authoritative interface must be programmatic and
+scriptable. A UI built first would have to be re-architected; built as a
+consumer of the API it need not be.</li>
+<li><strong>Imperative admin RPCs</strong> (the management API drives D servers / issues ordered
+placement commands) — rejected. It violates the custodians' placement authority
+(ADR-0010; §7.3) and ADR-0011 rule 2. Management writes desired state;
+reconciliation is the custodians' job. This also keeps the surface &quot;small, safe,
+auditable.&quot;</li>
+<li><strong>Co-locating management on the data-plane gateway</strong> — rejected in favour of a
+<strong>separate listener</strong>: management has a stronger auth profile (OIDC + mTLS), a
+larger blast radius, and benefits from independent network restriction and
+scaling. &quot;The gateway is the authentication boundary&quot; is satisfied by management
+being its own L1 authentication point, not by sharing a process.</li>
+<li><strong>A separate PKI for management clients</strong> — rejected. Reuse the one provider
+CA / SPIFFE-SPIRE fabric (ADR-0005, ADR-0025); operator staff and tooling live
+inside the single provider trust domain. Management auth is a composition of the
+existing mTLS fabric + OIDC, not a new mechanism.</li>
+<li><strong>Hardcoding Prometheus/Grafana (or any one backend)</strong> — rejected (ADR-0012).
+OTel is the only telemetry commitment; everything downstream is the operator's
+swappable choice. The management API, not a dashboard, is the system of record.</li>
+<li><strong>Backing up chunk bytes</strong> — rejected. Bytes are EC-durable and
+re-replicated from survivors; what needs out-of-band backup is the metadata and
+the audit log, which survive the logical disasters replication faithfully
+copies.</li>
+<li><strong>A dedicated <code>management</code> crate from day one vs a role in <code>server</code></strong> — deferred
+to implementation (ADR-0016 coarse-then-split). Starting as a role in <code>server</code>
+is cheapest and follows the <code>d-server</code> precedent; splitting when the boundary
+firms honours the trait-boundary rule. Recorded as an Open question.</li>
+</ul>
+<h2>Graduation criteria</h2>
+<ul>
+<li><strong>Drain (Q9)</strong> — a drained/decommissioned D server is evacuated while redundancy
+and failure-domain invariants hold <strong>throughout</strong>; the operation is <strong>resumable</strong>
+after a crash; progress is observable as <code>ReconciliationStatus</code> moving
+Pending → Satisfied. Proven in DST and in a DR drill.</li>
+<li><strong>Rolling upgrade (Q8)</strong> — a version-skewed fleet upgrades with <strong>no downtime,
+no data errors, one-version-gap interop</strong>, including the new <code>Management</code>
+service. Validated by DST mixed-version nodes, a CI mixed-version matrix, and a
+DR drill.</li>
+<li><strong>API is the source of truth</strong> — desired-state writes land; reconciliation
+status reads back the <code>changed</code>-vs-<code>satisfied</code> state per object; the CLI is a
+pure consumer carrying no management logic.</li>
+<li><strong>Auth</strong> — the management listener enforces OIDC + mTLS <strong>fail-closed on either
+factor</strong>; operator RBAC (read-only / operator / high-consequence, optionally
+tenant-scoped) is enforced; every desired-state change records the OIDC operator
+principal in the audit log.</li>
+<li><strong>Telemetry</strong> — the three planes emit (the five single-zone durability metrics,
+per-failure-domain capacity, request RED) over the dual Prometheus + OTLP seam
+with no hardcoded backend; the append-only audit log records placement/repairs/
+admissions/policy-changes/deletions. Validated by in-process assertion (the M3
+<code>gather_prometheus</code> pattern) and a live scrape/collector off-Check.</li>
+<li><strong>Multi-tenancy</strong> — a tenant's policy bundle (residency, replication factor,
+encryption, quotas, rate limits) is a desired-state object; quota and rate are
+enforced fail-closed at L1/L2 admission; the storage tier stays tenant-oblivious.</li>
+<li><strong>Backup / restore</strong> — metadata and the audit log are backed up out-of-band to
+independent storage; the restore order (L5 → L2/L4 → L3) is written as a runbook
+and exercised in a drill; chunk bytes are re-replicated from survivors, not
+restored.</li>
+<li><strong>Ratification</strong> — on architecture-board agreement (Open questions), ADR-0011,
+ADR-0012, and ADR-0013 are moved Proposed → Accepted (both the ADR front-matter
+and the <code>adr/README.md</code> index), per ADR-0001, as the first implementation of
+their contract.</li>
+<li>DST / property tests green and seed-reproducible (ADR-0009); <code>fmt</code>/<code>clippy</code>
+clean; <code>cargo-deny</code> passes with the new dependencies (tonic management service,
+the OIDC verifier, the CLI client).</li>
+</ul>
+<h2>Backward compatibility</h2>
+<ul>
+<li><strong>On-disk format</strong> — unchanged; management touches no chunk layout.</li>
+<li><strong>Wire</strong> — the <code>Management</code> gRPC service is <strong>additive</strong> (a new proto/service,
+versioned protobuf, ADR-0002); the <code>ChunkStore</code> data-path wire is untouched. The
+one-version-gap evolve-by-addition rule applies to the management service from
+its first release.</li>
+<li><strong>Existing deployments</strong> — redb / single-binary stays the <strong>dev/eval</strong> profile
+with no production-durability promise (ADR-0014); production management targets
+the multi-node profile. The dev-only bespoke CLI is superseded by the thin gRPC
+CLI — a pre-1.0 dev-tooling change, not a public-API break.</li>
+<li><strong>The M3 hook</strong> — the <code>desired:dserver:</code> ledger encoding and <code>ReconciliationStatus</code>
+shape are explicitly <strong>illustrative</strong>; the <em>two observable moments</em> are the
+binding contract (<code>desired_state.rs:13-18</code>). The management API may formalize the
+encoding behind the API without breaking that contract.</li>
+<li><strong>Public API</strong> — this proposal <strong>defines</strong> the first management API; from
+acceptance it carries compatibility duties (versioned, evolve-by-addition,
+one-version-gap during rollout).</li>
+</ul>
+<h2>Open questions</h2>
+<ul>
+<li><strong>Coarse vs split</strong> — a management role in <code>server</code> (cheapest, d-server
+precedent) vs a dedicated <code>management</code> crate from the start (cleaner under the
+ADR-0016 trait-boundary rule, since <code>server</code> is already the S3-gateway / dev
+tooling crate). Decide at implementation.</li>
+<li><strong>gRPC + REST</strong> — gRPC-first with a REST/JSON gateway over the same service, or
+both native? ADR-0013 says &quot;gRPC/REST&quot;; the exact REST story is unspecified.</li>
+<li><strong>Operator RBAC model</strong> — the roles and per-tenant operator scoping are
+introduced by this proposal; the ADRs commit only to OIDC+mTLS authn and
+data-plane ACLs. The exact role set and scoping claim format need pinning.</li>
+<li><strong>Operator client-certificate issuance</strong> — whether operator mTLS certs are
+issued by the same SPIRE instance as workload certs or a sibling intermediate
+under the provider root is an implementation detail to specify (ADR-0025).</li>
+<li><strong>Web UI prerequisites</strong> — the web UI is deferred (ADR-0013) and is a <em>consumer</em>
+of the v1 API, but a <strong>browser</strong> frontend (unlike the v1 CLI) needs two things
+this proposal must settle so the UI is genuinely additive, not a re-architecture:
+(1) <strong>transport</strong> — a browser cannot speak raw gRPC, so the API must expose a
+<strong>REST/JSON or gRPC-web</strong> surface (this is the gateway half of the &quot;gRPC + REST&quot;
+question above; the CLI does not force it, the UI does); and (2) <strong>browser auth</strong>
+— the management plane is OIDC + mTLS, but browser client certificates are
+impractical, so the UI path needs OIDC in the browser with the <strong>mTLS identity
+held by a backend-for-frontend</strong> (a server-side consumer of the management API),
+not a client cert in the browser. Both are reserved seats, not v1 work — naming
+them keeps the deferred UI a clean consumer.</li>
+<li><strong>Backup mechanics</strong> — cadence, format (metadata-store snapshot vs logical
+export), and audit-log retention / out-of-band posture are unspecified (§8.2
+gives the principle, not the operation).</li>
+<li><strong>Drain progress &amp; reversibility</strong> — Q9 requires resumability; the docs are
+silent on checkpoint granularity and on aborting/rolling back an in-flight
+desired-state change (cancel a drain mid-flight, roll back a policy change).</li>
+<li><strong>Capacity-add flow</strong> — the least-specified op: the operator procedure to
+introduce a new D server / failure domain (§7.3, §8.9 cover the signal, not the
+flow).</li>
+<li><strong>Tenant self-service administration</strong> — ADR-0022 keeps the policy/ACL tier
+centralized; v1 keeps administration operator-only. Whether a tenant may
+self-serve parts of its own policy bundle is a question this proposal raises (not
+one ADR-0022 records) and leaves for later.</li>
+<li><strong>Batch ratification</strong> — ADR-0001 holds the foundational ADR set at Proposed
+&quot;until reviewed and ratified together.&quot; Confirm with the architecture board
+whether ADR-0011/0012/0013 (and the management/admin slice of ADR-0022 — see
+Relationship) may ratify ahead of the set with this proposal, or must move as a
+group.</li>
+</ul>
+<h2>Out of scope — routed elsewhere</h2>
+<ul>
+<li><strong>The cross-zone global control plane</strong> (L2 placement, the geo-distributed global
+namespace / registry / replica catalog, cross-region/residency policy) → <strong>M6</strong>
+(ADR-0020, status Proposed).</li>
+<li><strong>Cross-zone data replication</strong> (L3), the sync-N-zone per-tenant opt-in, and the
+per-zone-pair replication-lag metric (which has no zone pair to measure until
+cross-zone replication exists) → <strong>M5</strong>.</li>
+<li><strong>The multi-zone disaster-recovery drill</strong> → <strong>M7</strong>. Single-zone backup/restore
+is in scope; the cross-zone DR exercise is a distinct milestone.</li>
+<li><strong>The web management UI</strong>, <strong>polished dashboards and alerting</strong>, and
+<strong>Zanzibar-class fine-grained authorization</strong> — deferred consumers/features, not
+re-architectures.</li>
+<li><strong>Physical / dedicated-hardware per-tenant isolation</strong> — a possible future tier,
+explicitly not v1 (ADR-0022).</li>
+</ul>
+<h2>Relationship to existing decisions</h2>
+<ul>
+<li><strong>Proposes to ratify</strong> ADR-0011 (durability telemetry + declarative management),
+ADR-0012 (OpenTelemetry instrumentation), and ADR-0013 (API-first management) —
+Proposed → Accepted, as their first real implementation, subject to the
+architecture board's agreement on ratifying ahead of the foundational set (Open
+questions).</li>
+<li><strong>First implements the management/admin slice of</strong> ADR-0022 (multi-tenancy) — the
+tenant policy bundle as a desired-state object. ADR-0022 is itself still
+<strong>Proposed</strong>, and its runtime isolation-enforcement points land with later
+milestones (L1/L2 admission at M2+/M6), so this proposal implements only its
+administration slice and defers its ratification (carried in the Batch
+ratification open question).</li>
+<li><strong>Builds on</strong> ADR-0005 / ADR-0025 (provider CA, service mTLS), ADR-0008 (per-zone
+durability schemes), ADR-0002 (versioned
+protobuf + on-disk format — the rolling-upgrade foundation), ADR-0010 (pluggable
+substrate / operator), ADR-0014 (single-binary dev-only), ADR-0016 (crate
+structure), ADR-0009 (DST as the correctness authority), and the M3 custodian
+work (proposal 0005: <code>desired_state.rs</code>, <code>telemetry.rs</code>, the rebalance loop).</li>
+<li><strong>Scoped against</strong> ADR-0020 (the global namespace / L2 control plane, M6) and the
+implementation arc (proposal 0002: M5 cross-zone replication, M6 global control
+plane, M7 disaster-recovery drill).</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>
