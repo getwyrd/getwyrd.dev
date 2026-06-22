@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0031. Watch / change-feed contract — Wyrd</title>
+<meta name="description" content="ADR-0007 reserved three primitives — append, CAS, and watch — without specifying them, so the cost">
+<meta property="og:title" content="0031. Watch / change-feed contract — Wyrd">
+<meta property="og:description" content="ADR-0007 reserved three primitives — append, CAS, and watch — without specifying them, so the cost">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Proposed · 22.06.2026 20:25</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>0031. Watch / change-feed contract</h1>
+<h2>Context</h2>
+<p>ADR-0007 reserved three primitives — append, CAS, and watch — without specifying them, so the cost
+of supporting them later was kept low without committing to a shape. The Drive-product feature
+review made the watch primitive the most pressing of the three: an efficient <strong>change feed</strong> is the
+engine of every sync client. A desktop or mobile client must learn &quot;what changed since I last
+synced&quot; by reading a bounded delta, not by re-listing the namespace; the WebDAV / Drive surface
+already advertises &quot;sync&quot; (section 5, L1) with no mechanism behind it. ADR-0018 §3 further
+constrained the eventual watch: its interface MUST NOT bake in per-subscription cost or fan-out caps
+(a hyperscale identity consumer may push an urgent change to many edge nodes), and it noted that
+urgent high-fan-out propagation MAY ride a dedicated transport (NATS, the L3 transport of ADR-0027)
+with Wyrd's watch as the durable-truth backstop. The shape is thus partly constrained but never
+specified. This ADR de-reserves watch and pins its contract; append and CAS remain reserved.</p>
+<h2>Decision</h2>
+<ol>
+<li>
+<p><strong>The change feed is a versioned delta over the namespace.</strong> A client presents a namespace
+version — the <code>meta:version</code> fence already reserved by ADR-0015 — and receives the <em>ordered</em> set
+of changes since that version (create / rename / delete / ACL-change entries) up to the current
+version. The feed rides the existing global commit version; it introduces <strong>no new ordering
+authority</strong>, so it inherits the consistency contract rather than competing with it.</p>
+</li>
+<li>
+<p><strong>Two delivery modes; the pull feed is the source of truth.</strong> A <strong>pull</strong> mode answers &quot;changes
+since version V&quot; and is durable and authoritative. A <strong>push</strong> mode streams a subscription for low
+latency, fanned out over the NATS transport (ADR-0027, ADR-0018 §3); push is an optimisation, and
+a client may always fall back to the pull feed, which is the correctness backstop. The system MUST
+NOT depend on push delivery for correctness.</p>
+</li>
+<li>
+<p><strong>Scoped and authorised.</strong> A watch is scoped to a subtree (a tenant, a directory) and authorised
+against the L2 ACLs, so a client sees only changes to entries it may read — tenant isolation
+(ADR-0022) holds on the change feed as on direct reads.</p>
+</li>
+<li>
+<p><strong>A bounded history window.</strong> The change feed retains history for a bounded window (the
+retention/compaction model of ADR-0018 §1's snapshot mode); a client that has fallen further
+behind than the window must perform a full re-list to re-sync, then resume from the current
+version. The window is a per-deployment policy bound, not unbounded history.</p>
+</li>
+<li>
+<p><strong>No per-subscription cost cap baked in (ADR-0018 §3).</strong> The contract expresses fan-out as a
+transport concern (push over NATS), so scaling to a large number of subscribers is a deployment
+property of the transport, not a limit frozen into the API.</p>
+</li>
+</ol>
+<p>This refines ADR-0007 for the watch primitive specifically; append and CAS stay reserved under
+ADR-0007 until their own consumers force the same specification.</p>
+<h2>Consequences</h2>
+<ul>
+<li>Sync clients become efficient: a delta keyed to the version fence replaces full-namespace
+re-listing, which is what a Drive-class product needs from the foundation.</li>
+<li>The high-fan-out identity-consumer requirement (ADR-0018) is satisfied without baking limits into
+the contract — fan-out lives in the transport (ADR-0027), the durable truth in the pull feed.</li>
+<li>Tying the feed to the existing <code>meta:version</code> fence means no new consistency machinery: the change
+feed is &quot;the version counter, made enumerable&quot;, and is simulatable under DST (ADR-0009) against the
+consistency contract (ADR-0015).</li>
+<li>Cost: L2 must retain a bounded change history (a compaction/retention obligation on the namespace
+store, ADR-0020), and the push path depends on the NATS transport (ADR-0027); a client beyond the
+window pays a full re-list.</li>
+<li>Refines ADR-0007 (watch only); depends on ADR-0015 (the version fence), ADR-0018 (fan-out and
+snapshot retention), ADR-0020 (namespace-store history), and ADR-0027 (push transport). Status
+Proposed.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>

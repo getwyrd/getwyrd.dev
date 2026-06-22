@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>14. Threat model — Wyrd</title>
+<meta name="description" content="A living, adversarial view of the storage system: what is worth attacking, where the">
+<meta property="og:title" content="14. Threat model — Wyrd">
+<meta property="og:description" content="A living, adversarial view of the storage system: what is worth attacking, where the">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture</p>
+    <p class="doc-meta">Status: living · 22.06.2026 18:45</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>14. Threat model</h1>
+<p>A living, adversarial view of the storage system: what is worth attacking, where the
+trust boundaries are, who the adversaries are, and which attacks a distributed file store
+must withstand — each mapped to the decision that mitigates it. The trust framing follows
+single-provider, closed federation (section 8.5, ADR-0005); this chapter is the model
+itself. <strong>STRIDE</strong> classifies (section 14.4); the reader and abuse-case tests are the
+verification rubric, run under the deterministic-simulation harness (ADR-0009, section 13).
+It is <strong>v0/evolving</strong> and hardens as surfaces are built — a threat model is never &quot;complete&quot;,
+and most of Wyrd's attack surface (the network and the multi-tenant boundary) does not exist
+in code until M2.</p>
+<h2>14.1 Assets</h2>
+<table>
+<thead>
+<tr>
+<th>Asset</th>
+<th>Why it matters</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Bulk chunk data / fragments (D servers)</td>
+<td>Confidentiality + integrity of the stored bytes; ciphertext-only when encrypted, integrity-checksummed (crc32c) so corruption is detectable without the key (ADR-0019, ADR-0021).</td>
+</tr>
+<tr>
+<td>Tenant keys (KEKs / DEKs)</td>
+<td>Decrypt everything under a tenant if stolen; held in an external KMS behind the <code>KeyService</code> trait, never persisted unwrapped, per-tenant separation bounds blast radius (ADR-0021).</td>
+</tr>
+<tr>
+<td>Metadata / namespace (inodes, dirents, chunk maps, ACLs)</td>
+<td>Tamper to lose / resurrect files or orphan chunks; the global namespace (L2) is linearizable, zonal metadata (L4) consensus-replicated (ADR-0020, ADR-0008).</td>
+</tr>
+<tr>
+<td>The commit point (the <code>meta:version</code> counter)</td>
+<td>The single linearization authority; tamper for torn state or a lost write (ADR-0015).</td>
+</tr>
+<tr>
+<td>Coordination state — leases, fencing tokens (L5)</td>
+<td>Leases gate GC reclamation; fencing tokens gate the single-active custodian; tamper for split-brain or premature deletion (ADR-0006, ADR-0007).</td>
+</tr>
+<tr>
+<td>The audit / event log</td>
+<td>Tamper to hide a deletion, placement, or admission; append-only, the provider's compliance (GDPR-deletion) proof (section 8.3).</td>
+</tr>
+<tr>
+<td>Service identities (internal mTLS certs)</td>
+<td>Impersonate a component on the internal fabric; the certificate <em>is</em> the identity (ADR-0005, ADR-0025).</td>
+</tr>
+<tr>
+<td>External access credentials (OIDC tokens, S3 access keys)</td>
+<td>Impersonate an external principal at the gateway (section 8.5).</td>
+</tr>
+</tbody>
+</table>
+<h2>14.2 Trust boundaries</h2>
+<p>Boundaries from least- to most-trusted. The shape follows the dumb-storage / thick-client /
+centralized-policy split (sections 3, 5, 8.5).</p>
+<ul>
+<li><strong>Internet</strong> — external clients (SDK, S3, WebDAV callers), relying applications. Untrusted.</li>
+<li><strong>Access layer / gateway (L1)</strong> — the authentication <em>and</em> authorization boundary: it
+resolves the caller, fetches the version-fenced ACL, and enforces quota / rate <em>before</em>
+issuing any storage operation. Nothing below L1 re-authenticates the external principal
+(section 8.5).</li>
+<li><strong>D servers (the dumb storage tier)</strong> — the <strong>least-trusted internal data tier</strong>:
+tenant-oblivious, holding only opaque (ciphertext, when encryption is on) fragments and
+their checksums, addressed by chunk id. They may run on less-trusted storage hardware
+(ADR-0021).</li>
+<li><strong>Zonal metadata + coordination (L4 / L5)</strong> — the commit authority and the lease/fencing
+store; network-isolated to the zone's control components, fronted by the mTLS fabric
+(section 8.5).</li>
+<li><strong>Global namespace / control plane (L2)</strong> — the <strong>most-trusted</strong> tier: the linearizable
+namespace, placement, zone registry, and the authoritative ACLs (ADR-0020).</li>
+<li><strong>Custodian (L4)</strong> — the single-active, fenced maintenance plane; it holds the GC <em>delete</em>
+authority, so it is a high-consequence component (ADR-0011).</li>
+<li><strong>KMS / <code>KeyService</code></strong> — the key-custody boundary; it holds KEKs and never sees plaintext
+data (ADR-0021).</li>
+<li><strong>Admin / management plane</strong> — the operator surface (ADR-0013).</li>
+<li><strong>Tenant isolation</strong> — a cross-cutting boundary: no cross-tenant read or traversal on any
+path (section 8.8, ADR-0022).</li>
+</ul>
+<p><strong>D-server-compromise blast radius (a stated property).</strong> An attacker who fully compromises
+a D server gains <strong>only ciphertext fragments and their checksums</strong> — no keys (KMS-held), no
+metadata or namespace, no ACLs. They <strong>cannot</strong> forge a commit (the commit point is the
+metadata store's, fenced by version), and they <strong>cannot</strong> cause durability loss of a chunk
+they do not hold (its <em>k+m</em> fragments are placed across distinct failure domains, so any <em>k</em>
+survivors reconstruct it). They <strong>can</strong> deny service for the fragments they hold, or return
+a <em>stale / corrupted</em> fragment — which is caught on read by the crc32c payload checksum and
+by the scrubber, then reconstructed from survivors. This bounded blast radius is the security
+payoff of the dumb-D-server / thick-client split (section 8.5, ADR-0019, ADR-0021) and is the
+storage analog of an edge-cache compromise: a less-trusted tier holds no secret worth stealing.</p>
+<h2>14.3 Adversaries</h2>
+<p>Anonymous internet attacker · malicious or compromised external client (S3 / SDK / WebDAV) ·
+malicious or compromised tenant administrator · a co-tenant (isolation breach) · network MITM
+on the internal fabric · a compromised D server (less-trusted storage hardware) · a compromised
+custodian or coordination node · malicious insider / operator · supply-chain attacker · a
+non-Rust thick-client re-implementer that writes corrupt or non-atomic data (a <em>correctness</em>
+adversary, section 8.6).</p>
+<h2>14.4 STRIDE, per boundary</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>D server (storage tier)</th>
+<th>Gateway (L1)</th>
+<th>Metadata · coordination · custodian (core)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Spoofing</strong></td>
+<td>mTLS service identity, no plaintext fallback (ADR-0025)</td>
+<td>external principal auth: OIDC / S3 SigV4 / mTLS (section 8.5)</td>
+<td>mTLS + fencing-token identity (ADR-0006)</td>
+</tr>
+<tr>
+<td><strong>Tampering</strong></td>
+<td>crc32c checksums + chunk-id binding; EC reconstruction (ADR-0019)</td>
+<td>request authorized before any storage op</td>
+<td>the commit point + append-only audit log (ADR-0015, section 8.3)</td>
+</tr>
+<tr>
+<td><strong>Repudiation</strong></td>
+<td>—</td>
+<td>per-request audit at admission</td>
+<td>the event stream is the audit truth (section 8.3)</td>
+</tr>
+<tr>
+<td><strong>Information disclosure</strong></td>
+<td>ciphertext-only at rest (ADR-0021)</td>
+<td>ACL-gated reads, version-fenced</td>
+<td>envelope encryption; tenant partition (ADR-0020, ADR-0022)</td>
+</tr>
+<tr>
+<td><strong>Denial of service</strong></td>
+<td>scrub + reconstruct around a lost/slow D server</td>
+<td><strong>the write-path DoS target</strong> → admission quota + rate (section 8.9)</td>
+<td>per-tenant op-rate fairness; nothing data-proportional in L5 (ADR-0006)</td>
+</tr>
+<tr>
+<td><strong>Elevation of privilege</strong></td>
+<td>none (no secrets, tenant-oblivious)</td>
+<td>stale-ACL defeat → linearizable, version-fenced ACLs (section 8.1)</td>
+<td>premature GC / split-brain → reader-safe grace + fencing (custodian)</td>
+</tr>
+</tbody>
+</table>
+<h2>14.5 The storage attack catalog</h2>
+<p>Each defended attack maps to the decision that owns it.</p>
+<table>
+<thead>
+<tr>
+<th>Attack</th>
+<th>Mitigation</th>
+<th>Owned by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Malformed / malicious fragment parse (overrun, integer overflow, oversized payload-length)</td>
+<td>header checksum verified <em>before</em> any field is acted on; every read bounds-checked; reserved flags and unknown code points rejected; <code>#![forbid(unsafe_code)]</code>; continuously fuzzed</td>
+<td>ADR-0019, section 13</td>
+</tr>
+<tr>
+<td>Silent bit rot / fragment corruption</td>
+<td>crc32c header + payload checksums verified on read; scrubber detects within scrub-cycle P; reconstruct from <em>k</em> survivors</td>
+<td>ADR-0019, section 8.2 (Q2)</td>
+</tr>
+<tr>
+<td>Tampered-fragment substitution by a compromised D server</td>
+<td>payload checksum over the <em>stored</em> bytes + chunk-id binding; EC reconstruction from <em>k</em> honest survivors</td>
+<td>ADR-0019</td>
+</tr>
+<tr>
+<td>Torn write / half-commit observable</td>
+<td>one linearizable commit point; pending-chunk ledger makes a failed write's chunks collectable, never half-visible</td>
+<td>ADR-0015 (Q3)</td>
+</tr>
+<tr>
+<td>Premature GC of a still-referenced fragment (silent data loss)</td>
+<td>reader-safe grace window; lease-expiry + orphan-ledger discipline; the &quot;never reclaim a referenced fragment&quot; invariant asserted under DST</td>
+<td>custodian, ADR-0011 (Q3)</td>
+</tr>
+<tr>
+<td>Clock skew extends a lease or breaks GC timing</td>
+<td>bounded skew tolerance + authenticated time source + implausible-clock fail-closed / drain</td>
+<td>ADR-0024</td>
+</tr>
+<tr>
+<td>Split-brain custodian / two active maintainers</td>
+<td>leadership fencing token; single-active reconciliation; a stale term is fenced</td>
+<td>ADR-0006, ADR-0007</td>
+</tr>
+<tr>
+<td>Read against a stale / just-revoked ACL</td>
+<td>ACLs live in the globally linearizable namespace (L2) and are version-fenced at the gateway before the op</td>
+<td>section 8.1, 8.5; ADR-0015</td>
+</tr>
+<tr>
+<td>Cross-tenant read / traversal</td>
+<td>four boundaries — namespace partition + envelope crypto + quota + rate (defense-in-depth)</td>
+<td>ADR-0022, ADR-0020, ADR-0021</td>
+</tr>
+<tr>
+<td>Stolen disk / compromised D server reads data</td>
+<td>ciphertext-only at rest; per-tenant envelope encryption; key never leaves the KMS</td>
+<td>ADR-0021</td>
+</tr>
+<tr>
+<td>Tenant-key (KEK) compromise</td>
+<td>per-tenant key separation bounds blast radius; rotation is re-wrap; crypto-erase; KMS custody behind <code>KeyService</code></td>
+<td>ADR-0021</td>
+</tr>
+<tr>
+<td>Internal service spoofing / MITM on the fabric</td>
+<td>mTLS under the provider CA; certificate-as-identity; least authority per component; <strong>no plaintext fallback</strong></td>
+<td>ADR-0005, ADR-0025</td>
+</tr>
+<tr>
+<td>External-principal impersonation</td>
+<td>OIDC / OAuth2 bearer, S3 SigV4, OIDC + mTLS for management — all at the gateway</td>
+<td>section 8.5</td>
+</tr>
+<tr>
+<td>Write-path DoS / resource exhaustion</td>
+<td>admission control: quota + rate + failure-domain room, all fail-closed</td>
+<td>section 8.9, ADR-0022</td>
+</tr>
+<tr>
+<td>Treating coordination (etcd, L5) as a database</td>
+<td>architectural rule: nothing data-proportional in L5; sized in kilobytes</td>
+<td>section 11 (risks), ADR-0006</td>
+</tr>
+<tr>
+<td>Supply-chain compromise</td>
+<td>permissive-only dependency criteria; <code>cargo-deny</code> advisory + license wall; <code>cargo-machete</code>; DCO</td>
+<td>ADR-0008</td>
+</tr>
+<tr>
+<td>Multi-language client divergence (corrupt / non-atomic data)</td>
+<td>spec-first on-disk format + conformance vectors; a Rust core with FFI is the reserved alternative to reimplementation</td>
+<td>ADR-0002, section 8.6, 8.7</td>
+</tr>
+<tr>
+<td>Backup that cannot restore (recursive dependency)</td>
+<td>backups must not depend on the system they back up; the recursion bottoms out in independent storage</td>
+<td>section 8.2</td>
+</tr>
+</tbody>
+</table>
+<h2>14.6 Abuse-case tests</h2>
+<p>The catalog above is made <em>mechanical</em>: each defended attack is asserted <strong>to fail</strong>,
+seed-reproducible, from the milestone where its surface first exists — the security analog of
+the conformance vectors (section 8.6). Representative cases:</p>
+<ul>
+<li>a fragment with a corrupted header checksum is rejected, before any header field is trusted (M0);</li>
+<li>a fragment with a flipped payload byte is rejected, and the chunk still reconstructs from <em>k</em> survivors (M1);</li>
+<li>a write interrupted at every step leaves either the old version or the new, never a hybrid, and its orphans are collected (M0, Q3);</li>
+<li>a referenced fragment is never reclaimed while a reader holds the old version (M3, Q3);</li>
+<li>a lease expired past the skew budget does not renew (M3, ADR-0024);</li>
+<li>a fragment offered under the wrong chunk id is rejected (M2);</li>
+<li>a plaintext (non-mTLS) internal dial is refused (M2, ADR-0025).</li>
+</ul>
+<p>A defended attack that ever succeeds becomes a permanent regression. The reader's parse path
+(<code>chunk_format::decode</code>) should additionally be fuzzed continuously (a planned addition, section
+14.9), since it is the one component that consumes fully untrusted bytes — a fixed conformance
+corpus cannot explore the input space the way coverage-guided fuzzing does.</p>
+<h2>14.7 Threat → test map</h2>
+<p>The catalog mapped to where each threat is verified. Tiers are the realism-and-cost ladder of
+section 13; &quot;DST&quot; is Tier 0, the correctness authority.</p>
+<table>
+<thead>
+<tr>
+<th>Threat</th>
+<th>Test</th>
+<th>Tier</th>
+<th>Milestone</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Malformed-fragment parse</td>
+<td><code>chunk-format</code> reader unit + conformance vectors (fuzzing planned, §14.9)</td>
+<td>0</td>
+<td>M0 → continuous</td>
+</tr>
+<tr>
+<td>Bit rot / corruption detection</td>
+<td>checksum-verify + scrub property tests</td>
+<td>0–1</td>
+<td>M1 / M3</td>
+</tr>
+<tr>
+<td>Torn write / atomicity</td>
+<td>commit-protocol property tests under fault injection (<code>wyrd-dst</code>)</td>
+<td>0</td>
+<td>M0</td>
+</tr>
+<tr>
+<td>Premature GC</td>
+<td>custodian GC property test: referenced fragment never reclaimed</td>
+<td>0</td>
+<td>M3</td>
+</tr>
+<tr>
+<td>Clock skew / lease expiry</td>
+<td>manual-clock skew injection (DST); <code>libfaketime</code> / NTP manipulation (Tier 1)</td>
+<td>0–1</td>
+<td>M3</td>
+</tr>
+<tr>
+<td>Split-brain custodian</td>
+<td>fencing-token property test</td>
+<td>0</td>
+<td>M3</td>
+</tr>
+<tr>
+<td>Cross-tenant isolation</td>
+<td>namespace + crypto + quota + rate isolation tests</td>
+<td>0–1</td>
+<td>M2 → M4</td>
+</tr>
+<tr>
+<td>Internal service spoofing</td>
+<td>mTLS-required dial test; plaintext refused</td>
+<td>1</td>
+<td>M2</td>
+</tr>
+<tr>
+<td>Consistency under partition</td>
+<td>Jepsen against a local cluster (ADR-0015)</td>
+<td>1</td>
+<td>M2 →</td>
+</tr>
+<tr>
+<td>Supply-chain</td>
+<td><code>cargo-deny</code> advisory + license wall in CI</td>
+<td>0</td>
+<td>M0</td>
+</tr>
+<tr>
+<td>Static-analysis findings</td>
+<td>CodeQL (Rust), non-gating (planned, §14.9)</td>
+<td>0</td>
+<td>M0 →</td>
+</tr>
+</tbody>
+</table>
+<h2>14.8 Residual and accepted risks</h2>
+<ul>
+<li><strong>Replication-lag staleness window</strong> — stale-tolerant reads may lag the latest by up to the
+replication lag; the deliberate cost of edge-local reads (section 8.1).</li>
+<li><strong>Bounded repair / scrub latency</strong> — corruption is detected within the scrub-cycle period P,
+not instantaneously (Q2).</li>
+<li><strong>D-server-held ciphertext</strong> — a compromised D server holds ciphertext; confidentiality rests
+on the KEK staying in the KMS, bounded by per-tenant key separation (ADR-0021).</li>
+<li><strong>Admission fail-closed availability cost</strong> — under pressure a write is refused, never
+half-done; correctness outranks admission (section 8.9).</li>
+<li><strong>Single-provider operator trust</strong> — operators are trusted within the provider (no
+cross-operator verify-everything, ADR-0005); insider risk is bounded by the append-only
+audit log and envelope encryption (the operator cannot read a tenant's directory).</li>
+</ul>
+<h2>14.9 Gaps and their disposition</h2>
+<p>The threat model records its own holes and tracks them to closure.</p>
+<p><strong>Decided in (Proposed) ADRs</strong> (they refine the architecture):</p>
+<ul>
+<li><strong>Clock / time-source trust</strong> — bounded skew + authenticated time + implausible-clock
+fail-closed (ADR-0024).</li>
+<li><strong>Internal service-to-service trust</strong> — the M2 enforcement contract for the mTLS fabric
+already chosen in ADR-0005: least authority per component, certificate-as-identity, no
+plaintext fallback (ADR-0025).</li>
+</ul>
+<p><strong>Still genuinely open</strong>:</p>
+<ul>
+<li><strong>Key-compromise emergency response</strong> — a runbook for wholesale KEK revocation + forced
+re-encryption (distinct from planned re-wrap rotation, ADR-0021) is not yet written.</li>
+<li><strong>Build / release integrity</strong> — signed releases + SLSA provenance + pinned Actions are not
+yet decided.</li>
+<li><strong>The proto / network input-validation surface</strong> — fuzzing and hardening of the gRPC decode
+path land with the networked tier (M2); only the on-disk reader is hardened today.</li>
+<li><strong>CI security workflows</strong> — a CodeQL (Rust) static-analysis workflow and a coverage-guided
+fuzz target on <code>chunk_format::decode</code> are <em>planned</em> additions, alongside the existing
+<code>cargo-deny</code>, Dependabot, and <code>cargo-mutants</code> jobs; OSS-Fuzz / Scorecard enrolment is reserved.</li>
+<li><strong>Privacy threat modeling (LINDDUN)</strong> — a deeper privacy pass over metadata / PII is reserved,
+not built into this STRIDE pass.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>

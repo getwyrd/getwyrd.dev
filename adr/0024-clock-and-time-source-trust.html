@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0024. Clock and time-source trust — Wyrd</title>
+<meta name="description" content="Several load-bearing mechanisms trust &quot;a clock&quot;. Coordination leases expire against a clock">
+<meta property="og:title" content="0024. Clock and time-source trust — Wyrd">
+<meta property="og:description" content="Several load-bearing mechanisms trust &quot;a clock&quot;. Coordination leases expire against a clock">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Proposed · 22.06.2026 18:50</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>0024. Clock and time-source trust</h1>
+<h2>Context</h2>
+<p>Several load-bearing mechanisms trust &quot;a clock&quot;. Coordination leases expire against a clock
+(<code>MemCoordination</code> reads <code>Clock::now_millis()</code> to stamp and check <code>expiry_millis</code>; the default
+lease TTL is 30 s), and the custodian's first GC input is &quot;bytes behind an <em>expired</em> lease&quot; —
+so the moment a fragment becomes collectable is a clock reading. The atomicity story (ADR-0015)
+and the &quot;never reclaim a referenced fragment&quot; invariant (the custodian, scenario Q3) both rest
+on lease expiry meaning what it says.</p>
+<p>Time's <em>integrity</em> has so far been an unstated assumption, and the production seam quietly
+fabricates a value when it fails: <code>SystemClock::now_millis()</code> does <code>…unwrap_or(0)</code>, so a clock
+that cannot be read returns the Unix epoch rather than an error. A fabricated <code>now</code> of 0 makes
+every lease look unexpired (<code>expiry_millis &gt; 0</code>), so a node that loses its clock would hold
+leases forever and starve GC — a silent, fail-<em>open</em> failure in exactly the path durability
+depends on. Conversely, a clock that jumps <em>forward</em> expires live leases early. The DST harness
+can already drive a <code>ManualClock</code>, so skew and jumps are reproducible to test against — the gap
+is a <em>decision</em> about what correct behaviour is, not the means to verify it.</p>
+<p>This decision is timely now (M2 introduces real, independently-clocked nodes) but the seam and
+the invariant exist today, so the rule can be enforced from M0.</p>
+<h2>Decision</h2>
+<ol>
+<li>
+<p><strong>No fabricated time.</strong> A clock read that fails is a fault, not a <code>0</code>. The production
+<code>Clock</code> MUST surface the failure (the <code>unwrap_or(0)</code> is replaced) so callers never act on an
+invented timestamp. A node that cannot read a plausible time MUST fail closed for the
+operations that depend on it (lease renewal, GC reclamation, expiry checks) rather than
+proceed against a bad clock.</p>
+</li>
+<li>
+<p><strong>Bounded skew tolerance.</strong> Lease and expiry comparisons accept a small, configured
+clock-skew window; beyond it the operation fails closed. The window is a single stated budget
+— kept small because every second of slack is either attacker slack or a wider window for a
+torn lease — shared by every time-dependent check so it is set once.</p>
+</li>
+<li>
+<p><strong>A trusted time source.</strong> In a multi-node deployment, nodes synchronize via <strong>authenticated
+time</strong> (NTS, RFC 8915, or the platform's trusted time source), not unauthenticated NTP that a
+network attacker on the internal fabric can spoof. Time-source integrity is an operational
+requirement of the deployment view (section 7), not optional.</p>
+</li>
+<li>
+<p><strong>Implausible-clock detection.</strong> A node whose clock is grossly wrong (failed sync, large
+drift, time moving backward across reads) drains itself rather than issuing leases or running
+GC against a corrupt clock — a corrupt clock is a correctness fault, treated like one.</p>
+</li>
+</ol>
+<p>This refines the coordination contract (ADR-0006: a lease is now &quot;expires against a <em>trusted</em>
+clock within a skew budget&quot;) and the consistency contract's failover fence (ADR-0015), and it
+is verified under DST (ADR-0009) by injecting skew, jumps, and backward motion through the
+<code>ManualClock</code> seam.</p>
+<h2>Consequences</h2>
+<ul>
+<li>Clock failure can no longer silently fabricate a time and starve GC, and a forward jump can no
+longer reclaim a referenced fragment early; the trusted-clock assumption becomes explicit,
+bounded, and enforced in exactly the durability-critical path.</li>
+<li>The skew budget is shared across lease expiry, GC, and any later freshness check, so it is set
+once and small — and it becomes a knob the operator can reason about.</li>
+<li>Time-source integrity becomes a documented deployment requirement (authenticated sync,
+alerting on daemon failure and stratum drift), and a node with a bad clock removes itself —
+consistent with the fail-closed admission posture (section 8.9).</li>
+<li>Cost: the <code>Clock</code> trait and its callers carry a failure path they did not before (a clock read
+becomes fallible at the seam), and the skew budget is one more parameter to set and test. The
+alternative — trusting the wall clock implicitly — is what this ADR rejects.</li>
+<li>Refines ADR-0006 and ADR-0015.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>

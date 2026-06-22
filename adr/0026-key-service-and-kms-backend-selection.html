@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0026. Key management: the KeyService contract and KMS backend selection — Wyrd</title>
+<meta name="description" content="ADR-0021 chose envelope encryption — per-object/per-chunk DEKs wrapped by a per-tenant KEK,">
+<meta property="og:title" content="0026. Key management: the KeyService contract and KMS backend selection — Wyrd">
+<meta property="og:description" content="ADR-0021 chose envelope encryption — per-object/per-chunk DEKs wrapped by a per-tenant KEK,">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Proposed · 22.06.2026 19:10</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>0026. Key management: the KeyService contract and KMS backend selection</h1>
+<h2>Context</h2>
+<p>ADR-0021 chose envelope encryption — per-object/per-chunk DEKs wrapped by a per-tenant KEK,
+the KEK held in &quot;an external KMS behind a narrow <code>KeyService</code> trait&quot; — but it named the KMS
+only in passing (&quot;provider KMS / Vault / cloud KMS … a file-backed stub for dev&quot;) and left the
+trait surface, the backend, DEK caching, and HSM-backing <code>[OPEN]</code>. The KMS is therefore the one
+major dependency that never received the selection rigor every other backend got: coordination
+(ADR-0006), the metadata store (ADR-0008), and the namespace store (ADR-0020) each have an ADR
+that picks a default, names alternatives behind a trait, and passes the dependency lens. The KMS
+has none. It is also load-bearing and risky: on the read/write path for encrypted tenants, a
+single new failure domain (section 11: &quot;a KMS outage or a lost KEK is catastrophic&quot;).</p>
+<p>The dependency-selection lens (ADR-0003) applies, with one distinction that decides the outcome.
+The cargo license wall in <code>deny.toml</code> (permissive crates only; AGPL / BSL / SSPL denied) governs
+<strong>Rust crates linked into the binary</strong>. A KMS is a separate deployed <strong>service</strong>, like etcd and
+TiKV — so it is judged by ADR-0003's broader <strong>control-resilience</strong> test (forkable, self-hostable,
+no forced phone-home, foundation-governed where possible, data residency under the operator's
+control), not the crate allowlist. That broader test is what makes a weak-copyleft <em>service</em>
+acceptable even though its licence is not on the crate allowlist.</p>
+<p>The lens immediately disqualifies the product ADR-0021 named first. <strong>Vault relicensed
+to BUSL-1.1 (BSL) in 2023</strong> — a licence <code>deny.toml</code> explicitly denies and ADR-0003 was written to
+catch. Vault is the KMS-shaped repeat of the CockroachDB case: caught at selection time, not after
+adoption. This ADR records the contract and the replacement.</p>
+<p>The requirements the contract must meet, drawn from ADR-0021 and the decisions around it: the
+envelope operations; per-tenant KEK isolation; <strong>crypto-erase</strong> by KEK destruction (ADR-0021 §4),
+which must not fire while a retention / legal hold is active (the WORM precedence, reserved for a
+later ADR); <strong>residency-pinned KEK custody</strong> (the crypto-residency answer to metadata sovereignty,
+ADR-0018, section 8.8); a trusted clock for any time-bound key operation (ADR-0024); low latency,
+high availability, and fail-closed behaviour because the KMS sits inline.</p>
+<h2>Decision</h2>
+<ol>
+<li>
+<p><strong>The <code>KeyService</code> trait is the architectural commitment; no single product is.</strong> It joins
+<code>ChunkStore</code> / <code>MetadataStore</code> / <code>NamespaceStore</code> / <code>Coordination</code> in the <code>traits</code> crate under
+the narrow-trait dependency rule (ADR-0010). Its surface is normative:</p>
+<ul>
+<li><strong>generate-data-key</strong> — return a fresh DEK both as plaintext (for the client to encrypt with,
+immediately) and wrapped under a named per-tenant KEK; the client stores only the wrapped DEK
+and the key-version id.</li>
+<li><strong>unwrap</strong> a wrapped DEK (with its key-version) → the plaintext DEK, for the read path.</li>
+<li><strong>rotate-KEK</strong> — re-wrap existing wrapped DEKs under the new KEK version without touching bulk
+ciphertext (the cheap, metadata-only rotation of ADR-0021 §3).</li>
+<li><strong>destroy-KEK</strong> — crypto-erase (ADR-0021 §4); it MUST be refused while any object under that
+KEK is under a retention / legal hold.</li>
+<li>per-tenant KEK namespacing and monotonic key-version ids.</li>
+</ul>
+<p>Wrap, unwrap, and rotate happen <strong>inside the KMS</strong> (the &quot;encryption-as-a-service&quot; shape): the
+trait MUST NOT expose KEK material to Wyrd, Wyrd MUST NOT persist an unwrapped KEK, and the KMS
+never sees plaintext bulk data.</p>
+</li>
+<li>
+<p><strong>Default backend: OpenBao, via its Transit engine.</strong> OpenBao is MPL-2.0 and Linux-Foundation-
+governed — the community fork of Vault taken from its last open release, i.e. the un-rug-pullable
+answer to the Vault relicensing. It is the <strong>default</strong> for three reasons, in priority order:</p>
+<ul>
+<li><em>Operational weight.</em> It is a single Go binary with pluggable storage, which fits Wyrd's
+single-binary-to-fleet gradient (ADR-0014) and keeps the file-stub → real-KMS path short.</li>
+<li><em>Purpose-built contract.</em> Its Transit secrets engine <strong>is</strong> the item-1 contract almost
+one-to-one — a <code>datakey</code> endpoint, <code>encrypt</code> / <code>decrypt</code> / <code>rewrap</code>, key versioning and
+rotation, an audit log — so the envelope operations are native, not emulated, and KEK material
+never leaves the service.</li>
+<li><em>Governance.</em> Foundation-governed and self-hostable, so the key-custody story stays sovereign
+and un-rug-pullable (ADR-0003).</li>
+</ul>
+<p><strong>Vault itself is rejected</strong> on its BUSL-1.1 licence (ADR-0003; <code>deny.toml</code>'s BSL denial).</p>
+</li>
+<li>
+<p><strong>Alternative backend: OpenStack Barbican</strong>, behind the same trait — Apache-2.0, OpenInfra-
+governed, with pluggable PKCS#11 / HSM and KMIP backends. Both backends pass the ADR-0003 lens
+(Barbican's Apache-2.0 is marginally cleaner than MPL-2.0, but licence does not separate two
+foundation-governed <em>services</em>), so the default is decided on weight and fit, not licence.
+Barbican is the <strong>alternative, not the default</strong>, because it is a heavier subsystem — a Python
+service needing a SQL database, a queue, and (by default) Keystone for identity — built to live
+inside an OpenStack deployment. That weight is exactly why it <strong>wins in one case</strong>: a provider
+already running OpenStack, where Keystone and the KMIP / PKCS#11 plugins are already present and
+Barbican is the native key manager.</p>
+</li>
+<li>
+<p><strong>Exchangeability is engineered, not hoped — standardize the seam on PKCS#11 and KMIP, not a
+vendor.</strong> The measures that keep the backend swappable are deliberate:</p>
+<ul>
+<li><em>Common-denominator trait.</em> The <code>KeyService</code> surface (item 1) is defined to what any conforming
+KMS provides — the envelope operations — and <strong>not</strong> to any OpenBao-Transit-specific API, so a
+Barbican or raw-HSM adapter is never forced to emulate Transit.</li>
+<li><em>Standard custody interface.</em> KEK custody SHOULD be HSM-backable through <strong>PKCS#11</strong> (the HSM
+interface) and <strong>KMIP</strong> (the OASIS interop protocol) rather than a product API, so a hardware
+HSM, a cloud HSM, SoftHSM2 (dev), OpenBao, or Barbican all satisfy the same seam — mirroring
+<code>ChunkStore</code> targeting the S3 API: the durable seam is a standard, not a vendor.</li>
+<li><em>Single wiring point.</em> Only the <code>server</code> crate knows the concrete backend (ADR-0010), so
+OpenBao ↔ Barbican ↔ a raw HSM is a composition change, not a refactor — and the choice MAY
+differ <strong>per deployment</strong> (an OpenStack provider on Barbican, a bare-metal provider on OpenBao,
+behind one trait).</li>
+</ul>
+<p>The honest limit: adapters are <strong>not feature-identical below the trait</strong> — rotation mechanics,
+audit-log shape, and latency differ — so the trait surface is held to what all conforming
+backends can guarantee, and anything richer stays out of it.</p>
+</li>
+<li>
+<p><strong>The dev / single-binary profile uses a file-backed stub, no KMS</strong>, with SoftHSM2 (BSD-2) as an
+optional realistic PKCS#11 path. This follows encryption being off by default in dev (ADR-0021
+§5) and single-binary being dev-only (ADR-0014). The stub MUST be unmistakably non-production
+(keys in cleartext on local disk) so it cannot be taken for real custody.</p>
+</li>
+<li>
+<p><strong>Inline-dependency posture (settles ADR-0021's operational <code>[OPEN]</code>s in shape, not numbers).</strong>
+Because the KMS is on the data path, Wyrd caches unwrapped DEKs for a <strong>bounded lifetime</strong> (the
+bound is mandatory; the value is per-deployment), <strong>fails closed</strong> on KMS unavailability without
+endangering the durability of the still-encrypted data, and <strong>pins KEK custody to the tenant's
+residency region</strong> (crypto-residency, ADR-0018). Time-bound key operations (scheduled rotation,
+hold expiry) depend on the trusted clock of ADR-0024.</p>
+</li>
+<li>
+<p><strong>Licence and governance are a standing selection gate, not a one-time check (ADR-0003).</strong> The
+chosen backend's licence and governance MUST be re-confirmed at adoption and watched thereafter —
+the deployed-service analog of the <code>cargo-deny</code> advisory wall. The licence facts in this ADR are
+point-in-time (the Vault relicensing is exactly why); they are re-verified, not assumed, at
+selection.</p>
+</li>
+</ol>
+<h2>Consequences</h2>
+<ul>
+<li>The KMS finally has the selection rigor the other backends carry, and the <code>KeyService</code> trait is
+the commitment — so OpenBao ↔ Barbican ↔ a raw HSM is a composition change in <code>server</code>, not a
+refactor (ADR-0010).</li>
+<li>The key-custody story stays sovereign and un-rug-pullable: OpenBao keeps it foundation-governed
+and self-hostable, and the Vault rejection is a worked example of the ADR-0003 lens rather than a
+hypothetical.</li>
+<li>Crypto-erase and compliance hold get a concrete locus: KEK destruction is a KMS operation gated by
+hold state — which makes the still-undecided <strong>retention / hold-vs-erase precedence</strong> a named
+dependency of this contract, not an afterthought.</li>
+<li>Cost and burden land on the operator: running a KMS as a highly-available, audited service, with
+<strong>KEK backups kept independent of Wyrd</strong> (section 11), and KMS HA becomes a hard requirement for
+encrypted tenants. The client library and on-disk format carry key-version metadata (already
+reserved, ADR-0021).</li>
+<li>Still <code>[OPEN]</code>, to settle with the encryption implementation (M2+): the DEK-cache lifetime values,
+key-hierarchy depth for very large tenants (a per-bucket intermediate key, ADR-0021), and the
+precise PKCS#11 / KMIP profile and OpenBao HSM-backing maturity (historically Vault-Enterprise-
+gated; to be verified for the open fork).</li>
+<li>Refines ADR-0021; applies ADR-0003; depends on ADR-0024 (clock) and the reserved retention / WORM
+decision.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>

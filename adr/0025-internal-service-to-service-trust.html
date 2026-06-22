@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0025. Internal service-to-service trust — Wyrd</title>
+<meta name="description" content="ADR-0005 already chose the posture: zones, D servers, custodians, and coordination">
+<meta property="og:title" content="0025. Internal service-to-service trust — Wyrd">
+<meta property="og:description" content="ADR-0005 already chose the posture: zones, D servers, custodians, and coordination">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Proposed · 22.06.2026 18:55</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>0025. Internal service-to-service trust</h1>
+<h2>Context</h2>
+<p>ADR-0005 already chose the <em>posture</em>: zones, D servers, custodians, and coordination
+authenticate to each other with mTLS under a provider-operated CA (SPIFFE / SPIRE as internal
+PKI), and section 8.5 elaborates — &quot;identity is the certificate, and there are no shared service
+secrets on the wire.&quot; What is <em>not</em> yet recorded is the enforcement contract that posture implies
+once there is a network to enforce it on: which authority a given certificate grants, what happens
+when mTLS is absent, and how the property is tested. The networked tier (M2) makes this concrete,
+and the gap is already visible in code: <code>chunkstore-grpc</code> builds tonic with &quot;default-features only
+— no <code>tls</code>&quot;, so today an internal dial is plaintext. Promoting the wire to mTLS without deciding
+<em>least authority per component</em> would authenticate the fabric while still letting any authenticated
+component do anything — a spoofing fix that leaves elevation-of-privilege open.</p>
+<h2>Decision</h2>
+<ol>
+<li>
+<p><strong>mTLS is required, with no plaintext fallback.</strong> Every internal RPC (client ↔ D server,
+custodian ↔ D server, any component ↔ coordination / metadata) is mutually authenticated under
+the provider CA. A dial that cannot complete the mTLS handshake <strong>fails closed</strong> — it is never
+silently downgraded to plaintext. The tonic <code>tls</code> feature is enabled and the handshake is
+mandatory, not opportunistic.</p>
+</li>
+<li>
+<p><strong>The certificate is the identity, and authority is least-privilege per component.</strong> A
+component's workload identity grants it only what its role needs: a <strong>D server</strong> is
+tenant-oblivious and authorized only to store and return fragments by chunk id — its identity
+grants it <em>nothing</em> on the metadata store, the namespace, or the KMS, so a compromised D server
+has no credential worth stealing (reinforcing the D-server blast-radius property of section 14.2);
+the <strong>custodian</strong> may drive GC / repair against D servers and read placement state, but is not a
+write authority on the namespace; the <strong>gateway</strong> authenticates external principals and is the
+only component that resolves ACLs. Authorization is checked against the presented identity at
+each callee, not assumed from network position.</p>
+</li>
+<li>
+<p><strong>Consistent with the substrate and the closed-federation framing.</strong> This runs on the pluggable
+deployment substrate (ADR-0010) and the single-provider posture (ADR-0005): the fabric is about
+isolation, fairness, and mutual authentication <em>within</em> one operator — not cross-operator
+distrust. SPIRE-issued short-lived certificates keep it rotation-friendly with no long-lived
+shared secrets, and coordination's own auth (etcd) stays defense-in-depth behind the fabric,
+never the primary boundary (section 8.5).</p>
+</li>
+</ol>
+<p>The property is verified under DST and the local-cluster tier (section 13): a plaintext or
+wrong-identity dial is refused, and a component presenting a valid identity is still denied an
+operation outside its role.</p>
+<h2>Consequences</h2>
+<ul>
+<li>A compromised or spoofed internal component cannot impersonate another, and lateral movement is
+bounded by least authority — authentication and authorization are decided together, so the wire
+fix does not leave privilege escalation open.</li>
+<li>The D-server blast radius (section 14.2) is reinforced at the network layer: even with a valid
+workload identity, a D server is authorized for nothing on the core.</li>
+<li>Cost: certificate provisioning and rotation (SPIRE or equivalent) become a deployment dependency,
+the <code>tls</code> feature and handshake config land in <code>chunkstore-grpc</code> and every networked component,
+and local/dev runs need a dev-CA path so the single-binary profile (ADR-0014) is not gated on a
+full PKI. The fail-closed rule means a misconfigured CA is an outage, not a silent plaintext
+downgrade — the intended trade.</li>
+<li>Refines ADR-0005 and builds on ADR-0010; closes the internal-trust enforcement gap noted in
+section 14.9.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>

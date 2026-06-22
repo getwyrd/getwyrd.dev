@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0030. Build and release integrity — Wyrd</title>
+<meta name="description" content="The project guards its inbound supply chain well: permissive-license and RUSTSEC-advisory walls">
+<meta property="og:title" content="0030. Build and release integrity — Wyrd">
+<meta property="og:description" content="The project guards its inbound supply chain well: permissive-license and RUSTSEC-advisory walls">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Proposed · 22.06.2026 20:20</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>0030. Build and release integrity</h1>
+<h2>Context</h2>
+<p>The project guards its <strong>inbound</strong> supply chain well: permissive-license and RUSTSEC-advisory walls
+via <code>cargo-deny</code>, unused-dependency checks, and DCO sign-off on every commit (ADR-0003), all
+enforced in CI. The <strong>outbound</strong> supply chain — what a user actually downloads and runs — is
+unguarded. There are no signed release artifacts, no build provenance, and GitHub Actions are
+referenced by mutable tags rather than pinned commits. A compromised CI run, a hijacked Action tag,
+or a malicious release would ship a backdoored static binary or OCI image that a user has no way to
+detect. The threat model lists &quot;Build / release-pipeline compromise&quot; (section 14.5) and marks it
+open (section 14.9). For a system whose entire pitch is verifiable correctness, an unverifiable
+build is a conspicuous gap.</p>
+<h2>Decision</h2>
+<ol>
+<li>
+<p><strong>Signed releases.</strong> Every release artifact — the static binary and the OCI image — is signed,
+using <strong>Sigstore / cosign keyless</strong> (OIDC-based, no long-lived signing key to guard), and the
+verification steps are documented so a user can confirm an artifact came from this project's
+release pipeline before running it.</p>
+</li>
+<li>
+<p><strong>Build provenance (SLSA).</strong> The release workflow emits a <strong>SLSA provenance attestation</strong> tying
+each artifact to the exact source commit and build environment, so the path from tagged source to
+shipped binary is independently verifiable — the outbound complement to the inbound advisory wall.</p>
+</li>
+<li>
+<p><strong>Pinned Actions.</strong> All GitHub Actions are pinned by full commit <strong>SHA</strong>, not by tag, so a
+compromised or retagged Action cannot inject code into a build; Dependabot (already configured)
+keeps the pins current as a tracked change rather than a silent drift.</p>
+</li>
+<li>
+<p><strong>Protected, signed source.</strong> The existing DCO (ADR-0003), <code>require-issue</code>, and <code>adr-immutability</code>
+gates, plus branch protection on <code>main</code>, are the source-integrity baseline; commit signing MAY be
+added for release-tagging commits.</p>
+</li>
+<li>
+<p><strong>Reproducibility as a goal.</strong> The pinned Rust toolchain (<code>rust-toolchain.toml</code>) and committed
+<code>Cargo.lock</code> already push toward reproducible builds; provenance is most valuable when a third
+party can rebuild and match, so reproducibility is a tracked goal, not yet a hard gate.</p>
+</li>
+</ol>
+<p>These land with the release machinery, not before there is something to release; the decision is
+recorded now so the release workflow is built signed from the start rather than retrofitted.</p>
+<h2>Consequences</h2>
+<ul>
+<li>The outbound supply chain reaches parity with the inbound rigor: users can verify provenance and
+signature of exactly what they run, consistent with correctness-as-the-headline-feature.</li>
+<li>Keyless signing avoids a long-lived key as a new secret to protect; the cost is a dependency on the
+Sigstore transparency infrastructure (itself open and widely used).</li>
+<li>Pinning Actions by SHA trades a little manual/Dependabot upkeep for removing the mutable-tag attack
+surface — the same &quot;tracked change, not surprise&quot; discipline as the dependency wall.</li>
+<li>Closes the section 14.9 build/release-integrity open item and complements ADR-0003 (inbound
+supply chain). Status Proposed; lands with the first real release artifacts.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>

@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proposal: Object lifecycle and retention — versioning, trash, lifecycle, and compliance hold (WORM) — Wyrd</title>
+<meta name="description" content="A provider building a Drive-class product on Wyrd needs a coherent answer to one question seen from">
+<meta property="og:title" content="Proposal: Object lifecycle and retention — versioning, trash, lifecycle, and compliance hold (WORM) — Wyrd">
+<meta property="og:description" content="A provider building a Drive-class product on Wyrd needs a coherent answer to one question seen from">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Enhancement Proposal</p>
+    <p class="doc-meta">Status: draft · 22.06.2026 19:45</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>Proposal: Object lifecycle and retention — versioning, trash, lifecycle, and compliance hold (WORM)</h1>
+<blockquote>
+<p>Draft. Captures the object-lifecycle model surfaced while reviewing security, reliability, and
+Drive-product feature parity. The erasure-vs-retention precedence (Facet D / §4) is the
+substantive decision and is flagged for its own ADR.</p>
+</blockquote>
+<h2>Motivation</h2>
+<p>A provider building a Drive-class product on Wyrd needs a coherent answer to one question seen from
+four angles: <strong>which versions of an object exist, how long they are retained, who may delete them,
+and when destruction becomes irreversible.</strong> Each angle is a feature users and regulators expect:</p>
+<ul>
+<li><strong>Version history</strong> — keep prior versions, restore one (OneDrive / Google Drive / S3 versioning).</li>
+<li><strong>Trash / recycle bin</strong> — a deleted file is recoverable for a grace window, not gone instantly.</li>
+<li><strong>Lifecycle policies</strong> — auto-transition cold data to a cheaper tier, auto-expire stale data
+(S3 Lifecycle).</li>
+<li><strong>Compliance hold (WORM)</strong> — specific objects <em>cannot</em> be deleted or modified until a retention
+period expires or a legal hold is released, <strong>even by the tenant admin or the operator</strong>
+(S3 Object Lock, SEC 17a-4).</li>
+</ul>
+<p>Wyrd today has only the <strong>terminal</strong> end of this story — crypto-erase and a right-to-erasure path
+(ADR-0021 §4) — and the <code>meta:version</code> counter, which is a <em>consistency</em> fence (ADR-0015), <strong>not</strong> a
+retained version history. Everything between &quot;an object is written&quot; and &quot;its bytes are crypto-erased&quot;
+is undesigned.</p>
+<p><strong>Why these belong in one proposal.</strong> They are not four features; they are four views of a single
+model, sharing the same machinery: the metadata version record, the commit point, the custodian GC,
+crypto-erase, and the trusted clock (ADR-0024). Designed piecemeal they will produce <strong>conflicting
+rules</strong> — a lifecycle &quot;expire after 90 days&quot; silently destroying data under a legal hold, or trash
+auto-purge reclaiming a held version. The correctness of the whole rests on a single <strong>precedence
+ordering</strong>, which only a unified model can state. Now is the moment because all four touch the
+metadata model and GC being built in M2–M3, and because the data is already write-once at the
+fragment level — so this is largely <em>composition</em> on existing parts, not new storage mechanism.</p>
+<h2>Design</h2>
+<h3>The shared model</h3>
+<p>Every object has a chain of <strong>versions</strong>; at most one is <em>current</em>, the rest <em>non-current</em>. Each
+version's metadata record (the inode / version, ADR-0008; namespace policy in L2, ADR-0020) carries:</p>
+<ul>
+<li><strong>lifecycle state</strong> — <code>current</code> · <code>non-current</code> · <code>trashed</code> · <code>pending-erase</code>.</li>
+<li><strong>retention</strong> — <code>retain_until</code> (a trusted-time bound) and <code>legal_hold</code> (boolean, no time bound).</li>
+<li><strong>storage tier</strong> — hot / cold, driven by lifecycle policy and placement (cost-tier, §5).</li>
+</ul>
+<p>Four <strong>shared enforcement points</strong> carry all four facets — the same spine the compliance-hold work
+already defined:</p>
+<ol>
+<li><strong>Commit-point enforcement (L4).</strong> Any transition that removes or replaces a version is a
+conditional commit (ADR-0015) gated on the version's state and retention. <strong>Fails closed</strong>: if
+state cannot be evaluated, the mutation is refused.</li>
+<li><strong>GC honours retention (the custodian, L4).</strong> The &quot;never reclaim a referenced fragment&quot; invariant
+extends to <strong>&quot;never reclaim a fragment a retention rule still protects.&quot;</strong> The reclamation path
+checks lifecycle state, <code>retain_until</code>, and <code>legal_hold</code> before reclaiming.</li>
+<li><strong>Crypto-erase is the terminal state (KMS, ADR-0026).</strong> The only irreversible deletion is KEK /
+DEK destruction, and it is gated (§4 below).</li>
+<li><strong>Trusted clock (ADR-0024).</strong> Every time bound — <code>retain_until</code>, trash grace, lifecycle age — is
+evaluated against monotonic, authenticated time, fail-closed on an implausible clock.</li>
+</ol>
+<h3>Facet A — Version history</h3>
+<p>Versioning is a <strong>per-bucket / per-prefix opt-in</strong> (S3 semantics). With it on, an overwrite creates a
+new current version and demotes the prior to non-current rather than replacing it; a delete creates a
+delete-marker. Non-current versions are retained per a policy (keep last <em>N</em>, and/or keep for a
+duration), and the custodian prunes the excess — <strong>subject to enforcement points 1–2</strong>, so a
+non-current version under a hold is never pruned. Restore promotes a non-current version to current
+(a metadata mutation; the fragments already exist).</p>
+<h3>Facet B — Trash / soft delete</h3>
+<p>A user delete is <strong>soft by default</strong> (configurable per tenant): the object moves to <code>trashed</code> and is
+recoverable for a <strong>grace window</strong>, after which the custodian moves it to <code>pending-erase</code>. This reuses
+the reader-safe-grace machinery the GC already has for orphans (the difference is the grace is a
+policy duration, not just the reader-drain window). Restore-from-trash is a metadata mutation. A hard
+delete (skip trash) is a privileged, audited operation — and still refused under a hold.</p>
+<h3>Facet C — Lifecycle policies</h3>
+<p>Per-bucket / per-prefix rules, evaluated by the custodian against trusted time (ADR-0024):</p>
+<ul>
+<li><strong>Transition</strong> — move a version's fragments to a colder tier after an age threshold (composes onto
+placement's cost-tier axis, §5; transparent to the client, the data-model discussion earlier in the
+review). Read latency of cold tiers is the operational tradeoff, not a correctness one.</li>
+<li><strong>Expiration</strong> — after an age threshold, route a version to <code>trashed</code> (then the trash grace applies)
+— expiry is a <em>soft</em> delete, never a direct erase, and <strong>never fires on a held version</strong>.</li>
+</ul>
+<h3>Facet D — Compliance hold (WORM)</h3>
+<p>The strongest retention, with its own enforcement detail. Two attributes (already in the shared
+model): <code>retain_until</code> and <code>legal_hold</code>, in two modes mirroring S3 Object Lock:</p>
+<ul>
+<li><strong>Governance mode</strong> — retention may be shortened / removed by a principal holding a distinct
+<em>compliance-bypass</em> permission.</li>
+<li><strong>Compliance mode</strong> — retention cannot be shortened or removed by anyone (tenant admin or operator
+included) until <code>retain_until</code> passes. Legal hold is independent and indefinite.</li>
+</ul>
+<p>A per-bucket / per-prefix <strong>default retention</strong> is applied at commit. Enforcement rides points 1–4,
+with one rule that is the substantive decision of this proposal:</p>
+<p><strong>Crypto-erase precedence (§4).</strong> A KEK / DEK MUST NOT be destroyed while any object encrypted under
+it is under an active hold — the <code>KeyService</code> <code>destroy-KEK</code> operation is refused (foreshadowed in
+ADR-0026 §1). So <strong>an active legal hold or unexpired retention beats crypto-erase, and beats
+right-to-erasure (GDPR), until released or expired; on release, pending erasure proceeds.</strong> This
+precedence warrants ratification in its own ADR. (A single per-tenant KEK means one held object pins
+the whole tenant's KEK against rotation/erasure — an argument for finer key granularity, the <code>[OPEN]</code>
+key-hierarchy-depth question in ADR-0021.)</p>
+<h3>The precedence ordering (the reason these are one proposal)</h3>
+<p>The facets are reconciled by a single, total ordering applied at enforcement points 1–2:</p>
+<ol>
+<li><strong>An active hold (legal hold or unexpired compliance retention) is absolute</strong> — no other rule
+(version pruning, trash purge, lifecycle expiry, user delete, crypto-erase) may remove or destroy a
+version it protects.</li>
+<li>Below holds, <strong>version pruning, trash auto-purge, and lifecycle expiry operate only on non-held
+versions</strong>, each bounded by its own policy (keep-N, grace window, age).</li>
+<li><strong>Every terminal destruction is crypto-erase</strong>, gated by rule 1 via the KEK-destroy refusal.</li>
+</ol>
+<p>Stated once, this prevents the conflicting-rules trap (lifecycle expiry vs. legal hold, trash purge
+vs. retention) that piecemeal designs fall into.</p>
+<h3>API surface (L1) and audit</h3>
+<ul>
+<li><strong>Versioning &amp; trash</strong> — the S3 versioning API (<code>GetObjectVersion</code>, list versions, delete-marker
+semantics) and a trash/restore surface in the WebDAV/Drive API and native SDK.</li>
+<li><strong>Lifecycle</strong> — the S3 Lifecycle configuration API per bucket.</li>
+<li><strong>Compliance hold</strong> — S3 Object Lock-compatible operations (<code>PutObjectRetention</code>,
+<code>PutObjectLegalHold</code>, bucket default retention, <code>x-amz-object-lock-*</code> headers) so existing
+compliance tooling works unmodified.</li>
+<li><strong>Audit</strong> — every retention transition (version prune, trash, restore, expire, hold set / release,
+and every refused delete) is written to the append-only audit / event log (§8.3) — the compliance
+and WORM proof, the same log that backs GDPR deletion proof.</li>
+</ul>
+<h2>Alternatives considered</h2>
+<ul>
+<li><strong>Four separate proposals.</strong> Rejected: the precedence ordering above is cross-cutting and only
+expressible once; separate proposals would each re-derive a partial, mutually-inconsistent slice of
+it (the conflict trap).</li>
+<li><strong>Gateway-only (L1) enforcement.</strong> Rejected: bypassable by a direct metadata mutation or a custodian
+pass. The guarantees must live at the commit point and the GC.</li>
+<li><strong>A separate immutable &quot;WORM bucket&quot; type instead of per-object holds.</strong> Rejected: too coarse —
+compliance needs per-object holds and per-prefix defaults.</li>
+<li><strong>Lean on crypto-erase reversibility for trash.</strong> Rejected: crypto-erase is irreversible by design;
+trash must keep the key until grace expires, which the model already does (erase is terminal).</li>
+</ul>
+<h2>Graduation criteria</h2>
+<p>Each enforcement point and precedence rule gets a seed-reproducible DST property (ADR-0009):</p>
+<ul>
+<li>a non-current version under a hold is never pruned by the keep-N policy;</li>
+<li>a trashed object is restorable before its grace expires and erased only after;</li>
+<li><strong>lifecycle expiry does not fire on a held version</strong> (the cross-facet conflict test);</li>
+<li>a delete / overwrite of a held object is refused at the commit point;</li>
+<li>a held version's fragments are never reclaimed across a full GC sweep;</li>
+<li><code>destroy-KEK</code> is refused while any held object exists under that KEK;</li>
+<li>a clock rollback (injected via <code>ManualClock</code>) does not release a retention hold or expire a
+trash/lifecycle timer early;</li>
+<li>compliance-mode retention cannot be shortened even by an admin / operator principal.</li>
+</ul>
+<p>Plus: conformance to the S3 versioning, Lifecycle, and Object Lock semantics subsets; telemetry
+(ADR-0011) for non-current-version count, trash size, held-object count, and refused deletes, with a
+<strong>canary alert</strong> if GC ever evaluates a retention-protected fragment as reclaimable (it must not).</p>
+<h2>Backward compatibility</h2>
+<ul>
+<li><strong>On-disk / metadata format.</strong> Adds optional lifecycle-state and retention fields to the
+version record, defaulting to &quot;current, no retention,&quot; so existing data is unaffected (ADR-0019 /
+ADR-0002 — optional, versioned fields).</li>
+<li><strong>Delete semantics.</strong> Soft-delete-by-default changes what &quot;delete&quot; <em>does</em>; it is a per-tenant policy
+defaulting to the safe (soft) behaviour, with hard delete a privileged op. Versioning is opt-in per
+bucket (S3-compatible), off by default.</li>
+<li><strong>Version skew (the fleet is half-upgraded during rollout, Q8).</strong> The retention check must be
+<strong>deny-on-unknown</strong>: a node that encounters a lifecycle/retention field it does not understand MUST
+refuse the delete / reclaim rather than ignore it — a rollout-ordering concern for the
+implementation.</li>
+<li><strong>Public API.</strong> Additive — S3 versioning / Lifecycle / Object Lock endpoints and SDK surface.</li>
+</ul>
+<h2>Open questions</h2>
+<ul>
+<li><strong>Erasure-vs-retention precedence</strong> (Facet D / §4) — confirm &quot;hold wins until released, then erasure
+runs,&quot; and split into its own ADR before implementation.</li>
+<li><strong>Key granularity vs. hold blast radius</strong> — does WORM force a per-object / per-bucket intermediate
+key so one held object does not pin the tenant KEK (ADR-0021 <code>[OPEN]</code>)?</li>
+<li><strong>Governance vs. compliance mode for v1</strong>, and whether a <strong>break-glass</strong> path to remove a
+compliance-mode hold exists at all (a court order, a hold set in error) — itself policy-gated and
+audited, or deliberately absent.</li>
+<li><strong>Defaults</strong> — trash grace duration, keep-N version count, and whether these are per-bucket only or
+also a per-tenant policy (ADR-0022 bundle).</li>
+<li><strong>Consistency</strong> — does the delete-path retention read need the version-fence / consistency token
+(ADR-0015) for read-your-writes immediately after a hold or trash transition?</li>
+</ul>
+<h2>Out of scope — related Drive-foundation gaps, routed elsewhere</h2>
+<p>These surfaced in the same feature-parity review but are <strong>not</strong> part of the lifecycle/retention model
+and warrant their own artifacts; listed here so they are tracked, not folded:</p>
+<ul>
+<li><strong>Change feed / sync engine</strong> — efficient watch + delta change-feed, the motor of any sync client.
+Reserved by ADR-0007; needs its own ADR de-reserving and specifying the watch primitive.</li>
+<li><strong>Deduplication / block-level delta sync / content-defined chunking</strong> — a separate chunking and
+storage-efficiency proposal.</li>
+<li><strong>Resumable / multipart upload</strong> — composes onto the pending-chunk ledger; a separate API proposal.</li>
+<li><strong>Rich sharing (share links, expiry, view/comment/edit tiers)</strong> — partly the reserved Zanzibar-class
+authorization plane (ADR-0018), partly an L1 surface; not a storage-retention concern.</li>
+</ul>
+<h2>Relationship to existing decisions</h2>
+<p>Composes onto the commit point (ADR-0015), the custodian GC (ADR-0011), crypto-erase and key custody
+(ADR-0021, ADR-0026 — the <code>destroy-KEK</code> gate), trusted time (ADR-0024), the on-disk / metadata format
+(ADR-0019, ADR-0002), placement cost-tiering (§5), multi-tenancy policy (ADR-0022), and the audit log
+(§8.3). The erasure-vs-retention precedence is the one piece that warrants its own ADR before
+implementation begins.</p>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>
