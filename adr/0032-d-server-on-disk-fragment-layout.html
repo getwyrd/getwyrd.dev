@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0032. D-server on-disk fragment layout (FsChunkStore) — Wyrd</title>
+<meta name="description" content="The ChunkStore trait is addressed by FragmentId , never by">
+<meta property="og:title" content="0032. D-server on-disk fragment layout (FsChunkStore) — Wyrd">
+<meta property="og:description" content="The ChunkStore trait is addressed by FragmentId , never by">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Proposed · 23.06.2026 13:00</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>0032. D-server on-disk fragment layout (FsChunkStore)</h1>
+<h2>Context</h2>
+<p>The <code>ChunkStore</code> trait is addressed by <code>FragmentId</code> (chunk id + fragment index), never by
+path: <code>put_fragment(FragmentId, Bytes)</code> / <code>get_fragment(FragmentId)</code>. <em>How</em> a backend turns a
+<code>FragmentId</code> into physical storage is exactly what the trait abstracts, and pluggable backends
+are a deliberate design property (ADR-0008, ADR-0010): a future object-store or sharded backend
+is meant to map <code>FragmentId</code> differently while interoperating perfectly, because the only
+cross-implementation contract is the fragment <em>byte</em> format (ADR-0019, <code>specs/chunk-format</code>) plus
+the trait — not the bytes' physical placement.</p>
+<p><code>FsChunkStore</code> (<code>crates/chunkstore-fs</code>) is the one on-disk <code>ChunkStore</code> implementation today. It
+maps <code>FragmentId { chunk: u128, index: u16 }</code> to <code>root/&lt;32-hex chunk-id&gt;/&lt;5-digit ec-fragment-index&gt;.frag</code> — a directory per chunk, one file per fragment index — written
+crash-safely via a sibling temp file and <code>rename</code> (<code>crates/chunkstore-fs/src/lib.rs:203-206</code>,
+<code>:81-83</code>). <code>get</code>/<code>delete</code> recompute the path directly (no scan); <code>list_fragments</code> is the
+two-level inverse walk (<code>:99-136</code>). A fragment's authoritative identity lives in its <strong>header</strong>
+(<code>chunk_id</code>, <code>ec_fragment_index</code>) and is re-verified against the path-derived id on every read
+(<code>:53-66</code>), so the path is a lookup index, not the source of truth.</p>
+<p>This layout has never been recorded as a decision; it was discovered in code, not chosen on the
+record. Two facts make recording it worthwhile. First, <code>FsChunkStore</code> is described in-code as the
+&quot;dev and NAS profile&quot; store, but the <strong>networked production D server injects it today</strong>
+(<code>crates/server/src/cli.rs:267</code>; <code>crates/chunkstore-grpc/src/server.rs:21</code> names it &quot;the
+production injection&quot;) — so a dev/NAS-scoped layout is currently also the production backend, with
+nothing flagging the tension. Second, the layout has a scaling characteristic worth stating
+plainly: the chunk directories are <strong>not</strong> themselves sharded — the root holds one sub-directory
+per chunk with <strong>no prefix fan-out</strong> — and because failure-domain placement puts at most one
+fragment of a chunk on any one D server, the root directory grows roughly one entry per stored
+fragment, while <code>list_fragments</code> is O(fragments) and materializes every id into a <code>Vec</code>.</p>
+<h2>Decision</h2>
+<ol>
+<li>
+<p><strong>Physical layout is a per-backend implementation detail, not a normative contract.</strong> The
+normative, cross-implementation contracts are the fragment byte format (ADR-0019) and the
+<code>FragmentId</code>-addressed <code>ChunkStore</code> trait. A conformant <code>ChunkStore</code> MAY place bytes however
+it likes (object-store keys, a sharded tree, a database). The chunk-format spec is <strong>not</strong>
+extended to cover directories; doing so would forbid the backend pluggability ADR-0008 /
+ADR-0010 rely on.</p>
+</li>
+<li>
+<p><strong>Record <code>FsChunkStore</code>'s layout as it stands.</strong> <code>root/&lt;32-hex chunk-id&gt;/&lt;5-digit ec-fragment-index&gt;.frag</code>, written via temp-then-<code>rename</code>; <code>list_fragments</code> is the two-level
+inverse walk; <code>get</code>/<code>delete</code> are direct path computations. Identity is authoritative in the
+fragment header and verified against the path on every read — the path is an index, not the
+source of truth.</p>
+</li>
+<li>
+<p><strong>Scope and fitness.</strong> <code>FsChunkStore</code> targets the <strong>dev / single-binary / NAS</strong> profiles and
+serves as the <strong>interim production networked-D-server backend</strong> until the at-scale <code>ChunkStore</code>
+swap lands (ADR-0008, ADR-0010). The current layout is fit for dev / NAS / small deployments.
+It is <strong>not</strong> claimed fit for a high-fragment-count production D server: the root directory
+does not fan out, and <code>list_fragments</code> is O(N) and fully materialized, so enumeration cost,
+directory-block and inode overhead, and (on ext4) the htree index ceiling become binding as
+fragment count per server rises. The at-scale backend's layout — prefix fan-out, streaming
+enumeration, or an object store — is a <strong>separate future decision</strong>; this ADR records that it
+is owed, and does not pre-decide it.</p>
+</li>
+<li>
+<p><strong>Within-backend longevity is the format's job, not the path's.</strong> Because each fragment is
+self-describing and validates standalone, an out-of-band backup / salvage / fsck tool can
+recover a D server's fragments by decoding files and reading their headers, <strong>independent of
+the directory convention</strong> — consistent with the backup-bootstrap rule (section 8.2) and the
+disaster-recovery ordering (section 6.5). If such tooling is built and chooses to rely on the
+directory convention, that reliance is documented with the tool, still not in the chunk-format
+spec.</p>
+</li>
+</ol>
+<h2>Consequences</h2>
+<ul>
+<li>The pluggability claim (ADR-0008) is protected on the record: a future object-store or
+prefix-sharded backend is explicitly conformant, because physical placement was never part of
+the contract.</li>
+<li>The previously-undocumented scaling characteristic is now on the record — a flag for anyone
+sizing a production <code>FsChunkStore</code> deployment and a stated prerequisite for the at-scale
+backend. This ADR <strong>records</strong> the characteristic; it does not change the layout.</li>
+<li>A future change to <code>FsChunkStore</code>'s own layout (e.g. adding prefix fan-out) is a
+<strong>backend-internal data-migration</strong> concern for already-written fragments, <strong>not</strong> a
+<code>format_version</code> break (the byte format is untouched). Existing on-disk data must remain
+readable or be migrated; this ADR flags that obligation without choosing the mechanism.</li>
+<li>ADR-0019 is unaffected and unsuperseded: it governs the fragment byte format, this ADR governs
+one backend's directory layout. They are adjacent, not in tension.</li>
+<li>No code changes. The at-scale <code>ChunkStore</code> backend, the prefix-fan-out / streaming-enumeration
+decision, and any out-of-band salvage tooling remain future work, tracked separately.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>
