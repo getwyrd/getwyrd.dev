@@ -41,8 +41,9 @@
 <blockquote>
 <p>An operational note, not a normative spec. It describes how to stand up the
 first <em>real</em> single-zone Wyrd deployment at the M4 release point — the
-&quot;Small multi-node Production&quot; profile (TiKV + PD/etcd + local-disk D servers +
-gateway + custodian) — in two concrete shapes: a homelab and a Hetzner rental.
+&quot;Small multi-node Production&quot; profile (TiKV + PD metadata, a separate 3-node
+etcd coordination ensemble, local-disk D servers, gateway, and custodian) — in
+two concrete shapes: a homelab and a Hetzner rental.
 The governing constraint throughout is making the <strong>RS(6,3) durability math
 actually true</strong>, which is a <em>topology</em> property, not a process-count property.
 The conceptual framing lives in the <a href="/architecture/07-deployment-view.html">deployment view</a>
@@ -67,7 +68,7 @@ independent failure, and do you have enough of them?</strong> With RS(6,3) you w
 fewer domains with multiple fragments each and a consciously-reduced tolerance.
 Everything below is organized around getting that right.</p>
 <h2>Component inventory (both variants)</h2>
-<p>The M4 stack has five process roles. Their <em>placement</em> differs between homelab and
+<p>The M4 stack has six process roles. Their <em>placement</em> differs between homelab and
 Hetzner; the <em>roles</em> do not.</p>
 <table>
 <thead>
@@ -90,8 +91,13 @@ Hetzner; the <em>roles</em> do not.</p>
 </tr>
 <tr>
 <td><strong>PD</strong></td>
-<td>TiKV's placement driver / coordinator (a 3-node etcd-class ensemble).</td>
+<td>TiKV's <em>own</em> placement driver / coordinator (embeds an internal etcd). Distinct from the L5 coordination etcd below.</td>
 <td><strong>High</strong> — 3 nodes for quorum; lose 2 and metadata stalls.</td>
+</tr>
+<tr>
+<td><strong>etcd (L5 coordination)</strong></td>
+<td>The <code>Coordination</code> seam (<a href="/adr/0006-etcd-for-coordination.html">ADR-0006</a>): service discovery, leader election, distributed locks (with fencing), and <strong>D-server registration + leases</strong>. A <strong>separate 3-node ensemble</strong> from TiKV's PD; every role dials it as <code>--coordination &lt;L5-endpoint&gt;</code>.</td>
+<td><strong>High</strong> — 3 nodes for quorum; lose 2 and discovery/registration/leader-election stall. Small but control-critical.</td>
 </tr>
 <tr>
 <td><strong>Gateway</strong></td>
@@ -100,16 +106,20 @@ Hetzner; the <em>roles</em> do not.</p>
 </tr>
 <tr>
 <td><strong>Custodian</strong></td>
-<td>One active (leader-elected); runs GC/scrub/reconstruct/rebalance; emits durability telemetry.</td>
+<td>One active (leader-elected <em>via etcd</em>); runs GC/scrub/reconstruct/rebalance; emits durability telemetry.</td>
 <td><strong>Low</strong> — stateless logic; a restart re-elects.</td>
 </tr>
 </tbody>
 </table>
 <p>The asymmetry to internalize: <strong>D servers carry the durability</strong>, <strong>TiKV+PD carry
-the metadata</strong> (precious, small, separately replicated), and <strong>gateway+custodian
-are stateless</strong> (cheap to restart/move). A good topology spends its
-failure-domain budget on the D servers first, gives TiKV+PD their own quorum
-spread, and treats gateway+custodian as movable.</p>
+the metadata</strong> and <strong>etcd carries the coordination plane</strong> (both control tiers are
+precious, small, and quorum-replicated), and <strong>gateway+custodian are stateless</strong>
+(cheap to restart/move). A good topology spends its failure-domain budget on the D
+servers first, gives the metadata (TiKV+PD) and coordination (etcd) tiers their own
+quorum spread, and treats gateway+custodian as movable. The same asymmetry drives
+<strong>backup</strong> (see <em>Backup model</em> below): only the metadata (and the small L5 config)
+is backed up out-of-band — D-server fragments are <strong>not</strong>, because EC + custodian
+reconstruction already protects them.</p>
 <hr />
 <h2>Variant A — Homelab</h2>
 <p>The honest framing first: a homelab on one desk <strong>shares a building, a power
@@ -134,17 +144,21 @@ the custodian rebuilds. Losing two nodes <em>might</em> exceed tolerance dependi
 placement — so 6 domains gives you <strong>single-node-fault tolerance</strong>, honestly
 stated. (To survive <em>two</em> arbitrary node losses you need ≥ 9 domains so no node
 holds more than one fragment of a chunk — see A.2.)</li>
-<li><strong>TiKV + PD</strong>: 3 small nodes running TiKV and PD co-located (PD is light). These
-should be <strong>3 <em>different</em> machines</strong> from each other for Raft quorum, but in a
-small homelab they can share machines with D servers if you must — accepting that
-a machine running both a D server and a TiKV node is now a domain whose loss hits
-both tiers. Cleaner: 3 dedicated small nodes for TiKV+PD.</li>
+<li><strong>TiKV + PD + etcd</strong>: 3 small nodes forming the <strong>control quorum</strong> — TiKV and PD
+(metadata) plus the L5 <strong>etcd</strong> coordination ensemble, co-located (all three are
+light). These should be <strong>3 <em>different</em> machines</strong> from each other for Raft/etcd
+quorum, but in a small homelab they can share machines with D servers if you must
+— accepting that such a machine is now a domain whose loss hits storage <em>and</em>
+control. Cleaner: 3 dedicated small nodes for TiKV+PD+etcd. (etcd can have its own
+3 nodes if you want metadata and coordination to fail independently; for M4 small,
+co-locating it with PD is the standard, honest simplification — note both default
+to client port <code>2379</code>, so remap one when co-located.)</li>
 <li><strong>Gateway + custodian</strong>: run on any node (or a spare), stateless. One of each is
-fine; the custodian leader-elects so a second is optional.</li>
+fine; the custodian leader-elects (via etcd) so a second is optional.</li>
 </ul>
-<p><strong>Machine count, minimum honest:</strong> ~6 D-server boxes + 3 TiKV/PD boxes = <strong>9
-machines</strong>, or fold TiKV/PD onto 3 of the D-server boxes for <strong>6 machines</strong> with
-the stated coupling caveat. Gateway/custodian ride along.</p>
+<p><strong>Machine count, minimum honest:</strong> ~6 D-server boxes + 3 TiKV/PD/etcd control boxes
+= <strong>9 machines</strong>, or fold the control tier onto 3 of the D-server boxes for <strong>6
+machines</strong> with the stated coupling caveat. Gateway/custodian ride along.</p>
 <h3>A.2 The &quot;real failure-domain&quot; homelab (better)</h3>
 <p>To make RS(6,3) deliver its <em>full</em> 3-fault tolerance, you want <strong>9 independent
 domains, one fragment each</strong>:</p>
@@ -157,9 +171,10 @@ these labels). Then a whole <em>strip</em> failing (3 nodes) is still exactly th
 3-fault tolerance boundary — the data survives a power-strip loss. This is the
 homelab approximation of &quot;rack/power/switch&quot; domains from
 <a href="/architecture/07-deployment-view.html">§7.3</a>.</li>
-<li><strong>TiKV + PD on 3 dedicated nodes</strong>, ideally on a different power strip again.</li>
-<li>Total: <strong>~12 machines</strong> (9 D + 3 TiKV/PD). This is a <em>serious</em> homelab but it
-makes the durability story genuinely true rather than aspirational.</li>
+<li><strong>TiKV + PD + etcd on 3 dedicated control nodes</strong>, ideally on a different power
+strip again — the metadata <em>and</em> L5 coordination quorum.</li>
+<li>Total: <strong>~12 machines</strong> (9 D + 3 TiKV/PD/etcd control nodes). This is a <em>serious</em>
+homelab but it makes the durability story genuinely true rather than aspirational.</li>
 </ul>
 <h3>A.3 Homelab honesty box</h3>
 <p>Even A.2 shares <strong>one building, one grid feed, one ISP</strong>. So the homelab is a
@@ -184,28 +199,36 @@ failure-domain math honest in a way one desk cannot.</p>
 <p>&quot;Single zone&quot; = one Hetzner location (e.g. Falkenstein <strong>or</strong> Nuremberg <strong>or</strong>
 Helsinki — pick one for M4; multi-location is M5). Within it:</p>
 <ul>
-<li><strong>D servers — dedicated/bare-metal or dedicated vCPU servers, as your failure
-domains.</strong> Hetzner's cheap dedicated servers (or <code>CCX</code>/<code>CPX</code> cloud servers) each
-with a real NVMe give you honest per-server independence: separate hardware,
-separate failure. For RS(6,3) at full strength, <strong>9 D-server instances</strong> (one
-fragment each — 3-fault tolerance). For a cheaper first cut, <strong>6</strong> (single-fault
-tolerance, as in A.1). Bare-metal gives honest fsync/NVMe performance numbers;
-cloud servers are easier to spin up/down for a test campaign.</li>
-<li><strong>TiKV + PD — 3 dedicated cloud servers</strong>, separate from the D servers, for the
-metadata quorum. Small (TiKV-small + PD is not heavy at this scale). Keeping them
-off the D-server hosts means a metadata-node loss and a storage-node loss are
-independent events.</li>
+<li><strong>D servers — Cloud <code>CX</code> servers for the campaign, bare-metal for the benchmark
+(see §B.3), as your failure domains.</strong> A separate Hetzner server — cloud or
+bare-metal — each with a real NVMe gives you honest per-server independence:
+separate hardware, separate failure. For RS(6,3) at full strength, <strong>9 D-server
+instances</strong> (one fragment each — 3-fault tolerance). For a cheaper first cut,
+<strong>6</strong> (single-fault tolerance, as in A.1). Bare-metal gives honest fsync/NVMe
+performance numbers; cloud servers are easier to spin up/down for a test campaign.</li>
+<li><strong>TiKV + PD + etcd — 3 dedicated cloud servers</strong>, separate from the D servers,
+forming the <strong>control quorum</strong>: TiKV + PD for metadata <strong>and</strong> the L5 <strong>etcd</strong>
+coordination ensemble (<a href="/adr/0006-etcd-for-coordination.html">ADR-0006</a>) that the
+<code>--coordination &lt;L5-endpoint&gt;</code> of every role dials. All three are light at this
+scale, so co-locating them on the same 3 nodes is the standard M4 choice (remap
+one of the two <code>2379</code> defaults); give etcd its own 3 nodes only if you want
+metadata and coordination to fail independently. Keeping the control tier off the
+D-server hosts means a control-node loss and a storage-node loss are independent
+events.</li>
 <li><strong>Gateway — 1–2 small cloud servers</strong>, stateless, behind Hetzner's load balancer
 if you want HA on the S3 front door. (One is fine for first deployment.)</li>
 <li><strong>Custodian — co-locate with a gateway or a small dedicated server</strong>; stateless,
 leader-elected.</li>
-<li><strong>Network</strong>: Hetzner's <strong>private network (vSwitch)</strong> for the
-client→D-server and gateway→TiKV traffic, so bulk fragment data flows on the
-internal network, not the public interface. The S3 endpoint is the only thing
-that needs public exposure (behind the LB).</li>
+<li><strong>Network</strong>: Hetzner's <strong>private network (vSwitch)</strong> for the client→D-server,
+gateway→TiKV, and all-roles→etcd coordination traffic, so bulk fragment data and
+the control plane flow on the internal network, not the public interface. etcd in
+particular <strong>must be network-isolated</strong> (ADR-0006 / <a href="/architecture/08-crosscutting-concepts.html">§8.5</a>),
+with its auth only defense-in-depth behind the mTLS fabric. The S3 endpoint is the
+only thing that needs public exposure (behind the LB).</li>
 </ul>
-<p><strong>Instance count, Hetzner full-strength:</strong> 9 D + 3 TiKV/PD + 1–2 gateway/custodian
-= <strong>~13–14 servers</strong>. Cheaper first cut: 6 D + 3 TiKV/PD + 1 gateway = <strong>10</strong>.
+<p><strong>Instance count, Hetzner full-strength:</strong> 9 D + 3 TiKV/PD/etcd control + 1–2
+gateway/custodian = <strong>~13–14 servers</strong>. Cheaper first cut: 6 D + 3 TiKV/PD/etcd
+control + 1 gateway = <strong>10</strong>.
 All in one location, on a private network, rentable for the duration of a test
 campaign and torn down after — so the <em>cost</em> is hours-of-rental, not owned
 hardware.</p>
@@ -218,16 +241,90 @@ test of the M3 reconstruction path.</li>
 <li><strong>Honest performance.</strong> Real server CPUs (SIMD for the EC loop), real NVMe
 (honest fsync), real GbE/10GbE between nodes — the first <em>trustworthy</em> throughput
 and latency numbers, and the Q6 linear-scaling claim becomes measurable across
-real independent D servers.</li>
-<li><strong>Sovereign and cheap.</strong> EU bare-metal, pay-per-hour, torn down after — the
-performance-and-real-fault story on sovereign infrastructure, cheaper than the US
-hyperscalers. On-message for the project's whole reason to exist.</li>
+real independent D servers. <em>Caveat:</em> shared-vCPU Cloud servers have
+noisy-neighbour CPU steal, so the genuinely trustworthy numbers come from
+bare-metal — see §B.3 for which Hetzner product to rent for the benchmark run.</li>
+<li><strong>Sovereign and cheap.</strong> EU infrastructure — pay-per-hour Cloud for the fault
+campaign, per-month Server Auction bare-metal for the benchmark (§B.3) — cheaper
+than the US hyperscalers, and torn down after. On-message for the project's whole
+reason to exist.</li>
 <li><strong>The bridge to M5.</strong> When you reach cross-zone (M5), the <em>same</em> topology
 replicated across Hetzner's <strong>three EU locations</strong> (FSN/NBG/HEL) gives real
 inter-region WAN — so the Hetzner single-zone deployment is the natural seed of
 the eventual multi-region one.</li>
 </ul>
-<h3>B.3 Hetzner honesty box</h3>
+<h3>B.3 Cloud vs bare-metal — which Hetzner product, and when</h3>
+<p>Hetzner sells these as distinct families, and the choice is governed by <em>what the
+campaign is for</em>, because they bill differently:</p>
+<table>
+<thead>
+<tr>
+<th>Family</th>
+<th>Examples</th>
+<th>Billing</th>
+<th>Best for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Cloud, shared vCPU</strong></td>
+<td><code>CX23</code>/<code>CX33</code> (Intel), <code>CAX</code> (ARM), <code>CPX</code> (AMD)</td>
+<td><strong>hourly</strong>, instant create/delete</td>
+<td>the M3 fault/durability campaign</td>
+</tr>
+<tr>
+<td><strong>Cloud, dedicated vCPU</strong></td>
+<td><code>CCX13</code>+</td>
+<td>hourly</td>
+<td>shared-cluster perf runs where noisy-neighbour steal must go but hourly teardown stays</td>
+</tr>
+<tr>
+<td><strong>Dedicated / bare-metal</strong></td>
+<td><code>AX</code> (AMD), <code>EX</code> (Intel), <code>RX</code> (ARM64), <code>SX</code> (storage)</td>
+<td><strong>monthly + one-time setup fee</strong>, minimum terms</td>
+<td>committed deployments, not weekend campaigns</td>
+</tr>
+<tr>
+<td><strong>Server Auction</strong></td>
+<td>refurbished bare-metal</td>
+<td>monthly, <strong>no setup fee, no minimum contract</strong></td>
+<td>the one <em>honest-performance</em> benchmark run</td>
+</tr>
+</tbody>
+</table>
+<p>The thing to internalize: <strong>the fault-tolerance campaign and the honest-performance
+benchmark want different products.</strong></p>
+<ul>
+<li><strong>Fault/durability testing → Cloud (<code>CX23</code>/<code>CX33</code>).</strong> The whole
+<code>hcloud server delete d&lt;n&gt;</code> failure test and the hours-of-rental cost story
+depend on <em>hourly</em> billing and instant teardown. Bare-metal's monthly + setup-fee
+model defeats both. Stay on Cloud here — this is the §B.1 topology.</li>
+<li><strong>Honest performance numbers (§B.2's pitch) → Server Auction bare-metal.</strong>
+Shared-vCPU Cloud has noisy-neighbour CPU steal, so its throughput/latency
+figures are <em>not</em> the trustworthy numbers B.2 promises. Real NVMe fsync, the SIMD
+EC loop on a real core, and 10GbE between nodes need bare-metal — and the
+<strong>Server Auction</strong> (no setup fee, no minimum contract, ≈€35–49/month for a
+64 GB / 2×NVMe box, and exempt from the 15 June 2026 standardization) is the only
+bare-metal option still teardown-friendly. Use the <strong><code>RX</code> line</strong> if the honest
+numbers you want are ARM64. Do <em>not</em> use standard <code>AX</code>/<code>EX</code> for a tear-down
+campaign — the monthly rate plus one-time setup fee defeats the cost rationale.</li>
+</ul>
+<p><strong>Role placement is identical on either family</strong> — only the D-server <em>performance</em>
+numbers change, not the topology:</p>
+<ul>
+<li><strong>D servers</strong> are still your failure domains; one bare-metal box = one domain,
+exactly as one cloud server = one domain.</li>
+<li><strong>TiKV + PD</strong> still want their own three nodes, off the D-server hosts.</li>
+<li><strong>Gateway and custodian stay stateless and movable.</strong> Co-locate the <strong>custodian</strong>
+with a gateway (or on any spare node / a small <code>CX23</code>) on both Cloud and
+bare-metal. Nothing about bare-metal changes the custodian's placement: it
+carries no durable state, leader-elects on restart, and emits the durability
+telemetry from wherever it runs. If you split the campaign across both families
+(Cloud for fault tests, auction boxes for the benchmark), the custodian and
+gateway are the cheap, restartable roles to move between them; the D servers and
+metadata tier are what you actually re-provision.</li>
+</ul>
+<h3>B.4 Hetzner honesty box</h3>
 <p>One Hetzner <em>location</em> is still one datacenter = one zone. M4 single-zone on
 Hetzner survives <strong>server/disk failures</strong> (the M3 story, now with honest
 independent hardware) but <strong>not the loss of the whole location</strong> — that's exactly
@@ -254,17 +351,103 @@ coverage, scrub-detected corruption rate — over Prometheus/OTLP. The one that
 matters most: <strong>under-replicated count should be zero in steady state</strong>; a
 non-zero value that doesn't return to zero means repair isn't keeping up.</li>
 <li><strong>Do the honest failure test on day one.</strong> Kill one D server (homelab: pull a
-cable; Hetzner: delete an instance). Watch: reads keep working (reconstruct from
+cable; Hetzner Cloud: delete the instance; bare-metal: power it off via Robot).
+Watch: reads keep working (reconstruct from
 survivors), under-replicated count rises, the custodian rebuilds, count returns
 to zero. <em>If that loop doesn't work, you are not production-durable yet</em> — and
 it's far better to learn it on day one with test data than later with real data.</li>
-<li><strong>Set up the out-of-band backup.</strong> Per <a href="/architecture/08-crosscutting-concepts.html">§8.2</a>, a
-copy that does not depend on this cluster. M4 is single-zone; the backup is your
+<li><strong>Set up the backups — but only where they're needed</strong> (see <em>Backup model</em>
+below). Back up the <strong>TiKV metadata</strong> out-of-band to independent storage — this
+is the mandatory one; losing it orphans all chunks. Snapshot <strong>etcd</strong> for fast
+config recovery. <strong>Do not</strong> back up D-server fragments — EC + custodian
+reconstruction is their mechanism. Per <a href="/architecture/08-crosscutting-concepts.html">§8.2</a>,
+backups must not depend on this cluster. M4 is single-zone; this is your
 disaster-recovery story until M5.</li>
 <li><strong>Promote any surprise into DST.</strong> Anything the real deployment does that the
 simulator didn't model — a seeded DST regression. This is how the first
 deployment <em>earns trust</em> rather than just running.</li>
 </ol>
+<h2>Backup model (per tier)</h2>
+<p>Backup is <strong>asymmetric by tier</strong> (<a href="/architecture/08-crosscutting-concepts.html">§8.2</a>), and the
+governing fact is that <strong>replication is not backup</strong>: Raft and EC survive <em>node</em>
+loss but faithfully replicate <em>logical</em> disasters — a bad migration, an errant
+delete, a software bug. So back up only the small, precious, non-reconstructible
+state:</p>
+<table>
+<thead>
+<tr>
+<th>Tier</th>
+<th>Backup?</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>D servers (fragments)</strong></td>
+<td><strong>No</strong></td>
+<td>RS(6,3) + custodian reconstruction <em>is</em> the durability; a per-server backup is redundant with the EC (§8.2 row 1).</td>
+</tr>
+<tr>
+<td><strong>TiKV metadata (L4)</strong></td>
+<td><strong>Yes — mandatory</strong></td>
+<td>Tiny but total blast radius: lose it and every chunk is orphaned even with all fragments intact. Take <strong>online, consistent MVCC snapshots</strong> (no downtime) to <strong>independent</strong> storage; for M4 assume <em>periodic</em> snapshots, not continuous PITR — see the realtime note below (§8.2 row 3).</td>
+</tr>
+<tr>
+<td><strong>etcd (L5 coordination)</strong></td>
+<td><strong>Rebuildable — snapshot optional</strong></td>
+<td>Most L5 state reconstructs from the running fleet (re-registration, leases, re-election), so DR <em>stands etcd up</em> rather than restoring it (<a href="/architecture/06-runtime-view.html">§6.5</a>). See the etcd note below.</td>
+</tr>
+<tr>
+<td><strong>PD</strong></td>
+<td>Via the TiKV cluster backup</td>
+<td>Placement metadata, captured by BR with the cluster; not a separate job.</td>
+</tr>
+<tr>
+<td><strong>Gateway / custodian</strong></td>
+<td><strong>No (config only)</strong></td>
+<td>Stateless; their state lives in TiKV + etcd. Capture config in version control / IaC.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Restore order is the inverse of &quot;what's reconstructible&quot;</strong>, per the documented DR
+ordering (<a href="/architecture/06-runtime-view.html">§6.5</a>; <a href="/proposals/draft/0008-management-and-administration.html">proposal 0008</a>):
+<strong>(1) etcd/L5 coordination, (2) TiKV/L4 metadata from the independent backup,
+(3) let the custodian verify and re-replicate/reconstruct fragments from
+survivors.</strong> Restoring bytes before the map is useless — fragments are
+unaddressable without the chunk-map. The full single-zone DR sequence is a
+<strong>runbook that must be written and drilled before it is needed</strong>, not improvised
+during an incident — and that runbook, plus backup cadence/format/retention, is
+still an open item in proposal 0008, not yet specified.</p>
+<p><strong>Can the metadata backup be taken in realtime?</strong> Two senses. <em>Online /
+non-blocking</em> — <strong>yes</strong>: TiKV is MVCC, so a consistent snapshot is read at a
+timestamp while the cluster keeps serving, no downtime. <em>Continuous near-realtime
+(low RPO)</em> — <strong>only partially, and unverified for this deployment</strong>: TiKV/TiDB
+log-backup PITR streams change logs with an RPO floor of ~5 minutes (never zero),
+<strong>but that is a TiDB-<em>cluster</em> feature</strong>, while Wyrd runs <strong>standalone transactional
+TiKV</strong> (<code>txnkv</code>, no TiDB — <a href="/proposals/draft/0007-milestone-4-production-metadata-backend.html">proposal 0007</a>)
+and the standalone TiKV-BR continuous path is documented for <em>RawKV</em>, not <code>txnkv</code>.
+So for M4 the safe assumption is <strong>periodic online snapshots</strong> (RPO = the snapshot
+interval); whether log-backup PITR works against bare <code>txnkv</code> must be <strong>verified
+against the pinned <code>tikv-client</code> / TiKV-BR version</strong> (an open item in 0007) before
+it is relied on. Treat restore as fallible and <strong>drill it</strong> (cf. TiKV issue #13281,
+PITR restore inconsistency), don't just configure the backup.</p>
+<p><strong>Why etcd needs little backup — and why a <em>stale restore</em> is the wrong instinct.</strong>
+The reason isn't that its config is static; it's that nearly all L5 state is
+<strong>reconstructable from the running fleet</strong> — D servers re-register, leases renew,
+the leader re-elects — which is exactly why <a href="/architecture/06-runtime-view.html">§6.5</a> <em>stands up</em>
+L5 first rather than restoring it from a backup (only L2/L4 metadata is
+backup-restored). The one genuinely durable bit is <strong>zone-wide config</strong>; keep that
+in declarative IaC where possible so etcd is a cache, not the sole source of truth.
+A periodic <code>etcdctl snapshot save</code> is cheap insurance, but on DR <strong>prefer
+re-bootstrapping a fresh etcd over restoring a stale snapshot</strong>: a restore rolls
+etcd's mvcc revision backward and can <strong>regress lock fencing tokens</strong>, re-admitting
+a stale lock holder — a correctness hazard worse than the soft state you'd recover.
+So: low backup need, yes — but for the <em>reconstructability</em> reason, with &quot;rebuild
+fresh&quot; as the default DR move.</p>
+<p>This per-tier model is the operational detail behind §8.2; the whole-store,
+object-level out-of-band copy those same sources call for (day-one step 5) is
+complementary — it adds protection against logical errors at the object level and
+is your only disaster-recovery story until M5 cross-zone replication.</p>
 <h2>The honest scope statement to a first user</h2>
 <blockquote>
 <p>This is a single-zone, production-durable, S3-compatible object store. It
@@ -305,7 +488,7 @@ the operator-partner the project needs.</p>
 <td>any 3 servers</td>
 </tr>
 <tr>
-<td>TiKV/PD nodes</td>
+<td>Control nodes (TiKV/PD/etcd)</td>
 <td>3 (may share)</td>
 <td>3 dedicated</td>
 <td>3 dedicated</td>
@@ -326,6 +509,13 @@ the operator-partner the project needs.</p>
 <td>~13–14</td>
 </tr>
 <tr>
+<td>Hetzner product</td>
+<td>—</td>
+<td>—</td>
+<td>Cloud <code>CX23</code> (D) / <code>CX33</code> (TiKV·PD)</td>
+<td>Cloud <code>CX23</code> (D) / <code>CX33</code> (TiKV·PD)</td>
+</tr>
+<tr>
 <td>Disaster-recoverable?</td>
 <td>No (one site)</td>
 <td>No (one site)</td>
@@ -337,7 +527,7 @@ the operator-partner the project needs.</p>
 <td>learning, dogfooding</td>
 <td>real homelab durability test</td>
 <td>first honest cloud deploy</td>
-<td>honest perf + fault campaign</td>
+<td>full RS(6,3) fault campaign</td>
 </tr>
 </tbody>
 </table>
@@ -347,6 +537,11 @@ torn down after — then scale to 9 for full RS(6,3) tolerance once the basics h
 The homelab is the better <em>permanent</em> dogfooding/learning rig and the better place
 to abuse hardware physically; Hetzner is the better <em>honest first production-shape</em>
 deployment and the seed of the eventual multi-region M5 topology.</p>
+<p>Both Hetzner columns above are <strong>Cloud</strong> (<code>CX</code>) sizing for the hourly fault
+campaign. The separate honest-<em>performance</em> benchmark runs on <strong>Server Auction
+bare-metal</strong> (§B.3), billed per month rather than per hour, so it sits outside this
+cheat-sheet's machine-count/teardown model — size it when you reach the benchmark
+phase, not the first fault deployment.</p>
 <hr />
 <h1>Setup instructions</h1>
 <blockquote>
@@ -366,21 +561,35 @@ strings are M4's to fix.</p>
 <li>The Wyrd binary (single binary with <code>d-server</code>, <code>custodian</code>, gateway, and
 metadata-backend-selector subcommands/roles) built for the target arch
 (x86_64, or aarch64 for ARM nodes/NAS).</li>
-<li>The <code>deploy/</code> directory from the repo (docker-compose TiKV+PD stack and any
-systemd unit templates).</li>
-<li>A TiKV + PD release (the M4 <code>deploy/</code> stack pins versions; don't mix).</li>
+<li>The <code>deploy/</code> directory from the repo (docker-compose TiKV+PD <strong>and etcd</strong> stack
+and any systemd unit templates).</li>
+<li>A TiKV + PD release <strong>and an etcd release</strong> (the M4 <code>deploy/</code> stack pins versions;
+don't mix). etcd backs the L5 <code>Coordination</code> seam
+(<a href="/adr/0006-etcd-for-coordination.html">ADR-0006</a>); it is an external dependency,
+not a Wyrd subcommand.</li>
 <li><code>cargo-deny</code>-clean, M4-tagged build — i.e. an actual M4 release, not a
 mid-milestone checkout.</li>
 </ul>
 <hr />
 <h2>Variant B — Hetzner (the recommended first deployment)</h2>
+<blockquote>
+<p><strong>Scope of these steps.</strong> The <code>hcloud</code> provisioning below is the <strong>Cloud</strong>
+path — the hourly, instant-teardown fault/durability campaign (§B.3). The
+separate honest-<em>performance</em> benchmark uses <strong>Server Auction bare-metal</strong>,
+provisioned through Hetzner <strong>Robot</strong> (not <code>hcloud</code>) and billed per month; the
+Wyrd-process steps (B.2–B.4) are identical there, only the provisioning and
+teardown differ (see the notes in B.1 and B.5).</p>
+</blockquote>
 <h3>B.1 Provision the nodes</h3>
-<p>Pick <strong>one</strong> location (FSN1, NBG1, or HEL1 — single zone for M4). Use the cheap
-shared lines (CX/CAX); dedicated CCX is not needed at test scale.</p>
+<p>Pick <strong>one</strong> location (FSN1, NBG1, or HEL1 — single zone for M4). For the
+fault/durability campaign use the cheap shared <strong><code>CX</code></strong> lines (hourly, instant
+teardown — see §B.3); <code>CAX</code> (ARM) is no longer cheaper than <code>CX23</code> and loses the
+x86 SIMD EC path. Dedicated <code>CCX</code> or bare-metal is only for the separate
+honest-performance benchmark, not this functional run.</p>
 <pre><code># Roles — instance sizing (test scale; adjust up for real load)
-#  D servers      : CX23  (2 vCPU, 4 GB, 40 GB NVMe)   × 6  (or 9 for full RS(6,3))
-#  TiKV + PD      : CX33  (4 vCPU, 8 GB, 80 GB NVMe)   × 3
-#  gateway+custod : CX23                                × 1  (or 2 + LB for HA)
+#  D servers       : CX23  (2 vCPU, 4 GB, 40 GB NVMe)  × 6  (or 9 for full RS(6,3))
+#  TiKV + PD + etcd: CX33  (4 vCPU, 8 GB, 80 GB NVMe)  × 3  (control quorum: metadata + L5 coordination)
+#  gateway+custod  : CX23                              × 1  (or 2 + LB for HA)
 </code></pre>
 <p>Provision via the Hetzner Cloud console, the <code>hcloud</code> CLI, or Terraform. The
 <code>hcloud</code> CLI is the quickest for a tear-down-after test campaign:</p>
@@ -415,19 +624,26 @@ that is M5 cross-region. For M4, label each D server with a <code>fd=</code> gro
 D servers and 3 fd-labels you get the A.1 single-fault profile, with 9 D
 servers and 9 labels the full 3-fault profile (B.1 full).</p>
 </blockquote>
-<h3>B.2 Bring up the metadata tier (TiKV + PD)</h3>
-<p>From the M4 <code>deploy/</code> stack, on the three <code>tikv*</code> nodes. The M4 proposal ships a
-<strong>docker-compose TiKV+PD</strong> for CI/eval; for a real deployment use the same images
-with PD pointed at all three nodes. <strong>[wyrd-config]</strong> the exact compose file /
-systemd units come from <code>deploy/</code>.</p>
-<pre><code class="language-sh"># on each tikv node: install docker, pull the deploy/ stack, start PD then TiKV
-# PD ensemble (3-node quorum) must come up first; TiKV registers with PD.
-# The deploy/ compose file wires this; point each node at the other two PDs.
+<h3>B.2 Bring up the control tier (TiKV + PD + etcd)</h3>
+<p>From the M4 <code>deploy/</code> stack, on the three control nodes (named <code>tikv*</code> here; they
+also run the L5 etcd ensemble). The M4 proposal ships a <strong>docker-compose TiKV+PD</strong>
+for CI/eval; the <strong>etcd</strong> coordination ensemble
+(<a href="/adr/0006-etcd-for-coordination.html">ADR-0006</a>) comes up alongside it. For a
+real deployment use the same images with PD and etcd each pointed at all three
+nodes. <strong>[wyrd-config]</strong> the exact compose files / systemd units come from
+<code>deploy/</code>.</p>
+<pre><code class="language-sh"># on each control node: install docker, pull the deploy/ stack
+# 1) etcd ensemble (3-node quorum) — the L5 Coordination backend (client 2379, peer 2380, mTLS)
+docker compose -f deploy/etcd.yml up -d        # [wyrd-config] exact filename from deploy/
+# 2) PD ensemble (3-node quorum) must come up before TiKV; TiKV registers with PD.
+#    PD also defaults to 2379 — if co-located with etcd, remap one (e.g. etcd → 2381).
 docker compose -f deploy/tikv-pd.yml up -d     # [wyrd-config] exact filename from deploy/
 </code></pre>
-<p>Verify the metadata tier before adding storage: PD has quorum (3 nodes, lose at
-most 1), TiKV stores show healthy. (<code>pd-ctl</code>/<code>tikv-ctl</code> from the TiKV release, or
-the deploy stack's health check.)</p>
+<p>Verify the control tier before adding storage: <strong>etcd has quorum</strong> (3 nodes, lose
+at most 1 — <code>etcdctl endpoint health</code>), <strong>PD has quorum</strong> (3 nodes, lose at most
+1), TiKV stores show healthy (<code>pd-ctl</code>/<code>tikv-ctl</code>, or the deploy stack's health
+check). The <code>&lt;L5-endpoint&gt;</code> every other role dials is this etcd ensemble, e.g.
+<code>10.0.1.&lt;e0&gt;:2379,10.0.1.&lt;e1&gt;:2379,10.0.1.&lt;e2&gt;:2379</code>.</p>
 <h3>B.3 Bring up the D servers (with failure-domain labels)</h3>
 <p>On each <code>d*</code> node, run the Wyrd <code>d-server</code> role, pointed at its local disk and
 <strong>labeled with its failure domain</strong>. This label is the single most important
@@ -437,7 +653,7 @@ wyrd d-server \
   --data-dir /var/lib/wyrd/fragments \
   --listen 10.0.1.&lt;n&gt;:50051 \         # Wyrd D-server gRPC default (crates/server/src/cli.rs)
   --failure-domain $FD_LABEL \          # e.g. fd0/fd1/fd2 — MUST be set, MUST be honest
-  --coordination &lt;L5-endpoint&gt;          # registers via the Coordination seam
+  --coordination &lt;L5-endpoint&gt;          # the 3-node etcd ensemble — registers id·endpoint·fd, renews lease
 </code></pre>
 <p>The D server registers itself (id + endpoint + failure-domain label) through the
 L5 coordination seam; the gateway discovers it. <strong>Never</strong> point two D servers
@@ -466,6 +682,12 @@ HA); everything else stays on the <code>10.0.1.0/24</code> private network.</p>
 hcloud server delete d0 d1 d2 d3 d4 d5 tikv0 tikv1 tikv2 gw0
 hcloud network delete wyrd-zone
 </code></pre>
+<blockquote>
+<p><strong>Bare-metal teardown differs.</strong> Server Auction / dedicated boxes are <em>cancelled</em>
+through Robot, not <code>hcloud server delete</code>, and billing stops at the end of the
+paid month, not the minute — so plan the benchmark to fit a billing month rather
+than a weekend.</p>
+</blockquote>
 <hr />
 <h2>Variant A — Homelab</h2>
 <p>The infra steps differ (your own machines, your own network); the <strong>Wyrd
@@ -498,7 +720,8 @@ unique contribution.</p>
 <h2>Day-one verification (both variants) — do this before trusting it</h2>
 <p>Run these <em>in order</em>; each gates the next. This is the difference between &quot;the
 processes are running&quot; and &quot;it is actually production-durable.&quot;</p>
-<pre><code>1. Health:        all D servers registered &amp; discovered; PD quorum healthy;
+<pre><code>1. Health:        etcd quorum healthy (L5 Coordination up); all D servers
+                  registered &amp; discovered via etcd; PD quorum healthy;
                   custodian leader elected; gateway serving S3.
 2. Round-trip:    S3 PUT an object → GET it back byte-identical.
 3. Spread check:  inspect a written chunk's 9 fragments → confirm they landed in
@@ -508,8 +731,8 @@ processes are running&quot; and &quot;it is actually production-durable.&quot;</
 4. Telemetry:     under-replicated count = 0 in steady state; scrub running;
                   metrics flowing to Prometheus/OTLP.
 5. THE FAILURE TEST (the one that matters):
-                  Kill one D server (Hetzner: `hcloud server delete d&lt;n&gt;`;
-                  homelab: pull its cable).
+                  Kill one D server (Hetzner Cloud: `hcloud server delete d&lt;n&gt;`;
+                  bare-metal: power off via Robot; homelab: pull its cable).
                   WATCH:
                     a. reads keep succeeding (reconstruct from survivors) — no errors
                     b. under-replicated count rises above 0
@@ -519,18 +742,30 @@ processes are running&quot; and &quot;it is actually production-durable.&quot;</
                   IF this loop completes → you are production-durable against
                   single-node loss. IF it does not → you are NOT; stop and fix
                   before putting any real (even non-sole-copy) data on it.
-6. Backup:        configure the out-of-band backup (§8.2) — M4 is single-zone,
-                  so this is your only disaster-recovery story until M5.
+6. Backup:        back up TiKV metadata out-of-band to independent storage (the
+                  mandatory one) + snapshot etcd; do NOT back up D-server fragments
+                  (EC + reconstruction covers them). Know the restore order:
+                  etcd → metadata → re-replicate from survivors. See &quot;Backup model
+                  (per tier)&quot;. M4 is single-zone, so this is your only DR until M5.
 7. Promote:       anything surprising in steps 1–6 → a seeded DST regression.
 </code></pre>
-<h2>What you'll spend (Hetzner, current pricing)</h2>
-<p>A test campaign on the B.1-cheap topology (10 nodes, CX/CX33, hourly, torn down
-after) is roughly <strong>€0.07/hour for the whole cluster</strong> — <strong>~€3–4 a weekend</strong>,
-<strong>~€11 a week</strong>, <strong>under €1 for a focused day</strong>. New accounts get ~€20 credit
-(several campaigns). Confirm live per-instance prices before sizing — Hetzner
-repriced repeatedly in 2026; the cheap CX/CAX lines are the ones to use, and
-EU-sovereign alternatives (netcup, Contabo, OVH, Scaleway, IONOS/STACKIT) hit
-similar test economics if Hetzner's trajectory concerns you.</p>
+<h2>What you'll spend (Hetzner, verified post-15-June-2026 pricing)</h2>
+<p><strong>Cloud, B.1-cheap topology</strong> (6× <code>CX23</code> D + 3× <code>CX33</code> TiKV/PD + 1× <code>CX23</code>
+gateway): at €0.0064/h (<code>CX23</code>) and €0.0104/h (<code>CX33</code>) that is <strong>≈€0.076/hour for
+the whole cluster</strong> — <strong>~€3–4 a weekend</strong>, <strong>~€11 a week</strong>, <strong>under €1 for a
+focused day</strong>. The 15 June 2026 price adjustment did not move this materially, so
+the figure still holds. Full-strength (9 D + 3 TiKV/PD + 2 gateway) ≈
+<strong>€0.10/hour</strong>. New accounts get ~€20 credit (several campaigns).</p>
+<p><strong>Bare-metal, the benchmark run</strong> (§B.3): Server Auction boxes run
+≈<strong>€35–49/month</strong> each with no setup fee and no minimum contract — <em>month</em>
+granularity, not hourly, so budget per month of benchmarking, not per weekend.
+Standard <code>AX</code>/<code>EX</code> lines add a one-time setup fee and minimum terms; avoid them
+for short campaigns.</p>
+<p>Confirm live per-instance prices before sizing — Hetzner repriced repeatedly in
+2026 (three increases plus the 15 June standardization). The cheap <code>CX</code> lines are
+the ones to use for Cloud; EU-sovereign alternatives (netcup, Contabo, OVH,
+Scaleway, IONOS/STACKIT) hit similar test economics if Hetzner's trajectory
+concerns you.</p>
 
     </article>
   </main>
