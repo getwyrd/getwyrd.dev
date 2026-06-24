@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proposal: The observability floor — making the first deployment diagnosable — Wyrd</title>
+<meta name="description" content="observable, and the dangerous-but-routine operations … must be safe, resumable, and">
+<meta property="og:title" content="Proposal: The observability floor — making the first deployment diagnosable — Wyrd">
+<meta property="og:description" content="observable, and the dangerous-but-routine operations … must be safe, resumable, and">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Enhancement Proposal</p>
+    <p class="doc-meta">Status: draft · 24.06.2026</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>Proposal: The observability floor — making the first deployment diagnosable</h1>
+<blockquote>
+<p>Draft. The <strong>minimum observability that must be wired into a runnable binary
+before M4 real-world testing begins</strong>, so that when something goes wrong in the
+first deployment, the three operator questions — <em>why is it slow? which node is
+down? why did this request fail?</em> — have answers. It is deliberately a <strong>floor,
+not the operator surface</strong>: the full management plane, auth/RBAC, day-2 ops,
+audit log, and polished dashboards are <a href="/proposals/draft/0008-management-and-administration.html">proposal 0008</a>; the d-server
+performance program is <a href="/proposals/draft/0009-d-server-performance.html">proposal 0009</a>; the TiKV backend swap is M4
+(<a href="/proposals/draft/0007-milestone-4-production-metadata-backend.html">proposal 0007</a>). This proposal pulls the <em>telemetry-emission-and-wiring</em>
+subset forward, decoupled from 0008's API, because the <a href="/architecture/m4-first-deployment-blueprint.html">M4 first-deployment
+blueprint</a> already <strong>instructs the first user</strong> to run <code>wyrd custodian --otlp-endpoint …</code> and to <em>&quot;watch the durability plane from minute one&quot;</em> — and
+none of that is wired into the binary today. The point of this milestone is to
+make the blueprint's observability assumptions <strong>true</strong>.</p>
+</blockquote>
+<h2>Motivation</h2>
+<p><strong>Operability is quality goal #3</strong> — <em>&quot;the durability state of the system must be
+observable, and the dangerous-but-routine operations … must be safe, resumable, and
+observable&quot;</em> (<a href="/architecture/01-introduction-and-goals.html">§1.3</a>). The <a href="/architecture/m4-first-deployment-blueprint.html">M4 first-deployment blueprint</a> turns that into a
+concrete day-one checklist: verify placement spread &quot;the custodian/telemetry should
+expose this&quot;; <strong>&quot;watch the durability plane from minute one&quot;</strong> (the five M3 metrics
+over Prometheus/OTLP); kill a D server and <strong>watch under-replicated count rise and
+return to zero</strong> (<a href="/architecture/m4-first-deployment-blueprint.html">blueprint §Day-one operations</a>). The bring-up script runs
+<code>wyrd custodian … --otlp-endpoint &lt;your-collector&gt;</code> (<a href="/architecture/m4-first-deployment-blueprint.html">blueprint §B.4</a>).</p>
+<p><strong>None of that is reachable from a deployable binary today.</strong> Verified against the
+working tree:</p>
+<ul>
+<li>The durability telemetry seam is <strong>library-only</strong>. <code>DurabilityTelemetry::new</code> and
+<code>ExporterConfig</code> (<code>crates/custodian/src/telemetry.rs</code>) have <strong>no non-test caller</strong>;
+they are constructed only in DST and unit tests.</li>
+<li>The custodian — which owns both the maintenance loops <strong>and</strong> the telemetry — is a
+dependency of the <strong><code>dst</code> test harness only</strong> (<code>crates/dst/Cargo.toml:35</code>). The
+<code>server</code> binary does not depend on it and runs no custodian loop
+(<code>crates/server/src/cli.rs:47</code>: &quot;The CLI runs no custodian sweep&quot;). There is no
+<code>wyrd custodian</code> subcommand; <code>crates/server/src/main.rs</code> is a thin dispatch to the
+M0 <code>put</code>/<code>get</code>/<code>demo</code> frontend.</li>
+<li><strong>No <code>tracing</code> subscriber is installed at any binary entry</strong> — no
+<code>tracing-subscriber</code>/<code>RUST_LOG</code>/<code>.init()</code> outside tests. So even the durability
+metrics the custodians <em>do</em> emit (<code>tracing::info!(monotonic_counter.… )</code>) would
+surface nowhere: a metric event with no subscriber + exporter is dropped on the
+floor. Operational logging on the access path was explicitly deferred at M0
+(<code>crates/server/src/cli.rs:8-9</code>).</li>
+<li>The <strong>request and capacity planes are not instrumented</strong> (<a href="/architecture/08-crosscutting-concepts.html">§8.3</a> names them;
+<a href="/proposals/draft/0008-management-and-administration.html">proposal 0008</a> designs them; neither is built). The d-server's admission
+control sheds load <strong>silently</strong> (<code>crates/server/src/dserver.rs</code>) — visible only as
+a client-side gRPC <code>RESOURCE_EXHAUSTED</code>.</li>
+<li><strong>Errors are opaque.</strong> <code>BoxError</code> everywhere except the one typed <code>IntegrityFault</code>
+(<code>crates/traits/src/lib.rs:59,62</code>), so &quot;why did it fail&quot; cannot distinguish a
+network drop from a store error from a timeout.</li>
+<li><strong><code>health()</code> is implemented</strong> (<code>crates/chunkstore-fs/src/lib.rs:320</code>) but is exposed
+through <strong>no readiness/liveness probe</strong> — no <code>tonic_health</code>/health service exists —
+so an orchestrator cannot tell which node is down.</li>
+</ul>
+<p>The result: a <code>wyrd</code> process you deploy for the M4 campaign emits <strong>no logs, no
+metrics, and runs none of the loops</strong> the blueprint tells you to watch. The
+observability <em>design</em> is comprehensive and already exists (<a href="/proposals/draft/0008-management-and-administration.html">0008</a>, <a href="/proposals/draft/0009-d-server-performance.html">0009</a>);
+the gap is that it is <strong>designed-but-unbuilt-and-unwired</strong>, sequenced after M4, and
+M4 itself (<a href="/proposals/draft/0007-milestone-4-production-metadata-backend.html">0007</a>) scopes none of it. This proposal closes exactly that gap, and
+no more.</p>
+<p><strong>Why now:</strong> real-world testing is the point at which &quot;designed&quot; stops being enough.
+A first deployment with no diagnostics doesn't just slow debugging — it silently
+fails goal #3's own acceptance test (kill a node, watch the plane), because there is
+no plane to watch.</p>
+<h2>Design</h2>
+<h3>Scope boundary</h3>
+<p>The organizing rule is <strong>&quot;can I diagnose <em>at all</em>&quot; — not &quot;can I diagnose
+<em>elegantly</em>.&quot;</strong> Every item below is either a carve-out of <a href="/proposals/draft/0008-management-and-administration.html">proposal 0008</a>'s
+telemetry plane (pulled forward and decoupled from its management API) or one of the
+four small gaps 0008/0009 do not own. The &quot;elegant&quot; tier — management API, auth,
+audit log, polished Grafana, full distributed tracing — stays in 0008.</p>
+<p><strong>In scope</strong> (the floor — gates the M4 first-deployment campaign):</p>
+<ol>
+<li><strong>The wiring keystone — a telemetry handle + <code>tracing</code> subscriber installed at
+every role entry.</strong> This is the single highest-leverage change and a prerequisite
+for <em>every other</em> item, including the durability plane that is already written.
+Construct the telemetry handle and install a <code>tracing-subscriber</code> registry with
+the <code>MetricsLayer</code> (<code>telemetry.rs:116</code>) <strong>and</strong> a fmt/log layer, plus the chosen
+exporter (<code>ExporterConfig::{Prometheus,Otlp,Both}</code>), at each binary role's entry.
+Without this, nothing emits no matter how much is instrumented.</li>
+<li><strong>The custodian as a runnable role.</strong> Make <code>wyrd custodian</code> real (the blueprint's
+<code>§B.4</code> command): <code>server</code> gains a <code>custodian</code> subcommand that depends on the
+<code>custodian</code> crate (today a <code>dst</code>-only dep), runs the leader-elected loop, and
+installs the telemetry handle from item 1. This is what turns the <strong>already-built,
+DST-verified durability plane</strong> from simulation-only into something a process
+emits — the blueprint's &quot;watch the durability plane from minute one.&quot;</li>
+<li><strong>Operational logging</strong> — <code>--log-level</code> / <code>RUST_LOG</code> (an <code>EnvFilter</code>), structured
+stderr logs for startup/shutdown/leadership-change/major decisions, lifting the
+<code>cli.rs:8-9</code> M0 deferral. Falls out of item 1; preserves the stdout-is-payload
+discipline already documented there.</li>
+<li><strong>Request-plane RED, minimal</strong> (<a href="/architecture/08-crosscutting-concepts.html">§8.3</a>): per-operation latency histograms and
+error counters on the write/read path (<code>crates/core</code>), the error counter <strong>keyed
+by the typed failure class</strong> from item 6. Adequate, not elegant — RED counters,
+not full traces.</li>
+<li><strong>Capacity-plane signals, minimal</strong> (<a href="/architecture/08-crosscutting-concepts.html">§8.3</a>, <a href="/architecture/08-crosscutting-concepts.html">§8.9</a>): emit the
+admission-control <strong>events</strong> the d-server currently swallows
+(<code>dserver.rs</code> — admitted / shed / timed-out), in-flight-request and
+concurrent-stream gauges, and per-failure-domain utilization (the custodian
+already has the domain model from M3).</li>
+<li><strong>Typed errors at the trait seam</strong> — a richer error enum extending the
+<code>IntegrityFault</code> precedent (<code>crates/traits/src/lib.rs:64-100</code>) that distinguishes
+<strong>transient</strong> (unreachable / timed-out / busy) from <strong>terminal</strong> classes, so the
+request-plane error counter and the operator both get a <em>class</em>, not an opaque
+string. <strong>This is the one item that can collide with M4 — see Sequencing.</strong></li>
+<li><strong>Health as an orchestrator probe</strong> — expose the existing <code>health()</code>
+(<code>chunkstore-fs/src/lib.rs:320</code>, the <code>Health</code> enum at <code>traits/src/lib.rs:120</code>)
+over a standard gRPC health/readiness surface (<code>tonic-health</code>) so &quot;which node is
+down&quot; is answerable by a liveness/readiness check, not inferred.</li>
+</ol>
+<p><strong>Out of scope</strong> — owned elsewhere, deliberately <em>not</em> pulled forward:</p>
+<ul>
+<li>The <strong>operator management API, thin CLI, OIDC+mTLS auth, RBAC, day-2 operations,
+multi-tenancy administration, and the append-only audit log</strong> → <a href="/proposals/draft/0008-management-and-administration.html">proposal 0008</a>.
+This floor emits signals; 0008 builds the surface that governs and secures them.</li>
+<li><strong>Polished Grafana dashboards</strong> (<code>deploy/grafana/</code>) and alerting → <a href="/proposals/draft/0008-management-and-administration.html">0008</a>
+(&quot;a gift, not a gate&quot;, <a href="/adr/0012-opentelemetry-instrumentation.html">ADR-0012</a>). Early testing queries Prometheus directly;
+this proposal ships only the <strong>metric/log inventory</strong>, not curated dashboards.</li>
+<li><strong>Full distributed tracing</strong> — OTel spans propagated across the gateway→d-server
+gRPC seam, Tempo, and the <strong>cross-plane request↔durability correlation</strong> (joining a
+write to the repair its fragment triggers minutes later, in a different process).
+That correlation is the architecturally novel, diagnostically decisive piece and is
+<strong>not owned by 0008</strong> — it warrants its <strong>own ADR</strong> (next free number 0036). The
+floor ships a <strong>per-request correlation id in the logs</strong> (cheap, no span plumbing);
+the full span graph + cross-plane join is a fast-follow (see Open questions).</li>
+<li><strong>The d-server performance program</strong> (PUT/GET p50/p99/p999 harness, mTLS, copy
+elimination) → <a href="/proposals/draft/0009-d-server-performance.html">proposal 0009</a>. This floor tells you <em>that</em> the d-server is
+slow; 0009 tells you <em>why</em> and makes it fast.</li>
+<li><strong>The TiKV backend and the <code>wyrd gateway</code>/<code>d-server</code> production roles' backend
+composition</strong> → M4 (<a href="/proposals/draft/0007-milestone-4-production-metadata-backend.html">0007</a>). This proposal wires telemetry into whatever roles
+exist; it does not introduce the metadata backend.</li>
+</ul>
+<h3>What carries over, unchanged</h3>
+<p>This is <strong>purely additive instrumentation + wiring</strong>. It touches <strong>no</strong> commit
+protocol, <strong>no</strong> consistency contract (<a href="/adr/0015-consistency-contract.html">ADR-0015</a>), and <strong>no</strong> on-disk format
+(<a href="/adr/0002-spec-first-on-disk-format-only.html">ADR-0002</a>, <a href="/adr/0019-chunk-format-layout.html">ADR-0019</a>) — the three highest-bar surfaces. The
+<code>MetadataStore</code>/<code>ChunkStore</code>/<code>Coordination</code> trait <em>contracts</em> are unchanged except
+for the additive typed-error enum (item 6) and the already-present <code>health()</code>. The
+custodian loops, the EC path, and the gRPC data path are untouched in behaviour; they
+gain emission points, not new logic. The durability telemetry seam
+(<code>telemetry.rs</code>) is <strong>reused, not rebuilt</strong> — the floor wires it in and generalizes
+it to a second and third consumer.</p>
+<h3>The telemetry seam: reuse, then generalize (the one structural question)</h3>
+<p>The floor wires <code>DurabilityTelemetry</code> into a running binary and then needs the <strong>same
+dual-export, no-backend-hardcoded</strong> seam (<a href="/adr/0012-opentelemetry-instrumentation.html">ADR-0012</a>) for the gateway (request
+plane) and d-server (capacity plane). Two consumers beyond the custodian now exist, so
+<a href="/adr/0016-monorepo-and-crate-structure.html">ADR-0016</a>'s evolution rule (&quot;extract when the second consumer appears&quot;) applies:
+<strong>lean — extract a shared <code>crates/telemetry</code> crate</strong> holding the <code>ExporterConfig</code>,
+the provider/registry construction, the subscriber installation, and the
+<code>gather_prometheus</code> read-back, leaving <code>custodian</code> to own only its <em>durability
+meters</em>. This keeps one instrumentation path (the ADR-0012 discipline) rather than
+three divergent ones. Final call deferred to implementation (Open questions); either
+way no concrete backend leaks into a leaf crate (<a href="/adr/0010-pluggable-deployment-substrate.html">ADR-0010</a>).</p>
+<h3>Crate touch-points</h3>
+<p>Building on the workspace after M3 (and independent of M4's TiKV work except item 6):</p>
+<ul>
+<li><strong><code>server</code></strong> — install the subscriber + exporter at each role entry
+(<code>main.rs</code>/<code>cli.rs</code>); add the <strong><code>custodian</code> runnable role</strong> (depend on the
+<code>custodian</code> crate, run the loop); add <code>--log-level</code>/<code>RUST_LOG</code>; wire the
+<code>tonic-health</code> service on the d-server (and other) roles; instrument the
+write/read gateway path with request-plane RED.</li>
+<li><strong><code>telemetry</code></strong> (<strong>new</strong>, or kept in <code>custodian</code> — Open question) — the shared
+dual-export handle + subscriber installer, lifted from
+<code>custodian/src/telemetry.rs</code>.</li>
+<li><strong><code>custodian</code></strong> — becomes a <code>server</code> dependency; expose a runnable loop entry;
+emit per-failure-domain capacity utilization (it has the domain model). No change
+to its durability meters.</li>
+<li><strong><code>core</code></strong> — request-plane latency/error emission around <code>read</code>/<code>write</code>; map
+backend errors to the new typed classes at the boundary.</li>
+<li><strong><code>traits</code></strong> — the additive typed-error enum extending <code>IntegrityFault</code>;
+<code>is_integrity_fault</code>-style classifiers gain transient/terminal siblings. <code>Health</code>
+already present.</li>
+<li><strong><code>chunkstore-grpc</code> / <code>server::dserver</code></strong> — emit admission-control events +
+in-flight/stream gauges; surface the typed error classes over gRPC status codes
+(the <code>DATA_LOSS</code>-for-<code>IntegrityFault</code> precedent, reconstructed client-side).</li>
+<li><strong><code>proto</code></strong> — reuse the standard gRPC health proto via <code>tonic-health</code> (no bespoke
+service); any error-class detail rides existing status conventions.</li>
+<li><strong><code>dst</code></strong> — assertions that each new emission point fires (the <code>gather_prometheus</code>
+read-back pattern), that typed errors survive the gRPC seam, and that the
+subscriber/exporter wiring installs in a simulated role.</li>
+<li><strong>deps</strong> — <code>tracing-subscriber</code> (EnvFilter + fmt) and <code>tonic-health</code>; the
+OpenTelemetry stack is already vendored (<a href="/adr/0003-apache-2-license-and-dco.html">ADR-0003</a> <code>cargo-deny</code> allowlist
+check).</li>
+</ul>
+<h3>DST and tests</h3>
+<p><a href="/adr/0009-deterministic-simulation-testing.html">ADR-0009</a> stays the correctness authority, and <strong>DST never measures
+performance</strong> (<a href="/proposals/draft/0009-d-server-performance.html">proposal 0009</a>; <a href="/architecture/10-quality-risks-glossary.html">§13</a>) — this floor is about <em>emission
+correctness</em>, not latency. Properties:</p>
+<ul>
+<li><strong>Emission-wired</strong> — in a simulated role with the subscriber + Prometheus surface
+installed, each plane's metrics are <strong>read back in-process</strong>
+(<code>DurabilityTelemetry::gather_prometheus</code>, <code>telemetry.rs:135-142</code>) and asserted
+present and correctly labelled — the M3 C4-verify pattern extended to the request
+and capacity planes.</li>
+<li><strong>Durability plane lights up in a process</strong> — the M3 property &quot;after an injected
+loss, under-replicated count rises then returns to zero&quot; now asserted <strong>through the
+wired custodian role</strong>, not only the library — closing the sim-only gap.</li>
+<li><strong>Typed errors survive the wire</strong> — a transient fault and a terminal fault each
+reconstruct to the correct class client-side across the gRPC seam (mirrors the
+<code>IntegrityFault</code>-over-<code>DATA_LOSS</code> test).</li>
+<li><strong>Health probe</strong> — a store made unhealthy flips the readiness probe to not-ready.</li>
+<li>A live Prometheus scrape / OTLP collector run is <strong>supplementary off-Check
+evidence</strong> (<a href="/adr/0012-opentelemetry-instrumentation.html">ADR-0012</a>), exercised once on a Tier-2 single node against the
+blueprint's day-one checklist.</li>
+</ul>
+<h2>The milestone — &quot;observability floor&quot;, a release-gate dependency of M4 testing</h2>
+<p>This is <strong>not a new arc milestone</strong> (it retires no new correctness risk; it is
+operability work layered on M3, like <a href="/proposals/draft/0008-management-and-administration.html">0008</a>/<a href="/proposals/draft/0009-d-server-performance.html">0009</a>). It is a focused
+implementation milestone whose <strong>definition of done is: the <a href="/architecture/m4-first-deployment-blueprint.html">M4 first-deployment
+blueprint</a>'s day-one checklist is executable as written</strong> — every <code>watch</code>/<code>verify</code>
+step resolves to a real metric, log, or probe. It <strong>gates the M4 real-world testing
+campaign</strong> and runs <strong>in parallel with M4 implementation</strong> (<a href="/proposals/draft/0007-milestone-4-production-metadata-backend.html">0007</a>) — except item
+6 (typed errors), which must be sequenced against M4 (below).</p>
+<h3>Suggested PR sequence (each its own definition of done)</h3>
+<p>Branch <code>feat/obs-floor.&lt;n&gt;-&lt;slug&gt;</code>. Ordered so the keystone lands first and value
+accrues incrementally:</p>
+<ol>
+<li><strong>Telemetry seam wired + subscriber installed</strong> (items 1, 3; optionally the
+<code>telemetry</code> crate extraction). <em>DoD:</em> a running role installs a subscriber, exposes
+a Prometheus endpoint / pushes OTLP, logs startup at <code>RUST_LOG=info</code>, and a first
+metric is scrapeable.</li>
+<li><strong><code>wyrd custodian</code> runnable role</strong> (item 2). <em>DoD:</em> the blueprint's <code>§B.4</code>
+custodian command starts, elects leadership, runs the loops, and emits the five M3
+durability metrics to a live collector; the kill-a-D-server day-one test shows
+under-replicated count rise and return to zero against a real exporter.</li>
+<li><strong>Typed errors at the trait seam</strong> (item 6) — <strong>sequenced per the note below</strong>.
+<em>DoD:</em> errors classify transient vs terminal at the trait boundary and across gRPC;
+<code>IntegrityFault</code> remains a distinct terminal class.</li>
+<li><strong>Request-plane RED</strong> (item 4). <em>DoD:</em> per-op latency + error-by-class counters
+emit from the write/read path; asserted via in-process read-back.</li>
+<li><strong>Capacity-plane signals</strong> (item 5). <em>DoD:</em> admission admitted/shed/timed-out
+events and per-failure-domain utilization emit; a forced load-shed is observable as
+an event, not just a client status code.</li>
+<li><strong>Health/readiness probe</strong> (item 7). <em>DoD:</em> a <code>tonic-health</code> readiness check
+reflects <code>health()</code>; an unhealthy store reads not-ready.</li>
+<li><strong>Metric/log inventory doc + blueprint cross-check</strong> — a short reference listing
+every emitted metric/log/probe, and a pass confirming each blueprint day-one step
+maps to one. <em>DoD:</em> the three operator questions each resolve to a named signal.</li>
+</ol>
+<h3>Sequencing note — the one M4 collision</h3>
+<p>The <strong>typed-error enum is at the trait seam (<code>crates/traits/src/lib.rs</code>); M4 swaps the
+metadata backend <em>behind that same trait</em></strong> (<a href="/proposals/draft/0007-milestone-4-production-metadata-backend.html">0007</a>). A richer enum can ripple
+into M4's TiKV <code>MetadataStore</code> implementation (it must produce the new variants).
+<strong>Before doing PR 3 and M4 in parallel, confirm whether they churn the same trait
+definitions.</strong> If they do, sequence deliberately — land the enum first so M4's backend
+targets the final shape, or land it after M4's backend and adapt. Cheap to decide now,
+expensive to discover at merge. PRs 1–2 and 4–7 are disjoint from M4's metadata
+surface and parallelize freely.</p>
+<h2>Alternatives considered</h2>
+<ul>
+<li><strong>Fold this into <a href="/proposals/draft/0008-management-and-administration.html">proposal 0008</a> and build it all together.</strong> Rejected for
+<em>timing</em>, not scope: 0008 is the full operator surface (API + auth + RBAC + day-2 +
+multi-tenancy + audit + dashboards) and is a large body of work. Real-world testing
+is weeks out; serializing the whole management plane in front of the first
+deployment means testing with no diagnostics. The floor is the strict subset that
+unblocks testing; 0008 subsumes it later. (0008's telemetry section should be
+rebased onto whatever this floor wires.)</li>
+<li><strong>Author a fresh, full observability proposal.</strong> Rejected — it would duplicate
+<a href="/proposals/draft/0008-management-and-administration.html">0008</a>'s three-plane design and contradict its ADR-0011/0012/0013 ratification.
+This proposal references that design and pulls a slice forward rather than restating
+it.</li>
+<li><strong>Skip the custodian-role wiring; just expose a metrics endpoint.</strong> Rejected — the
+durability plane <em>is</em> the custodian's output; with no loop running there is nothing
+to expose. Wiring the role (item 2) is what makes the already-built plane real.</li>
+<li><strong>Defer typed errors to a later cleanup.</strong> Rejected — &quot;why did it fail&quot; is one of
+the three questions the campaign must answer, and the enum is small; the only cost
+is the M4 sequencing, which is a decision, not a blocker.</li>
+<li><strong>Build full distributed tracing now.</strong> Rejected for the floor — spans + Tempo +
+cross-plane correlation are the heaviest lift and the elegant tier; good per-plane
+metrics + logs + a correlation id answer the day-one questions. The hard
+cross-plane join gets its own ADR when the floor is in.</li>
+</ul>
+<h2>Graduation criteria (definition of done)</h2>
+<ul>
+<li>A deployed <code>wyrd</code> process (per the <a href="/architecture/m4-first-deployment-blueprint.html">blueprint</a>) <strong>emits logs and metrics</strong>: a
+<code>tracing</code> subscriber + exporter is installed at role entry; <code>RUST_LOG</code>/<code>--log-level</code>
+works; the Prometheus endpoint scrapes / OTLP pushes.</li>
+<li><strong><code>wyrd custodian</code> runs as a role</strong> and the <strong>durability plane emits in-process</strong>:
+the blueprint's kill-a-D-server test shows under-replicated count rise and return to
+zero against a <strong>live</strong> exporter, not a test read-back.</li>
+<li>The <strong>request plane</strong> (per-op latency + error-by-class) and <strong>capacity plane</strong>
+(admission events + per-failure-domain utilization) emit over the dual
+Prometheus/OTLP seam with <strong>no backend hardcoded</strong> (<a href="/adr/0012-opentelemetry-instrumentation.html">ADR-0012</a>).</li>
+<li><strong>Errors classify</strong> transient vs terminal at the trait seam and across gRPC;
+<code>IntegrityFault</code> stays distinct.</li>
+<li><strong><code>health()</code> is reachable as a readiness probe</strong>; an unhealthy store reads not-ready.</li>
+<li><strong>The three operator questions resolve to named signals</strong>, demonstrated by the
+inventory doc and a blueprint day-one cross-check.</li>
+<li>DST emission properties <strong>green and seed-reproducible</strong> (<a href="/adr/0009-deterministic-simulation-testing.html">ADR-0009</a>); <code>fmt</code>/
+<code>clippy</code> clean; <code>Cargo.lock</code> updated; <code>cargo-deny</code> passes with <code>tracing-subscriber</code>
+<ul>
+<li><code>tonic-health</code>.</li>
+</ul>
+</li>
+<li>The typed-errors/M4 sequencing decision is <strong>recorded</strong> before the two run in
+parallel.</li>
+</ul>
+<h2>Backward compatibility</h2>
+<ul>
+<li><strong>On-disk format</strong> — unchanged; this touches no fragment layout or <code>format_version</code>.</li>
+<li><strong>Consistency contract / commit protocol</strong> — unchanged (<a href="/adr/0015-consistency-contract.html">ADR-0015</a>); emission
+points only.</li>
+<li><strong>Wire</strong> — additive: the <code>tonic-health</code> service is new and standard; error classes
+ride existing gRPC status conventions (the <code>IntegrityFault</code>/<code>DATA_LOSS</code> precedent);
+the <code>ChunkStore</code>/<code>MetadataStore</code> data-path RPCs are untouched. One-version-gap
+evolve-by-addition holds (<a href="/adr/0002-spec-first-on-disk-format-only.html">ADR-0002</a>).</li>
+<li><strong>Trait / internal API</strong> — the typed-error enum is additive on a pre-1.0 seam (no
+published API). Consumers in <code>core</code> see richer classes; existing <code>BoxError</code> callers
+keep compiling through a <code>From</code>/boxing path during migration.</li>
+<li><strong>Deployments</strong> — none in production yet (M4 is the first deployable product); the
+dev/eval single-binary profile (<a href="/adr/0014-single-binary-dev-only.html">ADR-0014</a>) gains logs/metrics it can ignore.
+The custodian role is new and opt-in.</li>
+</ul>
+<h2>Open questions</h2>
+<ul>
+<li><strong>Shared <code>telemetry</code> crate vs keep in <code>custodian</code></strong> — lean: extract (the
+second/third consumer now exists, <a href="/adr/0016-monorepo-and-crate-structure.html">ADR-0016</a>); confirm at PR 1.</li>
+<li><strong>Typed-error/M4 sequencing</strong> — the gating decision above; resolve before
+parallelizing PR 3 with M4.</li>
+<li><strong>Cross-plane request↔durability correlation</strong> — the genuinely novel design
+question this floor <em>defers</em>: joining a request to the repair its fragment triggers
+later, in a different process, with no live span to carry — requires durability
+events to carry enough <strong>provenance</strong> (chunk, placement decision) to be joined back.
+Owned by neither <a href="/proposals/draft/0008-management-and-administration.html">0008</a> nor this floor; should become <strong>ADR-0036</strong> (or a 0008
+addendum) when the floor is in. The floor ships only a log-level correlation id.</li>
+<li><strong>ADR ratification</strong> — this floor is arguably the <em>first real implementation of the
+<a href="/adr/0012-opentelemetry-instrumentation.html">ADR-0012</a> OpenTelemetry-instrumentation contract</em> (the first to wire OTel into
+a binary). By the established preference it leaves the <strong>Proposed → Accepted</strong> flip
+of ADR-0011/0012/0013 to <a href="/proposals/draft/0008-management-and-administration.html">proposal 0008</a> as the completing management
+implementation; flag for the architecture board whether wiring-first warrants moving
+ADR-0012 here instead. (No flip is performed by this proposal.)</li>
+<li><strong>Log/metric cardinality</strong> — per-tenant / per-D-server label cardinality bounds
+(a real cost at fleet scale) are a tuning question, not a floor blocker; note limits
+in the inventory doc.</li>
+</ul>
+<h2>Relationship to existing decisions</h2>
+<ul>
+<li><strong>Implements (first wiring of)</strong> <a href="/adr/0011-durability-telemetry-and-declarative-management.html">ADR-0011</a> (durability telemetry) and
+<a href="/adr/0012-opentelemetry-instrumentation.html">ADR-0012</a> (OpenTelemetry, dual-export, no hardcoded backend) <strong>in a runnable
+binary</strong> — but <strong>defers their ratification</strong> to <a href="/proposals/draft/0008-management-and-administration.html">proposal 0008</a> (see Open
+questions).</li>
+<li><strong>Precursor to / subsumed by</strong> <a href="/proposals/draft/0008-management-and-administration.html">proposal 0008</a>: this is the diagnostic floor;
+0008 is the operator surface (API/auth/RBAC/day-2/audit/dashboards) that builds on
+the signals wired here. 0008's three-plane telemetry section should rebase onto this.</li>
+<li><strong>Complements</strong> <a href="/proposals/draft/0009-d-server-performance.html">proposal 0009</a>: the floor surfaces <em>that</em> the d-server is slow;
+0009 is the performance program that explains and fixes it.</li>
+<li><strong>Gates</strong> the <a href="/architecture/m4-first-deployment-blueprint.html">M4 first-deployment blueprint</a> day-one checklist; <strong>parallel
+with</strong> M4 (<a href="/proposals/draft/0007-milestone-4-production-metadata-backend.html">proposal 0007</a>) except the typed-errors trait-seam item.</li>
+<li><strong>Builds on</strong> the M3 custodian work (<a href="/proposals/accepted/0005-milestone-3-custodians.html">proposal 0005</a>: <code>telemetry.rs</code>, the loops,
+the failure-domain model), <a href="/adr/0009-deterministic-simulation-testing.html">ADR-0009</a> (DST authority), <a href="/adr/0010-pluggable-deployment-substrate.html">ADR-0010</a> (no
+concrete backend in leaf crates), <a href="/adr/0014-single-binary-dev-only.html">ADR-0014</a> (single-binary dev/eval),
+<a href="/adr/0016-monorepo-and-crate-structure.html">ADR-0016</a> (coarse-then-split / extract-on-second-consumer).</li>
+<li><strong>Forward-references</strong> ADR-0036 (cross-plane correlation), unwritten, for the
+elegant tier.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>

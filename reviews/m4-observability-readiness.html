@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Review: Observability readiness for M4 real-world testing — Wyrd</title>
+<meta name="description" content="capacity planes aren&#x27;t instrumented yet.&quot; Even the durability plane, the one">
+<meta property="og:title" content="Review: Observability readiness for M4 real-world testing — Wyrd">
+<meta property="og:description" content="capacity planes aren&#x27;t instrumented yet.&quot; Even the durability plane, the one">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-meta">24.06.2026</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>Review: Observability readiness for M4 real-world testing</h1>
+<blockquote>
+<p>A readiness assessment, not a proposal. It answers one question — <em>when M4 is
+reached and real-world testing begins, will the system provide enough insight to
+diagnose problems?</em> — against the design as it <strong>actually stands in the code and
+the existing draft proposals</strong>, and names the smallest slice that must be built
+before testing starts. The observability <em>design</em> already exists and is
+comprehensive (<a href="/proposals/draft/0008-management-and-administration.html">proposal 0008</a>, <a href="/proposals/draft/0009-d-server-performance.html">proposal 0009</a>); the gap is that almost
+none of it is wired into a runnable binary, and M4 (<a href="/proposals/draft/0007-milestone-4-production-metadata-backend.html">proposal 0007</a>) does not
+add it.</p>
+</blockquote>
+<h2>Bottom line</h2>
+<p><strong>As the code stands today: no — and the shortfall is larger than &quot;the request and
+capacity planes aren't instrumented yet.&quot;</strong> Even the <strong>durability plane</strong>, the one
+plane that is fully implemented and DST-verified, <strong>is not wired into any deployable
+process</strong>: the <code>custodian</code> crate (which owns the loops <em>and</em> the telemetry seam) is
+a dependency of the <code>dst</code> test harness only (<code>crates/dst/Cargo.toml:35</code>) — the
+<code>server</code> binary does not depend on it, runs no custodian loop
+(<code>crates/server/src/cli.rs:47</code>), installs no <code>tracing</code> subscriber, and constructs no
+metrics exporter (<code>DurabilityTelemetry::new</code> and <code>ExporterConfig</code> appear <strong>only in
+tests</strong>). A <code>wyrd</code> process you can deploy at M4 today emits <strong>no logs, no metrics, and
+runs none of the maintenance loops</strong> that produce the durability signals.</p>
+<p><strong>As designed: yes — comprehensively.</strong> <a href="/proposals/draft/0008-management-and-administration.html">Proposal 0008</a> designs all three §8.3
+planes (request RED + traces, durability, capacity), the audit log, and curated
+<code>deploy/grafana/</code> dashboards; <a href="/proposals/draft/0009-d-server-performance.html">proposal 0009</a> owns d-server &quot;why is it slow&quot;
+diagnosis. The problem is <strong>designed-but-unbuilt-and-unwired</strong>, sequenced after M4,
+and not pulled forward by anything M4 itself scopes (<a href="/proposals/draft/0007-milestone-4-production-metadata-backend.html">proposal 0007</a> contains
+zero observability work).</p>
+<p>So the decision in front of real-world testing is <strong>not</strong> &quot;write another
+observability proposal&quot; — that scope already exists. It is &quot;<strong>carve the minimum
+diagnostic floor out of the existing design and wire it into the binary before
+testing starts.</strong>&quot;</p>
+<h2>What I verified (evidence)</h2>
+<table>
+<thead>
+<tr>
+<th>Claim</th>
+<th>Status</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Durability telemetry seam exists, dual-export, backend-agnostic</td>
+<td><strong>True, library-only</strong></td>
+<td><code>crates/custodian/src/telemetry.rs</code></td>
+</tr>
+<tr>
+<td>…but constructed/wired in a runnable binary</td>
+<td><strong>False — tests only</strong></td>
+<td><code>DurabilityTelemetry::new</code> / <code>ExporterConfig</code> have no non-test caller</td>
+</tr>
+<tr>
+<td>Custodian loops run in the deployable server</td>
+<td><strong>False</strong></td>
+<td>custodian is a <code>dst</code>-only dep (<code>crates/dst/Cargo.toml:35</code>); <code>crates/server/src/cli.rs:47</code></td>
+</tr>
+<tr>
+<td>A <code>tracing</code> subscriber is installed at any binary entry</td>
+<td><strong>False</strong></td>
+<td>no <code>tracing-subscriber</code>/<code>RUST_LOG</code>/<code>.init()</code> outside tests; <code>crates/server/src/main.rs</code> is a thin M0 dispatch</td>
+</tr>
+<tr>
+<td>Operational logging on the access path</td>
+<td><strong>Absent (deferred)</strong></td>
+<td><code>crates/server/src/cli.rs:8-9</code></td>
+</tr>
+<tr>
+<td><code>ChunkStore::health()</code> implemented</td>
+<td><strong>True</strong> (corrects an earlier stale read)</td>
+<td><code>crates/chunkstore-fs/src/lib.rs:320</code></td>
+</tr>
+<tr>
+<td>…exposed as an orchestrator readiness/liveness probe</td>
+<td><strong>False</strong></td>
+<td>no <code>tonic_health</code>/health service anywhere</td>
+</tr>
+<tr>
+<td>Errors are typed enough to classify a failure</td>
+<td><strong>False</strong></td>
+<td><code>BoxError</code> everywhere bar <code>IntegrityFault</code> (<code>crates/traits/src/lib.rs:59</code>)</td>
+</tr>
+<tr>
+<td>Request- / capacity-plane metrics</td>
+<td><strong>Absent (designed in 0008)</strong></td>
+<td><a href="/proposals/draft/0008-management-and-administration.html">proposal 0008 §Observability</a></td>
+</tr>
+</tbody>
+</table>
+<h2>The three questions you'll actually ask — at M4 as it stands</h2>
+<ul>
+<li><strong>&quot;Why is it slow?&quot;</strong> — No answer. No request-plane latency/throughput metrics, no
+d-server perf instrumentation (<a href="/proposals/draft/0009-d-server-performance.html">0009</a> designs it, unbuilt), no logs.</li>
+<li><strong>&quot;Which node is down?&quot;</strong> — No answer. <code>health()</code> exists per store but is exposed
+through no probe; no custodian runs to notice under-replication; no metric surfaces.</li>
+<li><strong>&quot;Why did this request fail?&quot;</strong> — Barely. <code>BoxError</code> collapses network/store/timeout
+into one opaque string; only <code>IntegrityFault</code> is distinguishable.</li>
+</ul>
+<h2>The diagnostic floor to build before testing (minimum to diagnose <em>at all</em>)</h2>
+<p>A small subset, drawn mostly from the <em>existing</em> design — not new scope. Ordered by
+&quot;you cannot test without it&quot;:</p>
+<ol>
+<li><strong>Wire the telemetry seam + a <code>tracing</code> subscriber into the server binary.</strong> This
+is the highest-leverage item and a prerequisite for <em>every</em> metric and log,
+including the durability plane that is already written. Construct
+<code>DurabilityTelemetry</code> (or its generalization) and install a subscriber with the
+<code>MetricsLayer</code> + an exporter at the binary entry. Without this, nothing emits no
+matter how much is instrumented. <em>(Carve-out of <a href="/proposals/draft/0008-management-and-administration.html">0008</a>'s telemetry seam; not
+gated on its management API / auth / RBAC.)</em></li>
+<li><strong>Run the custodian loop in a deployable role.</strong> The durability metrics only exist
+while the loops run; today they run only inside DST. A <code>custodian</code> subcommand/role
+in <code>server</code> (the <code>d-server</code> precedent) makes the durability plane real in a process.</li>
+<li><strong>Operational logging</strong> — <code>tracing-subscriber</code> + <code>RUST_LOG</code>/<code>--log-level</code>, lifting
+the <code>crates/server/src/cli.rs:8-9</code> M0 deferral. Cheap, universal, and it falls out
+of item 1.</li>
+<li><strong>Minimal request + capacity emission</strong> — per-op latency + error counters keyed by
+a typed failure class, and admission-control <em>events</em> (admitted/shed/timed-out,
+currently silent). The thin telemetry slice of <a href="/proposals/draft/0008-management-and-administration.html">0008</a>, decoupled from its API.</li>
+<li><strong>Expose <code>health()</code> as a gRPC readiness/liveness probe</strong> (<code>tonic_health</code>) so
+&quot;which node is down&quot; is answerable by an orchestrator. The method already exists;
+only the surface is missing.</li>
+<li><strong>Typed errors at the trait seam</strong> — extend the <code>IntegrityFault</code> precedent to
+distinguish transient from terminal, so &quot;why did it fail&quot; has a class. <strong>See the
+sequencing note below — this one can collide with M4.</strong></li>
+</ol>
+<p>Everything else in <a href="/proposals/draft/0008-management-and-administration.html">0008</a>/<a href="/proposals/draft/0009-d-server-performance.html">0009</a> — the full management API, OIDC+mTLS, RBAC,
+day-2 ops, audit log, polished Grafana dashboards, the d-server perf harness, full
+distributed tracing — is the &quot;diagnose <em>elegantly</em>&quot; ceiling and can fast-follow.
+Early testing can query Prometheus directly and read logs.</p>
+<h2>Genuine gaps not owned by 0008 or 0009</h2>
+<p>Most of the plan's intended scope is already covered. These few are not:</p>
+<ul>
+<li><strong>Cross-plane request↔durability correlation.</strong> <a href="/proposals/draft/0008-management-and-administration.html">0008</a> lists &quot;request plane —
+RED metrics + traces&quot; but does <strong>not</strong> address the hard part: joining a request that
+lands a fragment to the durability event that fragment produces <em>minutes later, in a
+different process, triggered by the custodian, not the request</em>. There is no live
+span to propagate onto; the durability events must carry enough <strong>provenance</strong>
+(which chunk, which placement decision) to be joined back after the fact. This is
+the architecturally novel, diagnostically decisive piece, and it is unowned — a
+candidate <strong>new ADR</strong> (next free number is 0036) or an explicit addition to <a href="/proposals/draft/0008-management-and-administration.html">0008</a>.</li>
+<li><strong>Operational logging / subscriber wiring</strong> (floor items 1, 3) — implied by <a href="/proposals/draft/0008-management-and-administration.html">0008</a>'s
+telemetry but not called out; today it is <em>nothing</em>, and it blocks even the existing
+durability metrics from surfacing.</li>
+<li><strong>Orchestrator health/readiness probe</strong> (floor item 5) — <a href="/proposals/draft/0008-management-and-administration.html">0008</a>'s &quot;health&quot; is
+reconciliation <em>status</em> via the management API, which is a different thing from a
+process liveness/readiness endpoint an orchestrator polls.</li>
+<li><strong>Typed errors</strong> (floor item 6) — owned by neither draft.</li>
+</ul>
+<h2>Sequencing note — the one real M4 collision</h2>
+<p>The <strong>typed-errors change is at the trait seam (<code>crates/traits/src/lib.rs</code>); M4
+swaps the metadata backend <em>behind that same trait</em></strong> (<a href="/proposals/draft/0007-milestone-4-production-metadata-backend.html">proposal 0007</a>). A richer
+error enum can ripple into the TiKV <code>MetadataStore</code> implementation M4 adds (it must
+produce the new variants). Before doing the two in parallel, confirm whether they
+churn the same trait definitions; if so, <strong>sequence deliberately</strong> — land the enum
+first so M4's backend targets the final shape, or land it after and adapt. Cheap to
+decide now, expensive to discover at merge. The rest of the floor (telemetry wiring,
+custodian role, logging, health probe) is disjoint from M4's metadata surface and
+parallelizes freely.</p>
+<h2>Recommendation</h2>
+<ol>
+<li><strong>Do not</strong> author a new observability proposal — <a href="/proposals/draft/0008-management-and-administration.html">0008</a> already owns that scope
+and already proposes the ADR-0011/0012/0013 ratification; a second proposal would
+duplicate and contradict it.</li>
+<li><strong>Pull the diagnostic floor (items 1–6) forward</strong> as a small implementation slice
+<em>ahead of</em> the full <a href="/proposals/draft/0008-management-and-administration.html">0008</a> management surface — most of it is a carve-out of
+0008's telemetry plane plus the four small gaps, and item 1 (wiring) is the single
+thing that turns the existing, tested durability plane from simulation-only into
+something a running process emits.</li>
+<li><strong>Resolve the typed-errors/M4 sequencing</strong> before parallelizing.</li>
+<li><strong>Open the cross-plane-correlation question</strong> as its own ADR (or a 0008 addendum)
+when the floor is in — it is the one genuinely new design decision.</li>
+</ol>
+<hr />
+<p><em>Filed under <code>docs/design/reviews/</code> (a new directory — move it if the repo prefers
+another home for assessment notes). Verified against the working tree at the time of
+writing; re-check the wiring claims if a custodian/telemetry integration PR has landed
+since.</em></p>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>
