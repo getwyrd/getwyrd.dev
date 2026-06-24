@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0035. No DST-reachable shared mutable global state may influence a campaign outcome — Wyrd</title>
+<meta name="description" content="ADR-0009 makes deterministic simulation testing the correctness spine: a">
+<meta property="og:title" content="0035. No DST-reachable shared mutable global state may influence a campaign outcome — Wyrd">
+<meta property="og:description" content="ADR-0009 makes deterministic simulation testing the correctness spine: a">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Proposed · 24.06.2026 19:32</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>0035. No DST-reachable shared mutable global state may influence a campaign outcome</h1>
+<h2>Context</h2>
+<p>ADR-0009 makes deterministic simulation testing (DST) the correctness spine: a
+campaign runs in a single-threaded simulated world and <strong>every outcome is a pure
+function of its seed</strong>, so a bug found at a seed reproduces forever. madsim
+virtualises the <em>runtime</em> — scheduler, clock, network, randomness — and the
+campaign draws all of its own randomness from the seed (<code>ChaCha8Rng</code> seeded from
+<code>madsim::runtime::Handle::current().seed()</code>). That makes the work <em>inside</em> one
+campaign deterministic.</p>
+<p>madsim does not virtualise the <em>process</em>. Anything stored in a <code>static</code> lives in
+the OS process, outside the simulated world, and is <strong>not</strong> reset between tests or
+between seeds. Under <code>cargo test</code> the property tests of a campaign run on parallel
+OS threads sharing one process, so any process-global mutable state they touch is
+shared across threads, across the madsim seed sweep, and across test boundaries —
+a channel through which a campaign outcome can come to depend on thread and
+execution ordering rather than on the seed.</p>
+<p>This is not hypothetical. It has already bitten the project through <code>tracing</code>.
+The custodian DST campaign (<code>crates/dst/tests/custodian.rs</code>) asserts a
+durability-emission property by capturing <code>tracing::info!(monotonic_counter.…)</code>
+events emitted from the production repair path
+(<code>crates/custodian/src/reconstruction.rs</code>) through a per-test scoped
+<code>with_subscriber(...)</code>. <code>tracing</code> caches each callsite's <em>interest</em> —
+<code>never</code> / <code>sometimes</code> / <code>always</code> — in process-global state, computed once on
+first touch from the <strong>global default</strong> subscriber. A callsite first reached while
+no global default is installed (<code>NoSubscriber</code>) latches <code>never</code> and short-circuits
+<em>before</em> any later scoped subscriber is consulted. So a non-capturing property
+that wins the race to the callsite poisons the cache, and the capturing property
+silently observes nothing — an order-dependent, not seed-dependent, failure. The
+same hazard was recorded earlier for the GC telemetry tests (issue #214), where
+it was contained by giving the asserting leg its own test binary.</p>
+<p>The custodian campaign was de-flaked by <code>install_metric_dispatch()</code>
+(<code>crates/dst/tests/custodian.rs</code>): a <code>Once</code>-guarded
+<code>set_global_default(tracing_subscriber::registry())</code> that installs a permissive
+no-op global default before any callsite is hit, so interest can never latch
+<code>never</code>; scoped subscribers still override it for routing. <strong>That fix is correct
+for the observed callsite and is not in question here.</strong> What it exposes is the
+gap this ADR closes:</p>
+<ul>
+<li>The fix is <strong>convention, not a barrier</strong> (issue #243). It is correct only
+because every one of the campaign's seven <code>#[madsim::test]</code> functions remembers
+to call it first. A property added without the call silently reintroduces the
+flake. Nothing in the type system or harness forces it.</li>
+<li>The fix <strong>swallows its own failure</strong> (<code>let _ = set_global_default(...)</code>, issue
+#243). <code>set_global_default</code> errors if a default is already installed; dropping
+the <code>Result</code> means the determinism guarantee can vanish with no signal.</li>
+<li>The fix is <strong>specific to <code>tracing</code></strong> (issue #242), but the hazard is general:
+any DST-reachable <code>static mut</code>, <code>lazy_static!</code>, mutable <code>OnceLock</code>/<code>OnceCell</code>,
+<code>thread_local!</code>, or atomic used as cross-call shared state can defeat
+seed-determinism the same way. There is no rule and no enforcement.</li>
+<li>The fix lives in <strong>one test file</strong>, whereas ADR-0009 locates determinism in the
+<em>substrate</em>. The next DST binary inherits nothing.</li>
+</ul>
+<p>There is genuine choice in how to close this — a custom test attribute, a harness
+fixture, a lint, an explicit no-statics rule — so it is recorded as a decision
+rather than applied as a cleanup. Issues #242 (the general rule) and #243 (the
+barrier mechanics) are companions and are decided together here.</p>
+<p>A process note, because it is the root cause of how the invariant eroded
+unnoticed: the de-flake was bundled into PR #241 / commit <code>4fd5c32</code>, whose subject
+is the unrelated d-server overload fix (#205). A seed-determinism invariant
+patched as a side effect of an unrelated change, with no ADR and no enforcement,
+is precisely how such an invariant decays. (Surfaced by the PDCA Act review of
+<code>issue_205</code>, 2026-06-23.)</p>
+<h2>Decision</h2>
+<p><strong>No shared mutable global state reachable from a DST campaign may influence its
+outcome. Where such state is unavoidable (third-party process globals), it MUST be
+neutralised by the DST substrate, once, before any campaign runs — never by
+per-test convention.</strong></p>
+<p>Concretely:</p>
+<ol>
+<li>
+<p><strong>Prevention is the default.</strong> Production and DST-reachable code MUST NOT
+introduce process-global mutable state — <code>static mut</code>, <code>lazy_static!</code>,
+<code>OnceLock</code>/<code>OnceCell</code> holding mutable or interior-mutable values,
+<code>thread_local!</code>, <code>set_global_default</code>, or atomics used as cross-call shared
+state. Sources of nondeterminism (time, randomness, faults, IO) MUST be
+injected through an explicit seam, following the established <code>testkit</code> pattern
+(the <code>Clock</code> trait, a seed-derived <code>ChaCha8Rng</code>, the fault-injector traits) —
+not reached through a global.</p>
+</li>
+<li>
+<p><strong>Unavoidable third-party globals are contained at the substrate.</strong> <code>tracing</code>'s
+per-callsite interest cache cannot be removed, so every DST binary that emits
+or asserts on <code>tracing</code> events MUST install the permissive global default
+exactly once, before any campaign runs, <strong>through a single shared entry point
+that a property test cannot bypass</strong> — a harness fixture or a campaign-test
+macro that wraps <code>#[madsim::test]</code>. &quot;Forgetting the barrier&quot; MUST be
+unrepresentable, not merely discouraged. This generalises today's
+<code>install_metric_dispatch()</code> from a per-test call into a substrate property,
+which is where ADR-0009 says determinism belongs.</p>
+</li>
+<li>
+<p><strong>The barrier MUST fail loud.</strong> Installing the global default MUST surface its
+error rather than discard it: if a default is already set, the run fails. A
+silent no-op is itself a determinism hazard — the guarantee disappears with no
+signal — and is not acceptable.</p>
+</li>
+<li>
+<p><strong>The rule is enforced by a gate, with a documented allowlist.</strong> A lightweight
+<code>cargo xtask</code> check (the ADR-0016 single-source-of-truth style, alongside the
+existing <code>cargo-deny</code> gate) MUST scan DST-reachable crates for the forbidden
+patterns in (1) and fail CI on new occurrences. Audited seed-safe uses are
+allowlisted with a stated reason. The initial inventory:</p>
+<ul>
+<li><strong>Seed-safe (allowlisted):</strong> <code>ManualClock</code>'s <code>Arc&lt;AtomicU64&gt;</code> (single
+simulated executor; all clones observe the same seed-driven time);
+per-test <code>Mutex</code> / <code>Arc&lt;Mutex&gt;</code> fixtures created fresh inside a campaign
+(<code>MemMeta</code>, <code>MemCoordination</code>, the test <code>MetricCapture</code>).</li>
+<li><strong>Latent hazard (must be addressed before it becomes reachable):</strong> the
+<code>Gateway</code> id allocators <code>next_inode</code> / <code>next_chunk</code> (<code>crates/server/src/lib.rs</code>),
+<code>AtomicU64</code> counters that are deterministic today only because <code>Gateway</code> is
+not yet exercised under DST. A campaign over the server path would leak
+allocation order across parallel tests; the allocator MUST move behind a
+seam before such a campaign is written.</li>
+</ul>
+</li>
+<li>
+<p><strong>The failure mode itself gets a regression test.</strong> The containment in (2)
+relies on a bare <code>tracing_subscriber::registry()</code> causing callsites to cache a
+non-<code>never</code> interest — a <code>tracing-subscriber</code> behaviour nothing currently pins.
+A test MUST reproduce the poison race (a non-capturing property reaching the
+callsite first) and prove capture still succeeds, so a dependency upgrade that
+changed <code>Registry</code> interest semantics turns CI red instead of silently
+re-breaking determinism.</p>
+</li>
+</ol>
+<h3>Implementation requirements</h3>
+<p>These follow from the decision and are tracked as the implementation arm of
+issues #242 and #243; they are not built by this ADR:</p>
+<ul>
+<li>A campaign-test entry point (macro or fixture) in <code>crates/dst</code> or
+<code>crates/testkit</code> that installs the global default once and is the only way to
+declare a custodian DST property; migrate the seven existing
+<code>#[madsim::test]</code>s onto it and delete the per-test <code>install_metric_dispatch()</code>
+calls.</li>
+<li>Surface the <code>set_global_default</code> error in that entry point (no <code>let _</code>).</li>
+<li>The <code>cargo xtask</code> statics gate and its allowlist, runnable locally and in CI.</li>
+<li>The poison-race regression test described in (5).</li>
+<li>Move the <code>Gateway</code> id allocation behind a seam, or document why it remains out
+of DST reach, before any DST campaign exercises the server path.</li>
+</ul>
+<h2>Consequences</h2>
+<ul>
+<li>Seed-determinism stops being an honour-system property of careful test authors
+and becomes a substrate guarantee plus a machine-checked gate — the same posture
+ADR-0009 already takes for licensing, DCO, and format conformance.</li>
+<li>The tracing barrier becomes impossible to forget: a new custodian property
+cannot be written without going through the entry point that installs it.</li>
+<li>A real install failure becomes a loud test failure instead of a silent loss of
+the guarantee.</li>
+<li>New cost: a small allowlist to maintain, and the gate may flag pre-existing
+benign statics that then need an explicit, reasoned annotation. This is accepted
+as the price of making the rule real.</li>
+<li>The <code>Gateway</code> allocator is now on record as a latent hazard with a required
+action, rather than an unstated assumption that DST happens not to touch it.</li>
+<li>This narrows future design space: genuinely global runtime state (a process-wide
+metrics registry, a shared cache) is now a decision that must clear this ADR, not
+a convenience that can be added quietly.</li>
+</ul>
+<h2>Revisit when</h2>
+<ul>
+<li>A feature needs genuinely process-global runtime state that cannot be expressed
+as an injected seam — at which point the trade-off and its DST containment must
+be designed explicitly.</li>
+<li><code>tracing</code> / <code>tracing-subscriber</code> changes its callsite-interest or
+global-default semantics in a way that invalidates the containment in (2), which
+the regression test in (5) is designed to catch.</li>
+<li>A DST campaign is extended to cover the server / <code>Gateway</code> path, forcing the
+latent-hazard action in (4).</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>
