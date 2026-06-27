@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proposal: The implementation arc (rescoped) — ordering of when to build what — Wyrd</title>
+<meta name="description" content="This arc rescopes Step 2. The original arc treated the internal trust fabric,">
+<meta property="og:title" content="Proposal: The implementation arc (rescoped) — ordering of when to build what — Wyrd">
+<meta property="og:description" content="This arc rescopes Step 2. The original arc treated the internal trust fabric,">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Enhancement Proposal</p>
+    <p class="doc-meta">Status: accepted · 27.06.2026</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>Proposal: The implementation arc (rescoped) — ordering of when to build what</h1>
+<blockquote>
+<p><strong>Supersedes <a href="/proposals/accepted/0002-implementation-arc.html">proposal 0002</a></strong> (2026-06-27), the
+original implementation arc, which is retained unchanged as a frozen record.
+This document carries the <strong>current</strong> arc; where the two differ, this one
+governs. The change is a <strong>rescope of Step 2</strong>, not a reordering of what was
+already built (M0–M4 are untouched). See &quot;Changes from proposal 0002&quot; below for
+the old→new milestone mapping a reader needs to reconcile this arc with the
+earlier per-milestone proposals (0001/0003/0004/0005), which are frozen and use
+proposal 0002's original numbering.</p>
+</blockquote>
+<blockquote>
+<p>This proposal sits one level above <a href="/proposals/accepted/0001-milestone-0-walking-skeleton.html">the Milestone-0 walking-skeleton
+proposal</a>. 0001 details the <em>first</em>
+vertical slice; this document gives the <em>whole arc</em> that slice begins —
+the three large steps, the milestones between them, why they are in this
+order, what each retires in risk, and which of them are natural stopping or
+release points. It records <em>direction and ordering</em>, not dates: this is an
+open-source project, so the sequence is the commitment and the timing is not.</p>
+<p>The <em>why</em> of the architecture lives in the ADRs and the architecture
+overview; this document only orders the building of it. It is the contribution
+roadmap (a newcomer reads it to learn where to start) and the artifact an
+operational partner reads to understand what exists at each boundary.</p>
+</blockquote>
+<h3>Changes from proposal 0002</h3>
+<p>This arc <strong>rescopes Step 2</strong>. The original arc treated the internal trust fabric,
+encryption at rest, and the operator surface as <em>features that attach</em> to the
+core rather than milestones; this arc promotes them, because a single zone is not
+<em>production-usable</em> without them — only feature-complete. Concretely:</p>
+<ul>
+<li><strong>Step 2 extended</strong> with three new milestones: the internal trust fabric
+(<strong>M5</strong>, step-ca / ADR-0036/0025), encryption at rest (<strong>M6</strong>, KeyService /
+ADR-0026/0021), and the operator surface (<strong>M8</strong>, CLI + portal / ADR-0013).</li>
+<li><strong>The Step-2 ★ release point moved from M4 to M8</strong> (&quot;usable within a single
+datacenter&quot;). M4 is now a soft stopping point — a feature-complete <em>data plane</em>,
+not yet a deployable <em>product</em>.</li>
+<li><strong>Failover split.</strong> The original M7 (&quot;failover &amp; DR, drilled&quot;) drilled
+<em>cross-zone</em> zone loss. This arc separates it: <strong>M7</strong> now drills
+<em>single-datacenter</em> failure recovery (Step 2), and the <em>cross-zone</em> zone-loss DR
+drill becomes <strong>M11</strong> (the Step-3 ★).</li>
+</ul>
+<p>The old→new milestone mapping (for reconciling the frozen proposals 0001/0003/0004/0005,
+which use the original numbers):</p>
+<table>
+<thead>
+<tr>
+<th>Proposal 0002 (original)</th>
+<th>This arc</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>M0–M4</td>
+<td>unchanged (M0–M4)</td>
+</tr>
+<tr>
+<td>—</td>
+<td><strong>M5</strong> internal CA (step-ca) — new</td>
+</tr>
+<tr>
+<td>—</td>
+<td><strong>M6</strong> encryption at rest (KeyService/KMS) — new</td>
+</tr>
+<tr>
+<td>M7 failover &amp; DR (cross-zone)</td>
+<td><strong>M7</strong> failover &amp; DR (single-datacenter), with the cross-zone part → M11</td>
+</tr>
+<tr>
+<td>—</td>
+<td><strong>M8</strong> manageability (CLI + portal) — new, Step-2 ★</td>
+</tr>
+<tr>
+<td>M5 cross-zone replication</td>
+<td><strong>M9</strong></td>
+</tr>
+<tr>
+<td>M6 global control plane</td>
+<td><strong>M10</strong></td>
+</tr>
+<tr>
+<td>M7 failover &amp; DR (cross-zone part)</td>
+<td><strong>M11</strong>, Step-3 ★</td>
+</tr>
+</tbody>
+</table>
+<h2>Motivation</h2>
+<p>A from-scratch storage foundation can be built in many orders, most of them
+wrong. Bottom-up (all the storage servers and erasure coding first) defers the
+one thing that justifies the project — the provably-atomic commit protocol —
+until last, and risks discovering late that the central claim is hard. This
+proposal commits to the opposite: a <strong>vertical slice that proves the
+differentiator first, then widens by risk</strong> (architecture §4.2, §9; ADR-0009).</p>
+<p>The ordering principle throughout is <strong>risk retired, not features delivered</strong>.
+Each milestone is placed by what uncertainty it removes, and earlier milestones
+de-risk the project's load-bearing claims before later breadth is built on top
+of them. A second principle makes the arc safe to pursue incrementally: <strong>every
+milestone is a coherent stopping point, and two are release points</strong> — so the
+project can pause, publish, or seek an operational owner at a real boundary
+rather than being all-or-nothing.</p>
+<h2>Design</h2>
+<h3>The three steps</h3>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Goal</th>
+<th>Ends with</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>1. Prove the differentiator</strong></td>
+<td>One atomic write and read, end to end, in one process, shown atomic under fault injection in simulation.</td>
+<td>The central claim is no longer a claim.</td>
+</tr>
+<tr>
+<td><strong>2. A real single-zone system</strong></td>
+<td>Widen the proven slice, in risk order, into a self-hostable, erasure-coded, atomically-consistent — and then <em>secured, encrypted, and operable</em> — object store within one datacenter.</td>
+<td><strong>Release point:</strong> the first genuinely useful product, usable within a single datacenter.</td>
+</tr>
+<tr>
+<td><strong>3. A multi-region sovereign substrate</strong></td>
+<td>Add the cross-zone layers that turn independent single-datacenter systems into one geographically distributed foundation.</td>
+<td><strong>Release point:</strong> the mission artifact a provider builds a product on.</td>
+</tr>
+</tbody>
+</table>
+<p>Step 3 is the longest and most trust-bound, and should only be pursued in full
+with a concrete operational owner committed to adopting and hardening it (the
+success pattern; the speculative-build-and-hope pattern is the one to avoid).</p>
+<h3>The milestones</h3>
+<p>Each milestone below carries: <strong>proves</strong> (what becomes true), <strong>retires</strong> (what
+risk it removes), <strong>needs</strong> (what must exist first), <strong>done when</strong> (definition of
+done), and whether it is a <strong>stopping/release point</strong>.</p>
+<h4>Prerequisite — On-disk format, specified</h4>
+<ul>
+<li><strong>Proves:</strong> the one contract that must outlive software is fixed before code is
+written against it (ADR-0002).</li>
+<li><strong>Retires:</strong> the risk of building the <code>chunk-format</code> crate against an
+unspecified layout and having to rewrite readers.</li>
+<li><strong>Needs:</strong> nothing; it is the first work item.</li>
+<li><strong>Done when:</strong> ✅ <strong>the byte layout is specified and decided</strong> —
+<code>specs/chunk-format/v1.md</code> is complete (no <code>[TO BE SPECIFIED]</code>), with the
+trade-offs recorded in ADR-0019. What remains is mechanical and lands with the
+<code>chunk-format</code> crate at M0: at least one conformance vector in
+<code>specs/conformance/</code>. The format stays <strong>v0/unstable</strong> until validated (the
+spec's own rule); <code>v1</code> is stamped only after a second independent reader or a
+sustained fault-injection run.</li>
+<li><strong>Stopping point:</strong> no — it is a prerequisite, not a deliverable on its own.</li>
+</ul>
+<p>This is the only artifact detailed spec-first up front. Everything else is
+implementation-first behind versioned protobuf (ADR-0002); see &quot;What this
+proposal deliberately does not order&quot; below.</p>
+<h4>M0 — Walking skeleton <em>(Step 1)</em></h4>
+<ul>
+<li><strong>Proves:</strong> the commit protocol — the entire differentiator — works end to end.</li>
+<li><strong>Retires:</strong> the project's single largest risk: that atomic commit across a
+separate metadata and data path is hard to get right.</li>
+<li><strong>Needs:</strong> the format spec (above); the workspace scaffold and <code>testkit</code>.</li>
+<li><strong>Done when:</strong> a file written via S3 PUT reads back byte-identical via GET, and
+the commit is proven atomic under fault injection in simulation, reproducible
+from a seed; commit-protocol property tests green. (Full detail:
+<a href="/proposals/accepted/0001-milestone-0-walking-skeleton.html">proposal 0001</a>.)</li>
+<li><strong>Stopping point:</strong> yes — a credible proof-of-concept and a publishable
+artifact (the idea, demonstrated and verified) even if nothing follows.</li>
+</ul>
+<p>Scope is exactly the layers one real operation touches: S3 PUT/GET → client
+(chunk + commit) → redb metadata → filesystem chunk store → in-memory
+coordination, plus the DST harness. No EC, no networked servers, no custodians,
+no second zone.</p>
+<h4>M1 — Erasure coding <em>(Step 1 → Step 2)</em></h4>
+<ul>
+<li><strong>Proves:</strong> real Reed-Solomon encode/decode and reconstruction-from-any-<em>k</em>
+works in the client data path.</li>
+<li><strong>Retires:</strong> the correctness risk in the hottest, most failure-critical loop in
+the system, validated against the already-working slice rather than in the
+abstract.</li>
+<li><strong>Needs:</strong> M0 (a correct commit path to encode into and read back from).</li>
+<li><strong>Done when:</strong> files are stored as RS(k,m) fragments and read back by
+reconstructing from any <em>k</em>; a fragment loss is survived without read error;
+EC benchmarks enter CI.</li>
+<li><strong>Stopping point:</strong> soft — the system is now space-efficient but still
+single-process; not yet a deployable product.</li>
+</ul>
+<h4>M2 — Networked D servers <em>(Step 2)</em></h4>
+<ul>
+<li><strong>Proves:</strong> the direct client→storage-server data path works over the network
+(the basis of the throughput-scaling claim).</li>
+<li><strong>Retires:</strong> the risk that the in-process abstraction hid a problem the real
+gRPC <code>ChunkStore</code> will expose; proves the trait seam is real.</li>
+<li><strong>Needs:</strong> M1 (fragments to write); the <code>proto</code> shapes from M0.</li>
+<li><strong>Done when:</strong> the in-process filesystem store is replaced by networked gRPC
+D servers behind the unchanged <code>ChunkStore</code> trait; the client writes fragments
+directly to them in parallel; end-to-end tests pass over the network.</li>
+<li><strong>Stopping point:</strong> soft.</li>
+</ul>
+<h4>M3 — Custodians <em>(Step 2)</em></h4>
+<ul>
+<li><strong>Proves:</strong> the system maintains its own durability — GC, scrub, reconstruction,
+rebalance — and reports it.</li>
+<li><strong>Retires:</strong> the <em>second</em> home of correctness risk (the background repair
+loops, where bugs are silent corruption), now with real networked data to
+maintain. Also retires the &quot;durability is asserted, not observable&quot; risk.</li>
+<li><strong>Needs:</strong> M2 (real distributed data to maintain and repair).</li>
+<li><strong>Done when:</strong> a lost D server's fragments are reconstructed onto healthy
+servers in correct failure domains via the commit-point-atomic pattern;
+scrubbing detects injected bit-rot; durability-plane telemetry is emitted from
+the custodians' first commit (ADR-0011).</li>
+<li><strong>Stopping point:</strong> soft — but this is the milestone that makes single-zone
+<em>trustworthy</em>, so it gates the Step-2 release.</li>
+</ul>
+<h4>M4 — Production metadata backend <em>(Step 2)</em></h4>
+<ul>
+<li><strong>Proves:</strong> pluggability is real — the <code>MetadataStore</code> trait survives swapping
+embedded redb for distributed TiKV under load.</li>
+<li><strong>Retires:</strong> the risk that the trait abstraction leaked and a real distributed
+backend needs a refactor rather than a composition change.</li>
+<li><strong>Needs:</strong> M3 (a complete single-zone system to run on the new backend).</li>
+<li><strong>Done when:</strong> the same system runs on TiKV behind the unchanged trait;
+multi-key atomic directory operations hold under the distributed store; the
+swap is a <code>server</code>-crate composition change, not a refactor.</li>
+<li><strong>Stopping point:</strong> soft. M4 completes the single-zone <strong>data plane</strong> —
+feature-complete and pluggable — but it is <strong>not yet production-deployable</strong>:
+it has no internal trust fabric, no encryption at rest, no drilled local
+failure recovery, and no operator surface. Those land in M5–M8, and the
+Step-2 ★ release point moves to <strong>M8</strong>, where the single-zone product becomes
+genuinely usable within a datacenter.</li>
+</ul>
+<h4>M5 — Internal CA (step-ca) <em>(Step 2)</em></h4>
+<ul>
+<li><strong>Proves:</strong> the service fabric authenticates <em>itself</em> — every internal RPC is
+mutually authenticated under a provider-operated CA, and peers are authorized
+by a first-class, SPIFFE-shaped identity rather than by network position.</li>
+<li><strong>Retires:</strong> the internal-trust enforcement risk (a wire promoted to mTLS that
+still lets any authenticated component do anything; §14.9), and the risk that
+the reserved SPIRE upgrade silently closes if authorization matches raw
+certificate fields.</li>
+<li><strong>Needs:</strong> M2 (a networked fabric to authenticate); the slice can begin against
+the tail of M4.</li>
+<li><strong>Done when:</strong> step-ca issues short-lived, auto-rotated certificates behind a
+<code>CertificateAuthority</code>/<code>IdentityProvider</code> seam; mTLS is required and
+fail-closed (no plaintext fallback); authorization is keyed on an abstract
+<code>PeerIdentity { role, zone, instance }</code> with a standing guard test; least
+authority holds per component (a valid identity is still denied an out-of-role
+operation). The dev profile uses a self-signed CA behind the same seam (ADR-0036,
+ADR-0025).</li>
+<li><strong>Stopping point:</strong> soft.</li>
+</ul>
+<h4>M6 — Encryption at rest (KeyService / KMS) <em>(Step 2)</em></h4>
+<ul>
+<li><strong>Proves:</strong> envelope encryption-at-rest works behind the <code>KeyService</code> trait
+against a real KMS, with KEK material never leaving the KMS.</li>
+<li><strong>Retires:</strong> the KMS-as-a-new-failure-domain risk (a KMS outage or a lost KEK is
+catastrophic; §11) and the risk that the <code>KeyService</code> seam leaks a vendor API
+rather than the envelope contract.</li>
+<li><strong>Needs:</strong> M5 (the trust fabric the KMS authenticates against) and the format's
+already-reserved key-version hooks (from M0).</li>
+<li><strong>Done when:</strong> per-object DEKs are wrapped by per-tenant KEKs in OpenBao
+(Transit); the read/write paths encrypt and decrypt with bounded DEK caching
+and fail-closed on KMS unavailability; KEK custody is residency-pinned;
+crypto-erase by KEK destruction is gated on retention/hold state; encryption is
+off by default in dev (ADR-0026, ADR-0021).</li>
+<li><strong>Stopping point:</strong> soft.</li>
+</ul>
+<h4>M7 — Failover and disaster recovery, single-datacenter <em>(Step 2)</em></h4>
+<ul>
+<li><strong>Proves:</strong> the system survives and recovers from node / disk / rack loss
+<em>within one datacenter</em>, drilled rather than asserted.</li>
+<li><strong>Retires:</strong> the risk that single-zone durability holds in steady state but not
+through local failure and recovery.</li>
+<li><strong>Needs:</strong> M3 (the custodian reconstruction this extends) and M6 (so recovery
+operates on the secured, encrypted store).</li>
+<li><strong>Done when:</strong> node / disk / rack loss is detected and under-replicated data
+reconstructed from survivors in correct failure domains; the local failover and
+recovery ordering is written as a runbook and exercised in a drill.</li>
+<li><strong>Stopping point:</strong> soft. (The cross-zone, zone-loss DR drill — home-zone
+failover via the version high-water mark, ADR-0015 — is a separate Step-3
+milestone, <strong>M11</strong>.)</li>
+</ul>
+<h4>M8 — Manageability: CLI + portal <em>(Step 2)</em></h4>
+<ul>
+<li><strong>Proves:</strong> the single-zone system is <em>operable</em> — an operator can run day-2
+operations, administer tenants, and observe the durability / capacity / request
+planes through a management CLI and web portal over the API-first management
+plane.</li>
+<li><strong>Retires:</strong> the &quot;built but not operable&quot; risk — a correct substrate that no
+operator can actually run in production.</li>
+<li><strong>Needs:</strong> M5 (the management plane reuses the CA / identity fabric for OIDC +
+mTLS auth), M7 (failure recovery is an operator workflow), and M3 (the telemetry
+to surface).</li>
+<li><strong>Done when:</strong> a management CLI and web portal drive desired state +
+reconciliation status over gRPC/REST (ADR-0013); drain/decommission, rolling
+upgrade, backup/restore, and per-tenant policy administration work; the three
+observability planes and the append-only audit log are surfaced (ADR-0011,
+ADR-0012). First real implementation of ADR-0011/0012/0013 (proposal 0008).</li>
+<li>★ <strong>Release point:</strong> end of Step 2. The result — a self-hostable, EC-efficient,
+atomically-consistent, <strong>secured, encrypted, and operable</strong> single-zone object
+store — is the first genuinely useful product, <strong>usable within a single
+datacenter</strong>, worth announcing and deploying even if Step 3 never follows. A
+single zone of this design already earns adoption and contributors.</li>
+</ul>
+<h4>M9 — Cross-zone replication, L3 <em>(Step 3)</em></h4>
+<ul>
+<li><strong>Proves:</strong> committed chunks replicate between zones off the foreground write
+path, copy-then-commit-the-replica-record, with no half-copied replica visible.</li>
+<li><strong>Retires:</strong> the risk in async geo-replication and the replica-catalog
+commit-ordering.</li>
+<li><strong>Needs:</strong> M8 (a complete, secured, operable single zone — multi-zone is
+meaningless until single-zone is solid and usable).</li>
+<li><strong>Done when:</strong> a committed file's chunks are asynchronously replicated to a
+second zone and become readable only once their catalog record commits;
+sync-N-zone is available as a per-tenant opt-in.</li>
+<li><strong>Stopping point:</strong> soft.</li>
+</ul>
+<h4>M10 — Global control plane, L2 <em>(Step 3)</em></h4>
+<ul>
+<li><strong>Proves:</strong> the geo-distributed namespace and placement (ADR-0020), and the
+home-zone authority consistency contract, operate across zones.</li>
+<li><strong>Retires:</strong> the risk in the global, strongly-consistent namespace and in the
+per-file home-zone routing.</li>
+<li><strong>Needs:</strong> M9 (replicated data for the namespace to point across zones to).</li>
+<li><strong>Done when:</strong> the namespace is globally consistent across zones; placement
+assigns home zones and replica sets by policy; per-session read-your-writes and
+monotonic reads hold per the contract (ADR-0015).</li>
+<li><strong>Stopping point:</strong> soft.</li>
+</ul>
+<h4>M11 — Cross-zone failover and disaster recovery, drilled <em>(Step 3)</em></h4>
+<ul>
+<li><strong>Proves:</strong> the consistency contract survives real zone loss, and the recovery
+ordering works in practice, not just on paper.</li>
+<li><strong>Retires:</strong> the final and least-forgiving risk — that the guarantees hold in
+the steady state but not through disaster. (Distinct from M7, which drilled
+<em>single-datacenter</em> failure recovery; this is the <em>cross-zone</em> zone-loss case.)</li>
+<li><strong>Needs:</strong> M10 (a working multi-zone system to fail and recover).</li>
+<li><strong>Done when:</strong> zone loss is detected and under-replicated files re-replicated
+from survivors; monotonic reads survive home-zone failover via the version
+high-water mark; the DR ordering (L5 → L2/L4 → L3) is written as a runbook and
+exercised in a drill.</li>
+<li>★ <strong>Release point:</strong> end of Step 3. The result is the mission artifact: a
+multi-region sovereign storage substrate a provider can build a product on.</li>
+</ul>
+<h3>Dependency graph</h3>
+<p>The arc is mostly linear by construction (each milestone needs the previous
+one's result to validate against), with one item off to the side:</p>
+<pre><code>[format spec] ─► M0 ─► M1 ─► M2 ─► M3 ─► M4 ─► M5 ─► M6 ─► M7 ─► M8 ★─► M9 ─► M10 ─► M11 ★
+                 │                                                │
+                 └─ testkit/DST harness ───────────────────────────┴─ grows with every step
+</code></pre>
+<p>The two ★ are the release points: <strong>M8</strong> ends Step 2 (a usable single-datacenter
+product) and <strong>M11</strong> ends Step 3 (the multi-region mission artifact). M5–M8
+(trust fabric, encryption, single-DC failover, manageability) are what turn M4's
+feature-complete <em>data plane</em> into a deployable <em>product</em>.</p>
+<ul>
+<li>The format spec is the only true <em>prerequisite</em> that is not itself a runtime
+deliverable.</li>
+<li>The DST harness (<code>testkit</code>) attaches at M0 and is extended at every subsequent
+milestone — it is not a one-time build but a growing dependency (ADR-0009).</li>
+<li>Linearity is deliberate at this stage (small team; each step validates the
+next). Genuine parallelism appears only once there are multiple contributors —
+at which point M2 (networked D servers) and M3 (custodians) have the most
+independent surface and are the natural first split.</li>
+</ul>
+<h3>Specification prerequisites per step</h3>
+<p>What must be <em>specified</em> (not merely built) before each step, respecting the
+spec-first-only-for-the-format rule (ADR-0002):</p>
+<table>
+<thead>
+<tr>
+<th>Step / milestone</th>
+<th>Specification needed first</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Format spec → M0</td>
+<td>The on-disk chunk/fragment format, finalized in <code>specs/chunk-format/v1.md</code> (the one normative artifact).</td>
+</tr>
+<tr>
+<td>M0</td>
+<td>The commit-protocol <em>contract</em> (its invariants) stated in <code>architecture/</code> — not a separate spec; it firms up through M0 and is verified by DST.</td>
+</tr>
+<tr>
+<td>M1</td>
+<td>EC-scheme identifiers recorded in the format spec (already required by the format prerequisite).</td>
+</tr>
+<tr>
+<td>M2–M4</td>
+<td>None up front — wire/RPC surfaces and the metadata schema are implementation-first behind versioned protobuf, by decision (ADR-0002).</td>
+</tr>
+<tr>
+<td>M5–M8</td>
+<td>None up front — the trust, key-management, and management contracts already exist as ADRs (ADR-0036/0025 trust, ADR-0026/0021 keys, ADR-0013 management); the wire and trait surfaces are implementation-first behind those contracts.</td>
+</tr>
+<tr>
+<td>M9–M11</td>
+<td>None up front — the cross-zone protocols are implementation-first; the consistency <em>contract</em> they honor already exists (ADR-0015).</td>
+</tr>
+</tbody>
+</table>
+<h3>Open-questions triage</h3>
+<p>The <code>[OPEN]</code> items in the docs split into two kinds: those to <strong>resolve now by
+reasoning</strong> (which then become ADRs), and those <strong>deliberately deferred to
+measurement</strong> (which stay open, with the reason recorded, because deciding them
+from an armchair would be false precision).</p>
+<table>
+<thead>
+<tr>
+<th>Open question</th>
+<th>Disposition</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Checksum algorithm for the fragment header (crc32c vs. blake3), field widths, endianness</td>
+<td><strong>✅ Resolved → ADR-0019</strong></td>
+<td>A reasoned decision (integrity-only vs. cryptographic; performance): crc32c default, blake3 reserved, little-endian, fixed-width — folded into the format spec.</td>
+</tr>
+<tr>
+<td>EC-scheme identifier encoding in the format</td>
+<td><strong>✅ Resolved → ADR-0019</strong></td>
+<td>Fixed before any fragment is written: <code>ec_scheme_type</code> / <code>ec_k</code> / <code>ec_m</code> / <code>ec_fragment_index</code> in the header.</td>
+</tr>
+<tr>
+<td>Small-file <strong>inline threshold</strong> (the byte size below which data is inlined in metadata)</td>
+<td><strong>Defer to measurement</strong></td>
+<td>Genuinely empirical — the right threshold depends on the metadata tier's behavior under a real small-file workload (M3–M4). Picking a number now is false precision. Record <em>why</em> deferred.</td>
+</tr>
+<tr>
+<td>Chunk / stripe size</td>
+<td><strong>Defer to measurement</strong></td>
+<td>Same: a throughput/overhead trade best set against M1 benchmarks.</td>
+</tr>
+<tr>
+<td>Whether minimal S3 lives in <code>server</code> or warrants a <code>gateway-s3</code> crate at M0</td>
+<td><strong>Resolve now → trivial, into 0001</strong></td>
+<td>A crate-boundary call, cheap to decide; combined <code>server</code> for M0, split later (ADR-0016 evolution rule).</td>
+</tr>
+<tr>
+<td>redb key encoding / dirent name normalization</td>
+<td><strong>Resolve during M0</strong></td>
+<td>An implementation detail of the first metadata backend; settle while building, record in-code and in the architecture doc.</td>
+</tr>
+</tbody>
+</table>
+<p>Each &quot;resolve now&quot; row that is a genuine architectural decision becomes an ADR in
+the 0018+ range; the format-internal ones fold directly into
+<code>specs/chunk-format/v1.md</code> rather than getting their own ADR.</p>
+<h3>What this proposal deliberately does not order</h3>
+<p>The arc orders the <strong>risk-retiring core</strong> (M0–M11). Several <em>decided</em> capabilities are deliberately <strong>not</strong> milestones, because they attach to the core as features rather than gating it as uncertainties:</p>
+<ul>
+<li><strong>Multi-tenancy</strong> (ADR-0022) — namespace / quota / rate isolation. Its enforcement points (the L1 gateway, L2) arrive with those layers (M2+, M10); the model layers on, it does not reorder the arc.</li>
+<li><strong>The hyperscale identity consumer</strong> (ADR-0018) — a <em>consumer</em> of the substrate, reserved-only; built, if ever, on top of a finished Step 3.</li>
+<li><strong>Wire / RPC surfaces and metadata schemas</strong> — implementation-first behind versioned protobuf (ADR-0002), discovered correctly only by building them; never specified up front.</li>
+</ul>
+<p>The rule: if a capability does not <em>retire a load-bearing risk</em>, it attaches to a milestone — it is not a milestone of its own.</p>
+<p><strong>Promoted to milestones (relative to proposal 0002).</strong> Two capabilities the
+original arc (proposal 0002) listed here as &quot;attach, not order&quot; are now milestones, because the
+single-datacenter <em>product</em> (not just the data plane) cannot be trusted or run
+without them:</p>
+<ul>
+<li><strong>Encryption at rest</strong> (ADR-0021/0026) → <strong>M6</strong>. The format hooks (<code>flags</code>,
+<code>encryption_scheme</code>, the header extension, key-version) are still reserved from
+M0, but the <code>KeyService</code> contract and a real KMS are a load-bearing failure
+domain (§11) that a production single zone must retire before release, not an
+optional add-on — so it is ordered.</li>
+<li><strong>The management surface</strong> (ADR-0013) → <strong>M8</strong>. The durability-plane <em>telemetry</em>
+still emits from M3, but the operator CLI + portal that make the zone <em>runnable</em>
+in production gate the Step-2 release; &quot;operable&quot; is a risk to retire, not a
+later convenience. (The polished web UI / dashboards beyond the floor remain
+deferred.) Internal service-to-service trust (ADR-0036/0025) is likewise now
+<strong>M5</strong>, for the same reason: a networked single zone is not production-safe
+while internal dials are plaintext (§14.9).</li>
+</ul>
+<h2>Alternatives considered</h2>
+<ul>
+<li><strong>Bottom-up build</strong> (storage servers + EC first, commit protocol last):
+rejected (§4.2, ADR-0009). It defers the differentiator and the largest risk to
+the end and gives no early proof of the central claim.</li>
+<li><strong>Specify everything up front</strong> (full spec-first): rejected (ADR-0002). Weeks of
+documents before runnable code, and most interfaces are discovered correctly
+only by building them; spec-first is confined to the on-disk format, which is
+the only contract that must outlive software.</li>
+<li><strong>Date-driven roadmap:</strong> rejected. An open-source project cannot honestly commit
+dates this early, and a slipped public timeline misleads the contributors and
+partners it is meant to attract. The arc commits to <em>order</em>, not schedule.</li>
+</ul>
+<h2>Graduation criteria</h2>
+<p>This proposal is <strong>accepted</strong> (moves <code>draft/ → accepted/</code>) when the three-step
+shape and the milestone ordering are agreed and no milestone's <em>needs</em> edge is
+disputed. It is <strong>implemented</strong> in the sense that matters for a roadmap when each
+milestone has a corresponding tracking issue and definition of done; it is
+superseded by a revised arc if the ordering is found wrong in practice (a
+milestone that does not retire the risk it claims is the signal to re-order).</p>
+<h2>Backward compatibility</h2>
+<ul>
+<li><strong>On-disk format:</strong> the format spec is fixed before M0 but stays v0/unstable;
+no data exists to migrate until it is stamped <code>v1</code>.</li>
+<li><strong>Deferred-with-reserved-seats</strong> are honored from the milestone where retrofit
+is expensive, not when the feature ships: append/CAS/watch hooks from M0
+(ADR-0007), the <code>meta:version</code> consistency fence reserved from M0 (ADR-0015),
+trait seams for TiKV/etcd/openraft from M0.</li>
+<li><strong>Public API / deployments:</strong> none until the Step-2 release point (M8); nothing
+to stay compatible with before then. (M4 completes the data plane but is a soft
+stopping point, not a public-API commitment.)</li>
+</ul>
+<h2>Open questions</h2>
+<ul>
+<li>Does Step 3 begin only once a concrete operational owner is committed, or is a
+reference multi-zone implementation pursued speculatively to demonstrate the
+full design? (A governance/strategy question, not a technical one — recorded
+here because it gates the largest investment in the arc.)</li>
+<li>At which milestone does the commit-protocol <em>contract</em> graduate from
+descriptive architecture to a normative <code>specs/commit-protocol/</code> document, if
+ever — i.e. when a second-language client must honor it as a frozen contract
+(architecture §8.6 flags this as a future possibility, not a current need)?</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>

@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proposal: Milestone 6 — encryption at rest (KeyService / KMS) (implementation plan) — Wyrd</title>
+<meta name="description" content="M6 retires the KMS-as-a-new-failure-domain risk (§11s10: &quot;a KMS outage or">
+<meta property="og:title" content="Proposal: Milestone 6 — encryption at rest (KeyService / KMS) (implementation plan) — Wyrd">
+<meta property="og:description" content="M6 retires the KMS-as-a-new-failure-domain risk (§11s10: &quot;a KMS outage or">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Enhancement Proposal</p>
+    <p class="doc-meta">Status: draft · 27.06.2026</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>Proposal: Milestone 6 — encryption at rest (KeyService / KMS) (implementation plan)</h1>
+<blockquote>
+<p>The implementation plan for the sixth step of the <a href="/proposals/accepted/0013-implementation-arc-rescoped.html">implementation arc</a>
+(proposal 0013, which supersedes proposal 0002). M4 made metadata production-durable behind
+the unchanged <code>MetadataStore</code> seam (<a href="/proposals/draft/0007-milestone-4-production-metadata-backend.html">0007</a>); <strong>M5</strong> stood up the internal
+trust fabric — every internal RPC mutually authenticated under a provider CA,
+peers authorized by a SPIFFE-shaped identity (<a href="/adr/0036-internal-ca-step-ca-spire.html">ADR-0036</a>, <a href="/adr/0025-internal-service-to-service-trust.html">ADR-0025</a>).
+M6 adds the <strong>second load-bearing security tier</strong>: per-object <strong>envelope
+encryption at rest</strong>, the data-encryption keys wrapped by per-tenant
+key-encryption keys held in an external <strong>KMS behind a narrow <code>KeyService</code>
+trait</strong> (<a href="/adr/0026-key-service-and-kms-backend-selection.html">ADR-0026</a>; arc M6). Like M4, M6 is <strong>implementation-first behind
+already-decided ADRs</strong> — <a href="/adr/0021-encryption-at-rest-and-key-management.html">ADR-0021</a> (envelope encryption) and <a href="/adr/0026-key-service-and-kms-backend-selection.html">ADR-0026</a>
+(the <code>KeyService</code> contract and OpenBao default) carry the <em>why</em>; this plan
+records the <em>how</em>. M6's distinguishing trait is that it lands the system's
+<strong>first inline, on-the-data-path external dependency</strong>: unlike TiKV or etcd, a
+KMS sits <em>between</em> the client and its bytes for every encrypted read and write,
+so M6's whole risk is <strong>the new failure domain that posture creates</strong>, not the
+cryptography. The format's encryption hooks were reserved from M0 and the
+<code>KeyService</code> surface is already normative; <strong>no new spec and no ADR ratification
+is required</strong> (ADR-0021/0026 are the decisions; M6 is their first
+<em>implementation</em>).</p>
+</blockquote>
+<h2>Motivation</h2>
+<p>M6 retires <strong>the KMS-as-a-new-failure-domain risk</strong> (<a href="/architecture/10-quality-risks-glossary.html">§11</a>: &quot;a KMS outage or
+a lost KEK is catastrophic&quot;; arc M6). The arc's ordering principle is <strong>risk
+retired, not features delivered</strong>, and M6's risk is unusually sharp because of
+<em>where</em> the dependency sits. Every prior external dependency — etcd (L5), TiKV
+(L4), the D-server fleet — is <strong>off the critical bytes path</strong>: losing coordination
+&quot;loses no data … what is lost is the ability to <em>react</em>&quot; (<code>crates/traits/src/lib.rs</code>,
+<code>Coordination</code> doc-comment); a stalled custodian degrades durability slowly, not a
+single read. The KMS is the <strong>first dependency on the read/write path itself</strong>: for
+an encrypted tenant, a <code>get</code> cannot return plaintext without an <code>unwrap</code>, and a
+<code>put</code> cannot place a fragment without a fresh wrapped DEK. ADR-0021 names this
+plainly — &quot;the KMS sits on the read/write path for encrypted tenants, so its
+latency and availability matter.&quot; M6's job is to <strong>introduce that inline
+dependency without making it a new way to lose, leak, or block data</strong>.</p>
+<p>That decomposes into three falsifiable propositions, each one a thing that either
+holds or does not:</p>
+<ul>
+<li><strong>The seam is the envelope contract, not a vendor API.</strong> The <code>KeyService</code> trait
+(ADR-0026 §1) must express <em>only</em> what every conforming KMS guarantees —
+generate-data-key, unwrap, rotate-KEK, destroy-KEK — and must <strong>not</strong> leak
+OpenBao-Transit-specific shapes, or the &quot;OpenBao ↔ Barbican ↔ raw HSM is a
+composition change in <code>server</code>, not a refactor&quot; claim (ADR-0026 §4) fails the
+first time a second backend is wired. This is the M4 thesis re-run on a new seam:
+the trait holds, or it does not.</li>
+<li><strong>KEK material never escapes the KMS, and Wyrd never persists an unwrapped KEK.</strong>
+Wrap / unwrap / rotate happen <strong>inside</strong> the KMS — the &quot;encryption-as-a-service&quot;
+shape (ADR-0026 §1). If any code path reads a KEK out of the KMS, the
+crypto-erase guarantee (destroy the KEK → data unrecoverable, ADR-0021 §4) is
+hollow, because the key escaped.</li>
+<li><strong>KMS unavailability fails <em>closed</em> without endangering the durability of the
+still-encrypted data.</strong> ADR-0021 and ADR-0026 §6 both demand this exact shape: a
+KMS outage must make encrypted data temporarily <em>unreadable</em>, never <em>lost</em> — the
+ciphertext, the wrapped DEK, and the key-version id are all still on durable
+storage; only the unwrap is unavailable. Conflating &quot;can't reach the KMS&quot; with
+&quot;data is gone&quot; would invert the risk M6 exists to retire.</li>
+</ul>
+<p>A second, quieter motivation mirrors M4's &quot;second implementation pins the trait.&quot;
+M6 is the <strong>first</strong> <code>KeyService</code> implementation of consequence — the file-backed
+dev stub and the OpenBao backend land together, so the trait is born with <strong>two
+backends</strong> (ADR-0006's discipline, applied to the new seam from the start): the
+stub keeps the contract honest about what is <em>common-denominator</em>, OpenBao keeps it
+honest about what a <em>real</em> KMS can do. Anything one backend can do that the other
+structurally cannot is, by construction, kept <em>out</em> of the trait.</p>
+<h2>Design</h2>
+<h3>Scope boundary</h3>
+<p><strong>In scope</strong> — exactly what retires the inline-KMS-failure-domain risk and makes
+encryption-at-rest real behind the seam:</p>
+<ul>
+<li><strong>A <code>KeyService</code> trait in <code>traits</code></strong> — joining <code>ChunkStore</code> / <code>MetadataStore</code> /
+<code>NamespaceStore</code> / <code>Coordination</code> under the narrow-trait dependency rule
+(<a href="/adr/0016-monorepo-and-crate-structure.html">ADR-0016</a>: &quot;implementations and consumers depend on the <code>traits</code> crate …
+only the <code>server</code> binary wires concretes&quot;). Object-safe, <code>async</code> (via
+<code>async_trait</code>), <code>Send + Sync</code>, surfacing the normative envelope operations of
+ADR-0026 §1 and nothing Transit-specific. The trait is the milestone's central
+commitment (ADR-0026 §1).</li>
+<li><strong>A file-backed dev stub</strong> behind the trait — unmistakably non-production (keys
+in cleartext on local disk, ADR-0026 §5), so it cannot be mistaken for real
+custody. It exists to keep the dev/single-binary path KMS-free (ADR-0014) and to
+pin the trait's <em>common-denominator</em> shape from day one.</li>
+<li><strong>An OpenBao Transit backend</strong> behind the same trait — the default (ADR-0026 §2),
+MPL-2.0, Linux-Foundation-governed. Transit's <code>datakey</code> / <code>encrypt</code> / <code>decrypt</code>
+/ <code>rewrap</code>, key versioning, and audit log map almost one-to-one onto the
+contract, so the envelope ops are <em>native, not emulated</em> and KEK material never
+leaves the service.</li>
+<li><strong>Envelope encryption on the client read/write path</strong> in <code>core</code> — the write path
+encrypts each object/chunk's bulk bytes under a fresh DEK <em>before</em> erasure coding
+(ADR-0021 §2), stores the <strong>wrapped DEK + key-version id</strong> in the metadata, and
+stamps <code>flags</code> bit 0 / <code>encryption_scheme</code> in the fragment header; the read path
+unwraps the stored DEK and decrypts <em>after</em> reconstruction. Encryption is a
+<strong>per-tenant policy, off by default in dev</strong> (ADR-0021 §5).</li>
+<li><strong>The bounded DEK cache</strong> — unwrapped DEKs cached for a <strong>bounded lifetime</strong> (the
+bound is <em>mandatory</em>; the value is per-deployment, ADR-0026 §6), so the inline
+KMS is not consulted on every block.</li>
+<li><strong>Fail-closed on KMS unavailability</strong> — a read whose DEK is uncached and whose
+KMS is unreachable <strong>errors</strong> (encrypted data is temporarily unreadable) rather
+than returning ciphertext or fabricating a key; a write that cannot mint a fresh
+wrapped DEK <strong>refuses</strong> rather than writing unencrypted-but-marked-encrypted
+bytes. Neither path endangers the <strong>durability</strong> of already-stored ciphertext
+(ADR-0021; ADR-0026 §6).</li>
+<li><strong>Crypto-erase + rotation as KMS operations</strong> — rotate-KEK is <strong>re-wrap, not
+re-encrypt</strong> (cheap, metadata-only, never touches bulk ciphertext, ADR-0021 §3);
+destroy-KEK renders all ciphertext under it unrecoverable (ADR-0021 §4) and is
+<strong>refused while any object under that key is under a retention / legal hold</strong>
+(ADR-0026 §1; the enforcement point of <a href="/adr/0028-erasure-versus-retention-precedence.html">ADR-0028</a> §3).</li>
+<li><strong>Residency-pinned KEK custody</strong> — KEK custody is pinned to the <strong>tenant's
+residency region</strong> (crypto-residency, the answer to metadata sovereignty
+<a href="/adr/0018-reserve-hooks-for-hyperscale-identity-consumer.html">ADR-0018</a>, <a href="/architecture/08-crosscutting-concepts.html">§8.8</a>); a tenant's KEK does not leave its region.</li>
+<li><strong>Backend selection in <code>server</code></strong> — the <strong>file-stub | OpenBao</strong> selector at the
+one wiring point ADR-0016 designates, with the choice allowed to <strong>differ per
+deployment</strong> (ADR-0026 §4). This is the composition-change demonstration for the
+new seam.</li>
+<li><strong>The test surface an inline dependency demands</strong> — Tier-0 DST proves the
+<em>envelope protocol and its fail-closed/erase/rotation logic</em> against a
+deterministic in-memory <code>KeyService</code>; the OpenBao backend is validated at
+<strong>Tier-1/Tier-2 against a real KMS</strong> (<a href="/architecture/10-quality-risks-glossary.html">§11 ladder</a>: &quot;M6 — Tier 0–2 against a
+real KMS (OpenBao); fail-closed on KMS unavailability; crypto-erase-vs-hold
+tests&quot;). Every real-KMS discovery is promoted to a <strong>seeded DST regression</strong>
+(<a href="/adr/0009-deterministic-simulation-testing.html">ADR-0009</a>).</li>
+</ul>
+<p><strong>Out of scope</strong> — deferred to the milestone that actually retires its risk, the
+seats kept open where retrofit is expensive:</p>
+<ul>
+<li><strong>A hardware/cloud-HSM-backed KEK custody path (PKCS#11 / KMIP against real
+HSM)</strong> — ADR-0026 §4 <em>standardizes the custody seam</em> on PKCS#11 and KMIP, and M6
+defines the trait to that common denominator; but a production <strong>hardware HSM</strong>
+integration (and the OpenBao-HSM-backing maturity question, historically
+Vault-Enterprise-gated) is <strong>not built</strong> by M6. SoftHSM2 (BSD-2) is the optional
+<em>realistic-but-dev</em> PKCS#11 path (ADR-0026 §5). HSM hardening is an operational
+follow-on; the seam must not foreclose it (see Open questions).</li>
+<li><strong>The OpenStack Barbican backend</strong> — ADR-0026 §3 names it the alternative behind
+the same trait, winning only where a provider already runs OpenStack. M6 builds
+the <strong>default (OpenBao)</strong> and the <strong>dev stub</strong>; Barbican is a <em>third</em>
+implementation that the seam must admit but M6 does not write. Its value is
+precisely as the second <em>production</em> backend that re-tests the no-vendor-leak
+claim — recorded as a candidate follow-on, not deferred to a numbered milestone.</li>
+<li><strong>Key-hierarchy depth for very large tenants</strong> (a per-bucket intermediate key,
+ADR-0021) — M6 ships <strong>per-tenant KEK + per-object/chunk DEK</strong> (two levels). A
+third, per-bucket intermediate level is <em>forced</em> toward existence by ADR-0028 §4
+(DEK-level erasure precision), but <strong>which</strong> granularity and depth is an
+[OPEN] this milestone surfaces, not settles (see Open questions).</li>
+<li><strong>The retention / WORM <em>policy</em></strong> (which force wins, how a queued erasure runs on
+hold release) — <a href="/adr/0028-erasure-versus-retention-precedence.html">ADR-0028</a> is <strong>status: Proposed</strong> and decides the
+<em>policy</em>; M6 builds only the <strong><code>destroy-KEK</code> gate mechanism</strong> ADR-0026 §1
+already commits to (refuse while held) and <strong>depends on</strong> ADR-0028 for the
+precedence the gate enforces. This is a <strong>named dependency</strong>, flagged below, not
+an afterthought.</li>
+<li><strong>Cross-zone / cross-region KEK replication and multi-region key custody</strong> →
+<strong>M9 / M10</strong>. Residency-pinning is single-region at M6; there is no second region
+at M6 to replicate a KEK across or to fail a key-custody domain over to.</li>
+<li><strong>True DEK rotation (re-encryption of bulk ciphertext)</strong> — ADR-0021 §3 keeps this
+a &quot;background custodian job, reserved for the rare cases that require it.&quot; M6
+builds <strong>re-wrap rotation only</strong>; bulk re-encryption is a later custodian slice.</li>
+<li><strong>Compression</strong> (a sibling reserved <code>flags</code> bit and header-extension field,
+format spec §&quot;Reserved for future use&quot;) — orthogonal to encryption; untouched.</li>
+</ul>
+<h3>What carries over from M0–M5, unchanged</h3>
+<p>M6 adds a <em>new seam and a new client-side crypto stage</em>; it touches <strong>neither the
+storage primitives below nor the metadata/coordination contracts beside them</strong>. The
+audit confirms the following carry over verbatim:</p>
+<ul>
+<li><strong>The <code>MetadataStore</code> trait and its commit point</strong> — the wrapped DEK and
+key-version id are <strong>opaque bytes inside the inode/chunk JSON value</strong> TiKV/redb
+already store verbatim (the same channel placement (M3) rides, <code>#[serde(default)]</code>,
+<code>crates/core/src/metadata.rs</code>). M6 adds <strong>no keyspace</strong> and <strong>no trait method</strong>:
+the commit that carries a chunk map already carries arbitrary value bytes, and a
+wrapped DEK is just more of them. The version-conditional CAS (<code>require</code> on the
+prior inode value, M4) is unaffected — provided the wrapped-DEK fields serialize
+byte-stably, exactly the constraint M4 already imposed.</li>
+<li><strong>The <code>ChunkStore</code> / <code>PlacementChunkStore</code> seam</strong> — stays <strong>deliberately dumb</strong>:
+it &quot;moves those bytes and verifies their integrity, but does not interpret them&quot;
+(<code>crates/traits/src/lib.rs</code>, <code>ChunkStore</code> doc). D servers hold <strong>ciphertext only</strong>
+(ADR-0021 §2), which is exactly what relaxes their trust. M6 changes <strong>what the
+payload bytes <em>are</em></strong> (ciphertext, not plaintext), not how they are stored,
+fetched, scrubbed, or reconstructed.</li>
+<li><strong>The fragment integrity story is untouched and was <em>designed</em> for this.</strong> The
+payload checksum is computed over the <strong>stored</strong> bytes — &quot;the ciphertext when a
+payload is encrypted … so integrity is verifiable without the decryption key&quot;
+(<code>crates/chunk-format/src/codec.rs</code> module doc; spec §Checksums). Scrub, repair,
+reconstruction, and the <code>IntegrityFault</code> classification (<code>traits/src/lib.rs</code>) all
+operate on stored bytes and need <strong>no change</strong> — a D server or scrubber detects
+bit-rot on ciphertext without ever holding a key.</li>
+<li><strong>Erasure coding order</strong> — the client encrypts <strong>before</strong> EC and decrypts
+<strong>after</strong> reconstruction (ADR-0021 §2): EC operates on ciphertext, so the
+any-<em>k</em> read path (<code>crates/core/src/read.rs</code>, <code>crates/core/src/erasure.rs</code>) is
+unchanged; only the bytes that enter the coder and leave the decoder change.</li>
+<li><strong>The M5 trust fabric</strong> — the KMS is <em>authenticated against</em> M5's CA / identity
+(arc M6 &quot;Needs M5&quot;): the <code>server</code>-side KMS client dials OpenBao under the same
+mTLS / <code>PeerIdentity</code> posture M5 established (ADR-0036/0025). M6 <strong>consumes</strong> that
+fabric; it does not re-open it.</li>
+<li><strong>Coordination (L5), the custodian plane, the EC engine, the gRPC <code>ChunkStore</code></strong> —
+none cross the <code>KeyService</code> seam; all unchanged.</li>
+</ul>
+<h3>The <code>KeyService</code> contract M6 introduces (its normative surface)</h3>
+<p>The trait is the milestone's central commitment, and ADR-0026 §1 fixes its surface.
+M6 reproduces it <strong>exactly</strong> and adds nothing Transit-specific. It joins the other
+seam traits in <code>crates/traits/src/lib.rs</code>, matching their established shape —
+object-safe, <code>#[async_trait]</code>, <code>Send + Sync</code>, with a <code>BoxError</code> result channel
+(the same <code>Result&lt;T&gt; = std::result::Result&lt;T, BoxError&gt;</code> alias the file already
+defines) so backends surface their own detail and richer typed errors are a later
+refinement pinned by an implementation. The normative operations:</p>
+<ul>
+<li><strong>generate-data-key</strong> — return a fresh DEK <strong>both</strong> as <strong>plaintext</strong> (the client
+encrypts with it immediately) <strong>and wrapped</strong> under a <em>named per-tenant KEK</em>; the
+client persists only the <strong>wrapped DEK + the key-version id</strong>, never the
+plaintext past the encrypt. (ADR-0026 §1; ADR-0021 §1.)</li>
+<li><strong>unwrap</strong> — a <strong>wrapped DEK + its key-version</strong> → the <strong>plaintext DEK</strong>, for the
+read path. (The only way ciphertext becomes readable.)</li>
+<li><strong>rotate-KEK</strong> — re-wrap existing wrapped DEKs under the <strong>new KEK version</strong>
+<strong>without touching bulk ciphertext</strong> — the cheap, metadata-only rotation of
+ADR-0021 §3.</li>
+<li><strong>destroy-KEK</strong> — <strong>crypto-erase</strong> (ADR-0021 §4); <strong>MUST be refused while any
+object under that KEK is under a retention / legal hold</strong> (ADR-0026 §1, the
+enforcement point of ADR-0028 §3).</li>
+<li><strong>per-tenant KEK namespacing</strong> and <strong>monotonic key-version ids</strong> — a tenant's
+keys live in its own namespace; a rotation mints a strictly higher version id, so
+a stored <code>(wrapped DEK, key-version)</code> unambiguously names the KEK version that
+wrapped it.</li>
+</ul>
+<p>Three invariants are <strong>load-bearing across the whole trait</strong> and are the things M6
+exists to keep true:</p>
+<ol>
+<li><strong>The trait MUST NOT expose KEK material.</strong> No method returns, and no parameter
+accepts, a raw KEK. Wrap / unwrap / rotate execute <strong>inside</strong> the KMS
+(encryption-as-a-service). A <code>generate-data-key</code> returns a <em>DEK</em> (plaintext +
+wrapped); it never returns the KEK that wrapped it.</li>
+<li><strong>Wyrd MUST NOT persist an unwrapped KEK</strong>, anywhere — not in metadata, not on a
+D server, not in the DEK cache (which holds <em>DEKs</em>, not KEKs). This is what makes
+crypto-erase (destroy the KEK) a real guarantee.</li>
+<li><strong>The KMS never sees plaintext bulk data.</strong> Only DEKs and key-version ids cross
+the seam; the bulk bytes are encrypted client-side and the KMS handles <em>keys</em>,
+not <em>data</em>. (This is also why the trait is <em>not</em> &quot;encrypt these bytes&quot; — that
+would push bulk data through the KMS; it is &quot;wrap/unwrap this key.&quot;)</li>
+</ol>
+<p>The <strong>honest limit</strong> (ADR-0026 §4): conforming backends are <strong>not feature-identical
+below the trait</strong> — rotation mechanics, audit-log shape, and latency differ — so the
+surface is held to <strong>what all conforming backends guarantee</strong>, and anything richer
+(a Transit-only batch endpoint, a Barbican-only KMIP attribute) stays <strong>out</strong> of
+the trait.</p>
+<h3>Mapping the contract onto OpenBao Transit</h3>
+<p>OpenBao's <strong>Transit</strong> secrets engine <em>is</em> the contract almost one-to-one (ADR-0026
+§2), which is the operational reason it is the default. The mapping (verified
+against the OpenBao Transit engine, the open fork of Vault's Transit taken from its
+last MPL-2.0 release; <strong>pin the OpenBao version and re-confirm the endpoint
+surfaces and the HSM-backing maturity at build time</strong> — see Open questions):</p>
+<ul>
+<li><strong>generate-data-key</strong> → Transit <strong><code>datakey</code></strong> (<code>/transit/datakey/plaintext/&lt;key&gt;</code>),
+which returns <em>both</em> the plaintext DEK and its ciphertext (the wrapped DEK) in one
+call — exactly the contract's &quot;plaintext + wrapped&quot; return. The named key is the
+<strong>per-tenant KEK</strong>; Transit holds it and never emits it.</li>
+<li><strong>unwrap</strong> → Transit <strong><code>decrypt</code></strong> (<code>/transit/decrypt/&lt;key&gt;</code>) of the wrapped DEK,
+which Transit decrypts <em>inside the engine</em> using the stored KEK and returns the
+plaintext DEK. The key-version id rides in Transit's ciphertext envelope
+(<code>vault:v&lt;N&gt;:…</code>), so the version is carried by the wrapped value itself.</li>
+<li><strong>rotate-KEK</strong> → Transit <strong>key rotation</strong> (<code>/transit/keys/&lt;key&gt;/rotate</code>) mints a
+new KEK version; <strong><code>rewrap</code></strong> (<code>/transit/rewrap/&lt;key&gt;</code>) re-wraps an existing
+wrapped DEK under the <strong>latest</strong> version <strong>without exposing the DEK plaintext</strong> —
+the metadata-only rotation of ADR-0021 §3, native to Transit.</li>
+<li><strong>destroy-KEK</strong> → Transit key <strong>deletion / <code>min_decryption_version</code> advance</strong>
+(configurable <code>deletion_allowed</code>), which renders ciphertext under the destroyed
+version undecryptable — crypto-erase. <strong>The hold gate (ADR-0028) is enforced in
+Wyrd <em>above</em> this call</strong>, never inside Transit: Wyrd refuses to issue the destroy
+while a hold is active.</li>
+<li><strong>per-tenant KEK namespacing</strong> → a Transit <strong>named key per tenant</strong> (or an
+OpenBao namespace per tenant); <strong>monotonic key-version ids</strong> → Transit's own
+monotonic key versions.</li>
+<li><strong>encryption-as-a-service</strong> → Transit <strong>never returns the KEK</strong> and <strong>never sees
+bulk data</strong>; only <code>datakey</code>/<code>decrypt</code>/<code>rewrap</code> of <em>keys</em> cross the seam. This is
+the property the trait was shaped to require, and Transit provides it natively.</li>
+</ul>
+<p>The audit log Transit emits is the per-deployment audit surface; the trait does
+<strong>not</strong> expose it (an example of &quot;richer stays out of the trait&quot;).</p>
+<h3>Composition, not refactor — the thesis on a new seam, with the honest count</h3>
+<p>ADR-0026 §4 claims &quot;OpenBao ↔ Barbican ↔ a raw HSM is a composition change in
+<code>server</code>, not a refactor.&quot; M6 is the first test of that claim, and — unlike M4,
+where the consumers already existed and the audit was &quot;does the seam already not
+leak&quot; — M6 <strong>adds a new consumer stage</strong> (client-side crypto) at the same time as
+the seam. So the honest count has two parts:</p>
+<ul>
+<li><strong>The seam itself is a clean composition point.</strong> <code>server</code> already concentrates
+<em>all</em> concrete wiring — <code>crates/server/src/cli.rs</code> constructs <code>RedbMetadataStore</code>,
+<code>FsChunkStore</code>, <code>MemCoordination</code>, <code>GrpcChunkStore</code> and is the <em>only</em> crate that
+names a concrete (<code>grep</code> confirms no concrete backend type appears in <code>core</code> or
+<code>custodian</code>). Adding a <code>file-stub | OpenBao</code> selector is the <strong>same</strong> shape as M4's
+<code>redb | tikv</code> selector: a new construction site plus the selection mechanism,
+confined to <code>cli.rs</code>. Today there is <strong>no</strong> <code>KeyService</code>, no KMS client, and no
+encryption anywhere in <code>crates/</code> (<code>grep -rn &quot;KeyService\|kms\|OpenBao\|envelope&quot; crates/</code> returns nothing outside this proposal) — so M6 builds the seam, not a
+refactor of an existing one.</li>
+<li><strong>The new client-crypto stage is genuinely new code in <code>core</code>, and that is where
+the weight is.</strong> The write path (<code>crates/core/src/write.rs</code>) today encodes
+fragments via <code>wyrd_chunk_format::{encode, FragmentHeader}</code> with <strong>no encryption
+stage</strong> — <code>FragmentHeader::new_v1</code> sets <code>flags: 0</code>, <code>encryption_scheme: EncryptionScheme::None</code> (<code>crates/chunk-format/src/header.rs</code>), and the v1 codec
+<strong>refuses</strong> a fragment with <code>FLAG_ENCRYPTED</code> set (<code>codec.rs</code>:
+<code>EncryptedPayloadUnsupported</code>). M6 inserts an <strong>encrypt-before-EC</strong> stage on write
+and an <strong>unwrap-then-decrypt-after-reconstruct</strong> stage on read
+(<code>crates/core/src/read.rs</code>), threads a <code>&amp;dyn KeyService</code> (and the bounded DEK
+cache) through both, and carries the wrapped DEK + key-version in <code>ChunkRef</code> /
+<code>InodeRecord</code> (<code>crates/core/src/metadata.rs</code>). This is <strong>additive</strong> — it is
+gated by per-tenant policy and <strong>off by default in dev</strong> (ADR-0021 §5), so the
+unencrypted path stays byte-for-byte the M0–M5 path when the policy is off — but
+it is <strong>not</strong> a one-line composition switch; it is a new pipeline stage behind a
+policy flag. Naming this honestly (as M4 named its &quot;~8 sites, not one line&quot;) is
+the point: <strong>the seam is a composition point; the crypto stage is new
+consumer-side code, correctly placed in <code>core</code>, not in the trait.</strong></li>
+</ul>
+<p>The crypto code stays in the <strong>client library</strong> (<code>core</code>), exactly as ADR-0021 §2
+requires (&quot;crypto stays in the client library; storage stays dumb&quot;), so the seam's
+honesty (<code>ChunkStore</code> interprets nothing) is preserved.</p>
+<h3>Deployment: the KMS as a stateful, audited, highly-available tier</h3>
+<p>M6 introduces the system's first <strong>inline, on-the-data-path</strong> external service, and
+<a href="/adr/0010-pluggable-deployment-substrate.html">ADR-0010</a> constrains how it lands the same way it constrained TiKV. The KMS
+runs as a <strong>stateful, highly-available, audited tier</strong> brought up from <strong><code>deploy/</code>
+artifacts outside the Cargo workspace</strong> (<a href="/adr/0010-pluggable-deployment-substrate.html">ADR-0010</a>; the structural guard
+&quot;makes it hard for orchestrator coupling to sneak in&quot;). The posture, drawn from
+ADR-0026 §6 and §11:</p>
+<ul>
+<li><strong>HA is a hard requirement for encrypted tenants</strong> (ADR-0026 consequences): the
+KMS is on the read/write path, so a single-instance KMS is a single point of
+unavailability for every encrypted read. M6 ships an <strong>HA OpenBao</strong> topology
+(multi-node with its own storage backend) in <code>deploy/</code>, not a single binary —
+this is the deployment difference from the dev stub.</li>
+<li><strong>KEK backups kept <em>independent of Wyrd</em></strong> (ADR-0026 consequences; §11): a lost
+KEK is catastrophic, so KEK custody is backed up out-of-band, under the operator's
+control, not inside a Wyrd backup.</li>
+<li><strong>KEK custody pinned to the tenant's residency region</strong> (crypto-residency,
+ADR-0018, §8.8): a tenant's KEK does not leave its region; in a single-region M6
+deployment this is a one-region pin, generalizing to per-tenant-region custody at
+M9/M10.</li>
+<li><strong>Authenticated against the M5 fabric</strong>: the <code>server</code> KMS client dials OpenBao
+under M5's mTLS / <code>PeerIdentity</code> (ADR-0036/0025) — the KMS is a <em>peer</em> in the
+trust fabric, not an unauthenticated network endpoint. Time-bound key operations
+(scheduled rotation, hold-expiry checks) evaluate against the <strong>trusted clock</strong>
+(<a href="/adr/0024-clock-and-time-source-trust.html">ADR-0024</a>; ADR-0026 §6, ADR-0028 hold-expiry timing).</li>
+<li><strong>Orchestrator-agnostic</strong>: &quot;Kubernetes available, never required,&quot; no crate
+couples to an orchestrator API, OpenBao discovered through config/<code>deploy/</code>
+(ADR-0010). M6 ships a <strong>docker-compose</strong> OpenBao for CI/eval; an HA Helm/operator
+chart is later.</li>
+<li><strong>The dev / single-binary profile runs <em>no</em> KMS</strong> — the file-backed stub only
+(ADR-0026 §5, ADR-0014), with SoftHSM2 (BSD-2) as the optional realistic PKCS#11
+path. Encryption is off by default there (ADR-0021 §5).</li>
+<li><strong>Licence/governance is a standing selection gate</strong> (ADR-0026 §7; ADR-0003): the
+<code>deploy/</code> OpenBao pin records the licence/governance facts and they are
+<strong>re-confirmed at adoption</strong> — the deployed-service analog of <code>cargo-deny</code>. Vault
+is <strong>rejected</strong> on BUSL-1.1 (ADR-0003 <code>deny.toml</code> BSL denial); OpenBao (MPL-2.0,
+LF-governed) and Barbican (Apache-2.0, OpenInfra) both pass the control-resilience
+test (ADR-0003 §2).</li>
+</ul>
+<h3>DST and tests (the heart of M6)</h3>
+<p><a href="/adr/0009-deterministic-simulation-testing.html">ADR-0009</a> remains the correctness authority, and M6 reuses M4's principled
+split: <strong>DST proves the <em>protocol</em>; the real KMS proves the <em>backend</em>.</strong> A real KMS
+never goes inside the deterministic simulator (it breaks seed determinism, exactly
+as a containerized TiKV would); the <code>KeyService</code> seam is what lets a <strong>deterministic
+in-memory <code>KeyService</code></strong> drive the simulator instead.</p>
+<p><strong>Tier-0 — deterministic simulation (the spine).</strong> Against a deterministic
+in-memory <code>KeyService</code> (and the deterministic in-memory/redb metadata + chunk
+backends), DST proves the <strong>envelope protocol and its hard edges</strong>, seed-reproducible
+and single-threaded:</p>
+<ul>
+<li><strong>Round-trip</strong> — encrypted write then read returns the original plaintext;
+ciphertext on the (fake) D server is <em>not</em> the plaintext; the fragment header
+carries <code>FLAG_ENCRYPTED</code> + a non-<code>None</code> <code>encryption_scheme</code>.</li>
+<li><strong>Fail-closed</strong> — with the KMS modelled <strong>unavailable</strong>, an uncached-DEK read
+<strong>errors</strong> (no plaintext, no ciphertext leak) and a write <strong>refuses</strong>; and —
+the load-bearing assertion — the <strong>still-encrypted data's durability is
+untouched</strong> (the ciphertext, wrapped DEK, and key-version remain on the fake
+store; the outage is <em>unreadability</em>, not <em>loss</em>). When the KMS returns, the read
+succeeds.</li>
+<li><strong>Crypto-erase</strong> — destroy-KEK makes subsequent unwrap (and thus read) fail
+permanently; and the <strong>hold gate</strong>: destroy-KEK is <strong>refused</strong> while a modelled
+hold is active, the held object survives, and on hold release the queued erasure
+proceeds — the ADR-0028 §3 precedence, verifiable under DST exactly as ADR-0028
+anticipates (&quot;a held object survives an erasure request; on hold release the
+queued erasure executes; a clock rollback does neither early&quot;). The clock-rollback
+half drives the <strong><code>ManualClock</code></strong> seam (ADR-0024) so a skewed clock can neither
+release a hold early nor fire a queued erasure prematurely.</li>
+<li><strong>Rotation = re-wrap</strong> — rotate-KEK mints a higher key-version, re-wraps the
+stored DEKs, and <strong>does not change the bulk ciphertext bytes</strong> (asserted by
+comparing stored fragments before/after); a read after rotation still succeeds.</li>
+<li><strong>Bounded DEK cache</strong> — a cache hit does <strong>not</strong> consult the KMS; a cache entry
+past its bounded lifetime <strong>does</strong> re-consult; the bound is honoured (no unbounded
+cache).</li>
+</ul>
+<p><strong>Tier-1 — software-defined faults against a <em>real</em> OpenBao.</strong> The M6-specific
+evidence the simulator structurally cannot give: that the in-memory <code>KeyService</code>
+model <strong>matches a real KMS</strong>. On the <code>deploy/</code> HA OpenBao under <code>tc netem</code> /
+<code>iptables</code> partitions / process pauses / <code>libfaketime</code> skew: end-to-end encrypted
+PUT/GET; <strong>fail-closed under a real KMS partition</strong> (read errors, ciphertext
+durability intact, recovery on heal); a real Transit <strong><code>rewrap</code></strong> rotation and a
+real <strong>destroy</strong> crypto-erase; the <strong>datakey/decrypt/rewrap</strong> mapping exercised
+against the live engine; and confirmation that <strong>KEK material never crosses the
+seam</strong> (the client only ever holds DEKs). Every real-KMS behaviour the in-memory
+model did not capture (a Transit latency edge, a key-version envelope quirk, a
+partition timing) is <strong>promoted to a seeded DST regression</strong> where the trait exposes
+it — the FoundationDB/TigerBeetle compounding loop (ADR-0009).</p>
+<p><strong>Tier-2 — first real hardware (single owned machine).</strong> Real OpenBao on real NVMe
+under real fsync — honest single-node KMS latency and the <em>real</em> cost the bounded
+DEK cache is sized against (a single failure domain, so it proves real-silicon
+behaviour, not failure-domain independence).</p>
+<p><strong>Tier-3 — multi-region — does not begin until M9.</strong> Single-region M6 has no
+cross-region key custody or KMS-region failover to drill.</p>
+<blockquote>
+<p><strong>Numbering note.</strong> This proposal uses the architecture <strong>realism ladder</strong> (Tier 0
+DST · Tier 1 software faults · Tier 2 single machine · Tier 3 multi-region),
+matching <a href="/architecture/10-quality-risks-glossary.html">§13.4</a>'s &quot;M6 — Tier 0–2 against a real KMS (OpenBao)&quot; and <a href="/proposals/draft/0007-milestone-4-production-metadata-backend.html">0007</a>.
+The CI/code taxonomy uses a different &quot;Tier-1/Tier-2&quot; scheme; this document means
+the realism ladder throughout.</p>
+</blockquote>
+<h3>Crate touch-points</h3>
+<p>Building on the workspace as it stands after M5 (<code>chunk-format</code>, <code>chunkstore-fs</code>,
+<code>chunkstore-grpc</code>, <code>coordination-mem</code>, <code>core</code>, <code>custodian</code>, <code>dst</code>, <code>metadata-redb</code>,
+<code>proto</code>, <code>server</code>, <code>testkit</code>, <code>traits</code>):</p>
+<ul>
+<li><strong><code>traits</code></strong> — <strong>add</strong> the <code>KeyService</code> trait (object-safe, <code>#[async_trait]</code>,
+<code>Send + Sync</code>, <code>BoxError</code> result): generate-data-key, unwrap, rotate-KEK,
+destroy-KEK, plus the wrapped-DEK / key-version value types. The trait MUST NOT
+expose KEK material. This is the <strong>only</strong> change to the seam crate, and the
+milestone's central commitment.</li>
+<li><strong><code>keyservice-file</code></strong> (<strong>new</strong>) — the dev stub <code>impl KeyService</code>: keys in
+cleartext on local disk, <strong>unmistakably non-production</strong> (ADR-0026 §5). Deps
+<code>traits</code> only; never <code>core</code> (ADR-0016).</li>
+<li><strong><code>keyservice-openbao</code></strong> (<strong>new</strong>) — <code>impl KeyService</code> over OpenBao Transit
+(<code>datakey</code>/<code>decrypt</code>/<code>rewrap</code>/rotate/destroy); the per-tenant KEK namespacing and
+monotonic key-version handling; dials OpenBao under M5 mTLS. Deps <code>traits</code> + an
+HTTP client + <code>tokio</code>; never another concrete (ADR-0016).</li>
+<li><strong><code>core</code></strong> — <strong>add</strong> the encrypt-before-EC / decrypt-after-reconstruct stages on
+the write/read paths, threaded over <code>&amp;dyn KeyService</code> + the bounded DEK cache;
+carry the wrapped DEK + key-version in <code>ChunkRef</code>/<code>InodeRecord</code> (<code>#[serde(default)]</code>,
+off-by-default policy preserves the unencrypted path byte-for-byte); set
+<code>FLAG_ENCRYPTED</code> + <code>encryption_scheme</code> on encrypted writes. The <strong>bounded DEK
+cache</strong> lives here (the client side), not in the trait.</li>
+<li><strong><code>chunk-format</code></strong> — <strong>add</strong> the AEAD <code>EncryptionScheme</code> code point(s) and the
+decode path for an encrypted payload (today <code>decode</code> <em>refuses</em> <code>FLAG_ENCRYPTED</code>
+with <code>EncryptedPayloadUnsupported</code>). The reserved hooks (<code>flags</code> bit 0,
+<code>encryption_scheme</code>, the header-extension region for nonce + key id) <strong>already
+exist</strong> (<code>header.rs</code>, <code>codec.rs</code>, spec <a href="http://v1.md">v1.md</a> §&quot;Reserved for future use&quot;) — M6
+<em>activates</em> a reserved scheme, an <strong>additive</strong> change that <strong>MAY be made without a
+format-version increment</strong> (spec §Versioning: a new <code>encryption_scheme</code> code point
+is backward-compatible), accompanied by <strong>new conformance vectors</strong>.</li>
+<li><strong><code>server</code></strong> — <strong>add</strong> the <code>file-stub | OpenBao</code> <code>KeyService</code> selector at the
+single wiring point in <code>cli.rs</code>; wire the per-tenant encryption policy; default to
+the file stub (dev) / off (ADR-0014/0021). The composition-change demonstration.</li>
+<li><strong><code>dst</code></strong> — a deterministic in-memory <code>KeyService</code> model; the round-trip /
+fail-closed / crypto-erase-vs-hold / rotation / DEK-cache property suites; new
+seeds. Drives the <code>ManualClock</code> for the hold-expiry-vs-clock-rollback case.</li>
+<li><strong><code>testkit</code></strong> — a real-OpenBao fault seam (partition/latency/pause) for the
+Tier-1 runs.</li>
+<li><strong><code>xtask</code></strong> — an OpenBao integration runner; wire <code>deploy/</code> docker-compose OpenBao
+into CI; conformance-vector generation for the activated <code>encryption_scheme</code>.</li>
+<li><strong><code>deploy/</code></strong> — an HA OpenBao topology (docker-compose for CI/eval; HA
+Helm/operator deferred), with the licence/governance pin recorded (ADR-0026 §7).</li>
+<li><strong>deps</strong> — an OpenBao/HTTP client (+ <code>tokio</code> tree) and an AEAD crate (e.g.
+<code>aes-gcm</code> or <code>chacha20poly1305</code>, the AEAD choice an ADR-0021 [OPEN]); <strong>confirm
+every new crate under the <code>cargo-deny</code> allowlist</strong> (ADR-0003) and <strong>the OpenBao
+service under the deployed-service control-resilience gate</strong> (ADR-0026 §7).</li>
+</ul>
+<h2>Alternatives considered</h2>
+<ul>
+<li><strong>Put a real KMS inside DST (containerized) as the correctness authority:</strong>
+<strong>rejected</strong> — ADR-0009 forbids using a real environment for correctness DST
+already covers, and a containerized KMS breaks seed determinism. The KMS is
+validated at Tier 1–2 as a <em>complement</em>; DST drives a deterministic in-memory
+<code>KeyService</code>.</li>
+<li><strong>&quot;Encrypt-these-bytes&quot; as a KMS endpoint (push bulk data through the KMS):</strong>
+<strong>rejected</strong> — it violates &quot;the KMS never sees plaintext bulk data&quot; (ADR-0026 §1),
+puts every byte on the inline dependency, and would make the KMS a bulk-data
+bottleneck. The trait wraps/unwraps <strong>keys</strong>; the client encrypts <strong>data</strong>
+(ADR-0021 §2).</li>
+<li><strong>Vault as the KMS:</strong> <strong>rejected</strong> — BUSL-1.1 since 2023, denied by <code>deny.toml</code>
+and caught by ADR-0003's control-resilience lens; the KMS-shaped repeat of the
+CockroachDB case (ADR-0026 §2). OpenBao (the LF-governed fork from the last open
+release) is the un-rug-pullable replacement.</li>
+<li><strong>Make the trait Transit-shaped (a <code>datakey</code>/<code>rewrap</code> surface):</strong> <strong>rejected</strong> —
+it would leak a vendor API and force a Barbican or raw-HSM adapter to <em>emulate</em>
+Transit, breaking the composition-change claim (ADR-0026 §4). The trait is the
+<strong>common denominator</strong> — the envelope operations — and nothing more.</li>
+<li><strong>Hold a long-lived plaintext KEK in Wyrd (skip per-read unwrap):</strong> <strong>rejected</strong> —
+Wyrd persisting an unwrapped KEK hollows out crypto-erase (the key escaped) and
+violates ADR-0026 §1. Wyrd caches <strong>DEKs</strong> (bounded), never KEKs.</li>
+<li><strong>Return ciphertext (or a fabricated key) when the KMS is unreachable
+(fail-open):</strong> <strong>rejected</strong> — it would leak ciphertext or corrupt reads, inverting
+the risk M6 retires. The path <strong>fails closed</strong> (errors), and the <em>durability</em> of
+the still-encrypted data is independently preserved (ADR-0021; ADR-0026 §6) — the
+same fail-closed-without-fabrication discipline ADR-0024 demands of the clock.</li>
+<li><strong>Encryption on by default (including dev):</strong> <strong>rejected</strong> — ADR-0021 §5 / ADR-0026
+§5 keep it a per-tenant policy, <strong>off by default in dev</strong>; the dev/single-binary
+profile runs no KMS. M6 <strong>adds</strong> an encrypted path; it does not make the
+unencrypted path disappear.</li>
+<li><strong>Bump the on-disk format to v2 for encryption:</strong> <strong>rejected</strong> — activating a
+reserved <code>encryption_scheme</code> code point is a <strong>backward-compatible addition</strong> a
+conforming v1 reader handles by rejecting code points it does not recognize (spec
+§Versioning); it needs <strong>new conformance vectors</strong>, not a version increment.</li>
+<li><strong>Build Barbican and/or a hardware HSM in the same milestone:</strong> <strong>deferred</strong> —
+Barbican (ADR-0026 §3) and a real HSM (ADR-0026 §4) are <em>further</em> implementations
+behind the <strong>same</strong> trait; M6's job is to prove the seam with the default
+(OpenBao) + the dev stub. Barbican is a candidate second <em>production</em> backend;
+the HSM seam (PKCS#11/KMIP) is <em>defined</em> but not hardware-hardened.</li>
+<li><strong>Mint a new ADR for the KMS backend:</strong> <strong>not minted</strong> — ADR-0026 already decides
+the <code>KeyService</code> contract and the OpenBao default, and ADR-0021 decides envelope
+encryption; M6 is their first <em>implementation</em>, not a new decision. (ADR-0026 and
+ADR-0021 are status: Proposed; M6 does not flip them — it builds against them, as
+M4 built against the Accepted ADR-0008.)</li>
+</ul>
+<h2>Graduation criteria (definition of done)</h2>
+<ul>
+<li><strong>The <code>KeyService</code> trait lives in <code>traits</code></strong> — object-safe, async, <code>Send + Sync</code>,
+surfacing <strong>exactly</strong> the ADR-0026 §1 envelope operations and <strong>nothing
+Transit-specific</strong>; the trait <strong>never exposes KEK material</strong>.</li>
+<li><strong>Two backends ship behind it</strong> — a file-backed dev stub (unmistakably
+non-production) and an OpenBao Transit backend — so the trait is born pinned by
+two implementations.</li>
+<li><strong>Encrypted round-trip holds end-to-end</strong> — an encrypted write then read returns
+the original plaintext; the D server holds <strong>ciphertext only</strong>; the fragment
+header carries <code>FLAG_ENCRYPTED</code> + a non-<code>None</code> <code>encryption_scheme</code>; the bulk path
+encrypts <strong>before</strong> EC and decrypts <strong>after</strong> reconstruction.</li>
+<li><strong>KEK material never leaves the KMS and Wyrd never persists an unwrapped KEK</strong> —
+asserted at Tier-1 against real OpenBao; the client only ever holds DEKs (bounded
+cache).</li>
+<li><strong>Fail-closed without endangering durability</strong> — a KMS-unavailable read <strong>errors</strong>
+(no plaintext, no ciphertext leak) and a write <strong>refuses</strong>, while the
+already-stored ciphertext + wrapped DEK + key-version <strong>remain durable</strong>; recovery
+on KMS heal.</li>
+<li><strong>Crypto-erase + rotation are correct and gated</strong> — destroy-KEK renders data
+unrecoverable and is <strong>refused while a hold is active</strong> (ADR-0028 §3 precedence);
+rotate-KEK is <strong>re-wrap only</strong> (bulk ciphertext byte-unchanged); the
+hold-expiry-vs-clock-rollback case holds under <code>ManualClock</code>.</li>
+<li><strong>Residency-pinned KEK custody</strong> — a tenant's KEK does not leave its residency
+region (ADR-0018, §8.8).</li>
+<li><strong>The seam is a <code>server</code>-crate composition change</strong> — the <code>file-stub | OpenBao</code>
+selector is confined to <code>cli.rs</code>; the new crypto <strong>stage</strong> lives in <code>core</code> (the
+client library), not the trait; <code>chunk-format</code>'s change is an additive reserved
+code point with new conformance vectors; encryption is <strong>off by default in dev</strong>
+and the unencrypted path is byte-for-byte the M0–M5 path.</li>
+<li><strong>Tier-0 DST green and seed-reproducible</strong> (round-trip / fail-closed /
+crypto-erase-vs-hold / rotation / DEK-cache; seeds committed); <strong>Tier-1 against
+real OpenBao + Tier-2 single-node</strong> green; every real-KMS discovery promoted to a
+seeded DST regression.</li>
+<li><strong>The KMS stands up from <code>deploy/</code></strong> as an HA, audited tier, authenticated under
+the M5 fabric, with <strong>KEK backups independent of Wyrd</strong> and <strong>no crate importing
+an orchestrator API</strong>.</li>
+<li><code>fmt</code>/<code>clippy</code> clean; <code>Cargo.lock</code> updated; <strong><code>cargo-deny</code> passes</strong> with the new
+crates <strong>and</strong> the OpenBao service re-confirmed under the control-resilience gate
+(ADR-0026 §7).</li>
+</ul>
+<h3>Suggested PR sequence (each with its own definition of done)</h3>
+<p>Each step is one PR, tracked under the <strong>M6</strong> milestone (branch
+<code>feat/m6.&lt;n&gt;-&lt;slug&gt;</code>, commit subject <code>feat(&lt;crate&gt;): … (M6.&lt;n&gt;, #&lt;issue&gt;)</code>):</p>
+<ol>
+<li><strong>M6.1 — <code>KeyService</code> trait + file-backed dev stub.</strong>
+<code>feat(traits): add KeyService envelope contract (M6.1, #&lt;issue&gt;)</code> /
+<code>feat(keyservice-file): file-backed dev stub (M6.1, #&lt;issue&gt;)</code> — the trait
+(generate-data-key / unwrap / rotate-KEK / destroy-KEK, per-tenant KEK
+namespacing, monotonic key-version ids) in <code>traits</code> (deps = <code>traits</code> only); the
+stub <code>impl</code> (keys cleartext on local disk, unmistakably non-production). <em>DoD:</em>
+the trait is object-safe/async/<code>Send + Sync</code>, exposes no KEK material, and a
+shared <code>KeyService</code> <strong>conformance suite</strong> (round-trip wrap/unwrap, version
+monotonicity, per-tenant isolation) passes against the stub.</li>
+<li><strong>M6.2 — OpenBao Transit backend + CI OpenBao.</strong>
+<code>feat(keyservice-openbao): OpenBao Transit KeyService (M6.2, #&lt;issue&gt;)</code> — the
+backend (datakey/decrypt/rewrap, key versioning) behind the trait; a throwaway
+OpenBao in <code>deploy/</code> for CI; the <strong>bounded DEK cache</strong> (bound mandatory) and
+<strong>fail-closed on KMS unavailability</strong>; the licence/governance gate recorded
+(ADR-0003/0026 §7). <em>DoD:</em> OpenBao passes the <strong>same</strong> conformance suite the stub
+passes; a forced KMS partition makes an uncached read error (no ciphertext leak)
+with ciphertext durability intact; <code>cargo-deny</code> green on the new deps and the
+OpenBao service re-confirmed.</li>
+<li><strong>M6.3 — envelope encryption on the read/write path.</strong>
+<code>feat(core): envelope encryption on read/write path (M6.3, #&lt;issue&gt;)</code> (+
+<code>feat(chunk-format): activate AEAD encryption_scheme (M6.3, #&lt;issue&gt;)</code>) — write
+path encrypts-before-EC under a fresh DEK and stores the <strong>wrapped DEK +
+key-version</strong>; read path <strong>unwraps</strong> and decrypts-after-reconstruct; set
+<code>FLAG_ENCRYPTED</code>/<code>encryption_scheme</code>; <strong>off by default in dev</strong> (ADR-0021 §5).
+<em>DoD:</em> encrypted round-trip returns the original bytes; the D server holds
+ciphertext only; new chunk-format <strong>conformance vectors</strong> for the activated
+scheme; the unencrypted path is byte-for-byte unchanged when policy is off.</li>
+<li><strong>M6.4 — crypto-erase, rotation, residency.</strong>
+<code>feat(core): crypto-erase and re-wrap rotation (M6.4, #&lt;issue&gt;)</code> — destroy-KEK
+gated on retention/hold state (<strong>depends on ADR-0028</strong> precedence — flagged);
+rotate-KEK = re-wrap, <strong>no bulk re-encrypt</strong>; residency-pinned KEK custody
+(ADR-0018/§8.8); hold-expiry timing against the trusted clock (ADR-0024). <em>DoD:</em>
+destroy-KEK makes data unrecoverable <strong>and is refused while a hold is active</strong>;
+rotation leaves bulk ciphertext byte-unchanged; the clock-rollback case neither
+releases a hold nor fires a queued erasure early (under <code>ManualClock</code>).</li>
+<li><strong>M6.5 — backend selection in <code>server</code> + HA deployment + the test campaign.</strong>
+<code>feat(server): file-stub | OpenBao KeyService selection (M6.5, #&lt;issue&gt;)</code> — the
+single wiring point in <code>cli.rs</code> (choice MAY differ per deployment); the HA
+OpenBao posture in <code>deploy/</code> (KEK backups independent of Wyrd; authenticated
+under M5); DST property suites (round-trip / fail-closed / crypto-erase /
+rotation) seed-reproducible; <strong>Tier-1/Tier-2 against real OpenBao</strong>. <em>DoD:</em>
+<code>server</code> runs identically on the stub (dev) and OpenBao (prod) by config; the
+diff outside the two <code>keyservice-*</code> crates is confined to <code>server</code> + <code>core</code>'s
+crypto stage + test/deploy scaffolding; DST green and seed-reproducible; Tier-1
+integration + fail-closed + crypto-erase-vs-hold green; a bug-finding seed
+committed; no crate imports an orchestrator API.</li>
+</ol>
+<p>(M6 is sized like M4 — two new backend crates, a new client-crypto stage in <code>core</code>,
+an additive format activation, a composition selector, and the real-service test
+campaign — not a new plane. Slices M6.1–M6.3 are the implementation spine; M6.4–M6.5
+are the compliance-grade gating and the proof. M6.1 can begin against the tail of M5
+once the trait surface is confirmed and the M5 mTLS fabric is available for the
+OpenBao dial in M6.2.)</p>
+<h2>Backward compatibility</h2>
+<p>M6 lands after the M4 release point, so the compatibility duties M4 opened apply —
+narrowly:</p>
+<ul>
+<li><strong>The <code>KeyService</code> trait</strong> — <strong>new</strong>, born pinned by two implementations (stub +
+OpenBao). After M6 it is a real internal contract; a future change is a trait
+evolution with both backends to carry. (Pre-1.0, still no <em>published</em> API.)</li>
+<li><strong>The metadata model / keyspace</strong> — <strong>unchanged and additive</strong>: the wrapped DEK +
+key-version are <code>#[serde(default)]</code> fields inside the existing inode/chunk JSON
+value (the same channel placement (M3) rides), so a pre-M6 record decodes with the
+fields absent (= &quot;not encrypted&quot;) and the read takes the plaintext path. <strong>No
+keyspace, no new trait method, no data migration.</strong> The version-conditional CAS
+(M4) is preserved, the new fields serializing byte-stably.</li>
+<li><strong>The on-disk <em>fragment</em> format</strong> — <strong>additively extended</strong>: M6 activates a
+reserved <code>encryption_scheme</code> code point and the reserved header-extension region
+(nonce + key id), a <strong>backward-compatible</strong> change a conforming v1 reader handles
+by <strong>rejecting</strong> a code point it does not recognize (spec §Versioning; codec
+<code>EncryptedPayloadUnsupported</code>). It is accompanied by <strong>new conformance vectors</strong>
+and does <strong>not</strong> force a <code>format_version</code> increment. A pre-M6 (unencrypted) reader
+still reads pre-M6 fragments; an encrypted fragment is correctly <em>refused</em> by a
+reader that lacks the key, never misread. The format stays <strong>v0/unstable</strong> until
+its independent gate fires (a second reader <strong>or</strong> a sustained fault-injection
+run, spec §Versioning) — M6's Tier-2 sustained encrypted run is a <strong>candidate
+<code>v1</code> trigger</strong>, recorded, not decided.</li>
+<li><strong>The deployment surface</strong> — extended with the KMS tier: the <code>deploy/</code> HA OpenBao
+topology becomes a documented part of the encrypted-tenant production shape.</li>
+<li><strong>Reserved seats honored</strong> — the <strong>key-hierarchy depth</strong> seat (a per-bucket
+intermediate key, ADR-0021), the <strong>HSM/PKCS#11/KMIP</strong> custody seat (ADR-0026 §4),
+and the <strong>Barbican</strong> backend seat (ADR-0026 §3) all remain expressible behind the
+trait; M6 builds none of them but forecloses none.</li>
+</ul>
+<h2>Open questions</h2>
+<ul>
+<li><strong>DEK-cache lifetime values.</strong> ADR-0026 §6 makes the <em>bound</em> mandatory and the
+<em>value</em> per-deployment. M6 ships a bounded default and a knob; the right
+default(s) are a <strong>measurement</strong> against the Tier-2 KMS-latency numbers, not a
+decision to take now (ADR-0021/0026 [OPEN]).</li>
+<li><strong>Key-hierarchy depth for very large tenants.</strong> ADR-0021 left a per-bucket
+intermediate key [OPEN]; <strong>ADR-0028 §4 now <em>forces</em> DEK-level (per-object /
+per-bucket) erasure granularity</strong> so a single held object cannot block all
+erasure under a per-tenant KEK. M6 ships <strong>per-tenant KEK + per-object/chunk DEK</strong>;
+whether a <strong>per-bucket intermediate</strong> level is warranted (and the re-wrap
+accounting it grows) is surfaced here, settled by the erasure-precision work.</li>
+<li><strong>The AEAD cipher and the per-object-vs-per-chunk unit.</strong> ADR-0021 §5 leaves the
+AEAD (AES-256-GCM vs XChaCha20-Poly1305) and the encryption unit [OPEN], &quot;settled
+with the format work.&quot; M6 picks one to ship the encrypted path and records the
+choice as the activated <code>encryption_scheme</code>; the alternative stays a reserved code
+point.</li>
+<li><strong>The precise PKCS#11 / KMIP profile and OpenBao HSM-backing maturity.</strong> ADR-0026
+§4 standardizes the custody seam on PKCS#11 + KMIP; the <strong>exact profile</strong> and
+<strong>OpenBao's HSM-backing maturity for the open fork</strong> (historically
+Vault-Enterprise-gated) must be <strong>re-verified at adoption</strong> — M6 defines the seam
+to the common denominator and ships SoftHSM2 as the dev path, but does not harden
+a hardware HSM.</li>
+<li><strong>Retention / WORM-vs-crypto-erase precedence (the named dependency).</strong> The
+<code>destroy-KEK</code> hold gate (ADR-0026 §1) enforces a <strong>policy</strong> that <strong>ADR-0028
+(Proposed) decides</strong> — an active hold is absolute, a right-to-erasure against held
+data is <em>queued</em> not refused, and runs on hold release (ADR-0028 §1–2). M6 builds
+the <strong>mechanism</strong> (refuse-while-held) and <strong>depends on ADR-0028</strong> for the
+precedence; if ADR-0028 is not yet Accepted when M6.4 lands, the gate is built to
+its stated shape and the dependency is recorded.</li>
+<li><strong>Licence / governance as a standing selection gate.</strong> ADR-0026 §7 requires the
+KMS's licence/governance to be <strong>re-confirmed at adoption and watched thereafter</strong>
+— the deployed-service analog of <code>cargo-deny</code>. M6 records OpenBao's MPL-2.0 /
+LF-governance facts in <code>deploy/</code> and re-verifies them at the pin; how that watch is
+operationalized (a periodic check, an alert) is an operational [OPEN].</li>
+<li><strong><code>encryption_scheme</code> activation as a <code>v1</code>-stamping trigger.</strong> M6's sustained
+real-KMS encrypted fault-injection run is a candidate trigger for stamping the
+on-disk format <code>v1</code> (spec §Versioning); recorded, not decided — consistent with
+<a href="/proposals/draft/0007-milestone-4-production-metadata-backend.html">0007</a>.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>

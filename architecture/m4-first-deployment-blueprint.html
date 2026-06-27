@@ -186,7 +186,7 @@ homelab but it makes the durability story genuinely true rather than aspirationa
 <p>Even A.2 shares <strong>one building, one grid feed, one ISP</strong>. So the homelab is a
 <em>real test of disk/server/power-strip independence and the full M3 repair story</em> —
 which is genuinely valuable and the thing DST can't give you — but it is <strong>not</strong>
-disaster-recoverable (no second site; that's M5+). Treat homelab M4 as: a real,
+disaster-recoverable (no second site; that's M9+). Treat homelab M4 as: a real,
 production-durable-<em>against-component-failure</em> store for <strong>non-sole-copy data</strong> —
 excellent for learning, dogfooding, demos, and feeding real faults back into DST,
 <strong>not</strong> for the only copy of anything you can't lose. Apply
@@ -199,11 +199,11 @@ independent failure domains</strong> cheaply (separate physical servers, and acr
 their EU locations even separate <em>datacenters</em>), and (2) it's <strong>rented and
 on-demand</strong>, so you pay only while testing and it's EU-sovereign (on-message for
 the project). For M4 <em>single-zone</em>, you stay within <strong>one region</strong> (cross-region
-is M5+), but you use Hetzner's physical-server independence to make the
+is M9+), but you use Hetzner's physical-server independence to make the
 failure-domain math honest in a way one desk cannot.</p>
 <h3>B.1 The Hetzner single-zone topology</h3>
 <p>&quot;Single zone&quot; = one Hetzner location (e.g. Falkenstein <strong>or</strong> Nuremberg <strong>or</strong>
-Helsinki — pick one for M4; multi-location is M5). Within it:</p>
+Helsinki — pick one for M4; multi-location is M9). Within it:</p>
 <ul>
 <li><strong>D servers — Cloud <code>CX</code> servers for the campaign, bare-metal for the benchmark
 (see §B.3), as your failure domains.</strong> A separate Hetzner server — cloud or
@@ -264,7 +264,7 @@ bare-metal — see §B.3 for which Hetzner product to rent for the benchmark run
 campaign, per-month Server Auction bare-metal for the benchmark (§B.3) — cheaper
 than the US hyperscalers, and torn down after. On-message for the project's whole
 reason to exist.</li>
-<li><strong>The bridge to M5.</strong> When you reach cross-zone (M5), the <em>same</em> topology
+<li><strong>The bridge to M9.</strong> When you reach cross-zone (M9), the <em>same</em> topology
 replicated across Hetzner's <strong>three EU locations</strong> (FSN/NBG/HEL) gives real
 inter-region WAN — so the Hetzner single-zone deployment is the natural seed of
 the eventual multi-region one.</li>
@@ -344,7 +344,7 @@ metadata tier are what you actually re-provision.</li>
 <p>One Hetzner <em>location</em> is still one datacenter = one zone. M4 single-zone on
 Hetzner survives <strong>server/disk failures</strong> (the M3 story, now with honest
 independent hardware) but <strong>not the loss of the whole location</strong> — that's exactly
-what M5 cross-zone replication adds. So Hetzner M4 is a production-durable
+what M9 cross-zone replication adds. So Hetzner M4 is a production-durable
 single-<em>site</em> store with honest failure domains: a real, deployable thing for
 non-disaster-recovery use and for early adopters, with the same &quot;keep an
 independent out-of-band backup&quot; rule (<a href="/architecture/08-crosscutting-concepts.html">§8.2</a>)
@@ -378,7 +378,7 @@ is the mandatory one; losing it orphans all chunks. Snapshot <strong>etcd</stron
 config recovery. <strong>Do not</strong> back up D-server fragments — EC + custodian
 reconstruction is their mechanism. Per <a href="/architecture/08-crosscutting-concepts.html">§8.2</a>,
 backups must not depend on this cluster. M4 is single-zone; this is your
-disaster-recovery story until M5.</li>
+disaster-recovery story until M9.</li>
 <li><strong>Promote any surprise into DST.</strong> Anything the real deployment does that the
 simulator didn't model — a seeded DST regression. This is how the first
 deployment <em>earns trust</em> rather than just running.</li>
@@ -463,7 +463,7 @@ fresh&quot; as the default DR move.</p>
 <p>This per-tier model is the operational detail behind §8.2; the whole-store,
 object-level out-of-band copy those same sources call for (day-one step 5) is
 complementary — it adds protection against logical errors at the object level and
-is your only disaster-recovery story until M5 cross-zone replication.</p>
+is your only disaster-recovery story until M9 cross-zone replication.</p>
 <h2>The honest scope statement to a first user</h2>
 <blockquote>
 <p>This is a single-zone, production-durable, S3-compatible object store. It
@@ -559,7 +559,7 @@ servers, single-fault tolerance)</strong> to start — honest independent hardwa
 torn down after — then scale to 9 for full RS(6,3) tolerance once the basics hold.
 The homelab is the better <em>permanent</em> dogfooding/learning rig and the better place
 to abuse hardware physically; Hetzner is the better <em>honest first production-shape</em>
-deployment and the seed of the eventual multi-region M5 topology.</p>
+deployment and the seed of the eventual multi-region M9 topology.</p>
 <p>Both Hetzner columns above are <strong>Cloud</strong> (<code>CX</code>) sizing for the hourly fault
 campaign. The separate honest-<em>performance</em> benchmark runs on <strong>Server Auction
 bare-metal</strong> (§B.3), billed per month rather than per hour, so it sits outside this
@@ -647,7 +647,7 @@ hcloud server create --name gw0 --type cx23 --image ubuntu-24.04 \
 <p><strong>Failure-domain note on Hetzner.</strong> Distinct <em>cloud servers</em> in one location
 are independent hardware, so each server is a real failure domain for
 disk/host loss. They are <strong>not</strong> independent for a <em>whole-location</em> outage —
-that is M5 cross-region. For M4, label each D server with a <code>fd=</code> group; with 6
+that is M9 cross-region. For M4, label each D server with a <code>fd=</code> group; with 6
 D servers and 3 fd-labels you get the A.1 single-fault profile, with 9 D
 servers and 9 labels the full 3-fault profile (B.1 full).</p>
 </blockquote>
@@ -822,7 +822,7 @@ processes are running&quot; and &quot;it is actually production-durable.&quot;</
                   mandatory one) + snapshot etcd; do NOT back up D-server fragments
                   (EC + reconstruction covers them). Know the restore order:
                   etcd → metadata → re-replicate from survivors. See &quot;Backup model
-                  (per tier)&quot;. M4 is single-zone, so this is your only DR until M5.
+                  (per tier)&quot;. M4 is single-zone, so this is your only DR until M9.
 7. Promote:       anything surprising in steps 1–6 → a seeded DST regression.
 </code></pre>
 <h2>What you'll spend (Hetzner, verified post-15-June-2026 pricing)</h2>

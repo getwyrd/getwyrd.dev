@@ -255,7 +255,7 @@
 </table>
 <h2>13. Testing strategy</h2>
 <blockquote>
-<p>How Wyrd is verified, across tiers from reproducible simulation to real multi-region hardware. This subsection describes the <em>approach</em>; the DST decision itself is ADR-0009, the quality scenarios it must satisfy are above (section 10), the security properties and the threat→test map are the threat model (section 14.6–14.7), and the milestone ordering that each tier attaches to is in section 9 and proposal 0002 (the implementation arc).</p>
+<p>How Wyrd is verified, across tiers from reproducible simulation to real multi-region hardware. This subsection describes the <em>approach</em>; the DST decision itself is ADR-0009, the quality scenarios it must satisfy are above (section 10), the security properties and the threat→test map are the threat model (section 14.6–14.7), and the milestone ordering that each tier attaches to is in section 9 and proposal 0013 (the implementation arc).</p>
 </blockquote>
 <h3>13.1 The principle: simulation is primary, real environments are complementary</h3>
 <p>Correctness is the project's reason to exist, so the <strong>primary</strong> verification mechanism is <strong>deterministic simulation testing</strong> (DST, ADR-0009): the whole zone — metadata, D servers, custodians, faults, clock skew — run single-threaded in a simulated world where every bug reproduces from a seed. DST owns the things that matter most and that real hardware tests <em>badly</em>: atomicity under fault injection, race conditions, partition handling, commit-protocol invariants. These are verified reproducibly, in CI, in seconds.</p>
@@ -269,7 +269,7 @@
 <p>A real environment is therefore never used to test correctness the simulation already covers. If validating the commit protocol's atomicity seems to need a real cluster, that is a signal something is wrong — that is DST's job.</p>
 <p><strong>The compounding loop.</strong> Every real-world discovery is promoted back into DST: a fault or workload shape found on real hardware is encoded as a new seed-driven DST scenario, becoming a permanent, free, reproducible regression test. The real tiers are <em>fault-discovery</em> tools; their findings become cheap simulation tests. This is the highest-leverage idea in the strategy — it turns expensive, one-off real-world findings into permanent CI coverage.</p>
 <h3>13.2 The tiers</h3>
-<p>The tiers escalate in realism and cost. Each catches what the one below cannot; none replaces DST as the correctness authority. They attach to the implementation arc (proposal 0002) at the milestone where they first add value, so test investment stays matched to the milestone that needs it.</p>
+<p>The tiers escalate in realism and cost. Each catches what the one below cannot; none replaces DST as the correctness authority. They attach to the implementation arc (proposal 0013) at the milestone where they first add value, so test investment stays matched to the milestone that needs it.</p>
 <blockquote>
 <p><strong>Tier numbering — two distinct schemes.</strong> These Tier 0–3 labels are this strategy's <em>realism-and-cost</em> ladder. They are <strong>not</strong> the same as the &quot;Tier-1&quot;/&quot;Tier-2&quot; labels in the code and CI (proposal 0004's test taxonomy, e.g. <code>cargo xtask integration</code>): proposal 0004's &quot;Tier-1&quot; is the in-process DST/wire suite and its &quot;Tier-2&quot; is the container integration test — both of which run <em>within</em> this strategy's Tier 0–1, not on the Tier 2 single real machine below. Read a bare &quot;Tier 2&quot; by its source: this section's silicon tier, or the code's container suite.</p>
 </blockquote>
@@ -287,7 +287,7 @@
 <p>The reference host for this tier is a single beefy workstation (see 13.3). Its EC-performance numbers are <em>honest</em> because the silicon is real (server-class cores with SIMD, real NVMe) — but it is one machine, so the one thing it cannot validate is throughput scaling <em>across independent nodes</em> (Q6), which needs Tier 3.</p>
 <h4>Tier 2 — First real-world hardware experience (from M2–M3)</h4>
 <p>A single real, owned machine used as the primary local distributed-test host and the first &quot;does this deploy and operate as claimed on real silicon&quot; environment: real fsync, real NVMe latency, real SIMD-accelerated erasure coding, real OS behaviour. It validates honest single-node performance and real I/O semantics that the in-memory fakes abstract away, and it is the day-to-day host for the Tier-1 software-defined testing above. It is a <em>single failure domain</em>, so it proves real-silicon behaviour and single-node performance, not failure-domain independence (that is Tier 3).</p>
-<h4>Tier 3 — Real multi-node, multi-region (from M5)</h4>
+<h4>Tier 3 — Real multi-node, multi-region (from M9)</h4>
 <p>Rented, on-demand, separate machines in separate real failure domains and — for the cross-zone milestones — separate real regions, so the two things one machine structurally cannot provide become real rather than simulated:</p>
 <ul>
 <li><strong>Real failure-domain independence</strong> — genuinely separate power, network, and kernels, for true yank-a-node / sever-a-link / kill-a-disk physical-fault testing across independent hardware.</li>
@@ -342,7 +342,7 @@
 <table>
 <thead>
 <tr>
-<th>Milestone (proposal 0002)</th>
+<th>Milestone (proposal 0013)</th>
 <th>Tiers active</th>
 </tr>
 </thead>
@@ -368,15 +368,31 @@
 <td>Tier 0–2 against real TiKV</td>
 </tr>
 <tr>
-<td>M5 — cross-zone replication</td>
+<td>M5 — internal CA (step-ca)</td>
+<td>Tier 0–2; mTLS handshake/identity fault injection — plaintext and wrong-identity dials refused; the <code>PeerIdentity</code> guard test</td>
+</tr>
+<tr>
+<td>M6 — encryption at rest (KMS)</td>
+<td>Tier 0–2 against a real KMS (OpenBao); fail-closed on KMS unavailability; crypto-erase-vs-hold tests</td>
+</tr>
+<tr>
+<td>M7 — failover &amp; DR (single-datacenter)</td>
+<td>Tier 0–2; zone-internal node/disk/rack fault injection + local recovery drill</td>
+</tr>
+<tr>
+<td>M8 — manageability (CLI + portal)</td>
+<td>Tier 0–2; management-plane auth (OIDC + mTLS) and day-2 op flows; upgrade/rotation drill</td>
+</tr>
+<tr>
+<td>M9 — cross-zone replication</td>
 <td>+ Tier 3 (real multi-region WAN)</td>
 </tr>
 <tr>
-<td>M6 — global control plane</td>
+<td>M10 — global control plane</td>
 <td>Tier 0–3; cross-region consistency contract</td>
 </tr>
 <tr>
-<td>M7 — failover &amp; DR, drilled</td>
+<td>M11 — failover &amp; DR, drilled</td>
 <td>Tier 0–3; real zone-loss on independent hardware</td>
 </tr>
 </tbody>

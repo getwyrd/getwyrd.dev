@@ -73,7 +73,7 @@ graph TB
     META[&quot;&lt;b&gt;METADATA STORE&lt;/b&gt;&lt;br/&gt;the commit point —&lt;br/&gt;the locus of atomicity&quot;]
     CLIENT[&quot;&lt;b&gt;CLIENT&lt;/b&gt; (thick)&lt;br/&gt;erasure-code, commit,&lt;br/&gt;reassemble on read&quot;]
     CUST[&quot;&lt;b&gt;CUSTODIAN&lt;/b&gt; (background)&lt;br/&gt;GC / scrub /&lt;br/&gt;reconstruct / rebalance&quot;]
-    REPL[&quot;&lt;b&gt;REPLICATION WORKER&lt;/b&gt;&lt;br/&gt;(cross-zone, L3 — M5+)&quot;]
+    REPL[&quot;&lt;b&gt;REPLICATION WORKER&lt;/b&gt;&lt;br/&gt;(cross-zone, L3 — M9+)&quot;]
     DS[&quot;&lt;b&gt;D SERVERS&lt;/b&gt; (dumb storage)&lt;br/&gt;store/return fragments by id,&lt;br/&gt;verify checksum · one per disk&lt;br/&gt;— a failure domain&quot;]
     ZONES[(&quot;other zones&quot;)]
 
@@ -116,7 +116,7 @@ one mutation there</strong>; the other four components collaborate around it.</p
 <td>Four jobs: <strong>GC</strong> (collect orphaned/failed-write garbage), <strong>scrub</strong> (re-verify checksums to catch bit-rot <em>before</em> it's needed), <strong>reconstruct</strong> (rebuild lost fragments when a D server dies), <strong>rebalance</strong> (drain hot/decommissioning servers). Reads and repairs against the metadata store and D servers. Emits the durability plane (ADR-0011). <code>custodian</code> crate.</td>
 </tr>
 <tr>
-<td><strong>Replication worker</strong> <em>(cross-zone, L3 — M5+)</em></td>
+<td><strong>Replication worker</strong> <em>(cross-zone, L3 — M9+)</em></td>
 <td>Replicates committed chunks between zones, asynchronously, off the foreground write path.</td>
 <td>Copies whole committed chunks to other zones per policy; a remote replica becomes readable only once its catalog record commits. Async by default; sync-N-zone is a per-tenant opt-in. Does not exist at single-zone scale. <code>proto</code>/NATS JetStream.</td>
 </tr>
