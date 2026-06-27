@@ -71,12 +71,13 @@
 </ul>
 <h2>6.5 Disaster recovery ordering</h2>
 <p>After a real disaster, restore in dependency order:</p>
-<ol>
-<li><strong>L5 coordination</strong> first — so components can find each other and elect leaders.</li>
-<li><strong>L2 / L4 metadata</strong> next — so the map to the bytes exists. Restored from out-of-band backups that do <strong>not</strong> depend on the system being restored.</li>
+<ol start="0">
+<li><strong>Trust plane (provider CA) first of all</strong> — re-establish the CA (<code>step-ca</code> now, SPIRE reserved — ADR-0036) and distribute the trust bundle, because every step below dials over <strong>fail-closed mTLS</strong> (ADR-0005, ADR-0025) and cannot even complete a handshake without it. (In the single-binary profile the built-in dev-CA makes this a no-op; a real fleet must stand up the CA before anything else.)</li>
+<li><strong>L5 coordination</strong> next — so components can find each other and elect leaders.</li>
+<li><strong>L2 / L4 metadata</strong> — so the map to the bytes exists. Restored from out-of-band backups that do <strong>not</strong> depend on the system being restored.</li>
 <li><strong>L3 replica verification and re-replication</strong> — so the bytes are protected again.</li>
 </ol>
-<p>Restoring bytes before the map is useless; restoring the map before coordination cannot even start. This ordering is a runbook section and must be written and drilled before it is needed.</p>
+<p>Restoring bytes before the map is useless; restoring the map before coordination cannot even start; and coordination itself cannot complete a single mutually-authenticated dial before the trust plane exists. This ordering is a runbook section and must be written and drilled before it is needed.</p>
 <h2>6.6 Consistency at runtime</h2>
 <p>See section 8 (the consistency contract). In brief: the namespace is globally strongly consistent; a file's writes are linearizable at its home zone; per-session read-your-writes and monotonic reads are provided (v1: by routing consistency-sensitive reads to the home zone); stale-tolerant reads may be served from a lagging replica; cross-session visibility of a remote write is eventually consistent, bounded by replication lag.</p>
 <h2>6.7 Delete and space reclamation</h2>

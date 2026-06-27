@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>5. Building block view — Wyrd</title>
-<meta name="description" content="The system is organized into five layers. L4 and L5 operate within a single zone and are unaware that other zones exist. L1, L2, and L3 are the layers that span zones. The decis...">
+<meta name="description" content="The actor view and the layer view are two decompositions of the same system, cut">
 <meta property="og:title" content="5. Building block view — Wyrd">
-<meta property="og:description" content="The system is organized into five layers. L4 and L5 operate within a single zone and are unaware that other zones exist. L1, L2, and L3 are the layers that span zones. The decis...">
+<meta property="og:description" content="The actor view and the layer view are two decompositions of the same system, cut">
 <meta property="og:type" content="article">
 <link rel="stylesheet" href="/assets/style.css">
 </head>
@@ -39,8 +39,118 @@
     <article class="prose">
 <h1>5. Building block view</h1>
 <blockquote>
-<p>Living document. This is the layer model (L1–L5) and the components within each layer. See <code>diagrams/c4-container.mermaid</code> for the container diagram and <code>diagrams/layer-stack.mermaid</code> for the layer stack.</p>
+<p>Living document. The system is described through <strong>two complementary views</strong>:
+the <strong>actor view</strong> (§5.1 — what the moving parts are and how they collaborate
+to perform an operation) and the <strong>layer view</strong> (§5.2 — how those parts map
+onto scope tiers, and why bulk data never crosses a shared component). They
+answer different questions and are both load-bearing: the actor view is how you
+<em>learn</em> the system; the layer view is how you understand its <em>scalability</em>. See
+<code>diagrams/c4-container.mermaid</code> for the container diagram (the actor view) and
+<code>diagrams/layer-stack.mermaid</code> for the layer stack.</p>
 </blockquote>
+<h2>Why two views</h2>
+<p>The actor view and the layer view are two decompositions of the same system, cut
+along different axes:</p>
+<ul>
+<li><strong>The actor view</strong> answers <em>&quot;what are the components, and how do they
+collaborate to do a write?&quot;</em> It is the operational and learning frame — the one
+you reach for to explain the system or reason about a request. Its centre is the
+<strong>commit point</strong>.</li>
+<li><strong>The layer view</strong> answers <em>&quot;what scope does each part have, and why doesn't
+bulk data bottleneck on a shared component?&quot;</em> It is the scalability frame — the
+one that justifies the whole architecture. Its decisive property is that the
+globally-scoped tier holds only tiny, high-value truth.</li>
+</ul>
+<p>Neither subsumes the other. A component's <em>identity and collaborators</em> come from
+the actor view; its <em>scope and the scaling consequences</em> come from the layer view.
+The sections below give each in turn.</p>
+<hr />
+<h2>5.1 The actor view — the components and how they collaborate</h2>
+<p>The system is, at its core, <strong>five components orbiting a single commit point</strong>.
+Everything else (gateways, coordination, replication) is in service of these.</p>
+<div class="mermaid">
+graph TB
+    META[&quot;&lt;b&gt;METADATA STORE&lt;/b&gt;&lt;br/&gt;the commit point —&lt;br/&gt;the locus of atomicity&quot;]
+    CLIENT[&quot;&lt;b&gt;CLIENT&lt;/b&gt; (thick)&lt;br/&gt;erasure-code, commit,&lt;br/&gt;reassemble on read&quot;]
+    CUST[&quot;&lt;b&gt;CUSTODIAN&lt;/b&gt; (background)&lt;br/&gt;GC / scrub /&lt;br/&gt;reconstruct / rebalance&quot;]
+    REPL[&quot;&lt;b&gt;REPLICATION WORKER&lt;/b&gt;&lt;br/&gt;(cross-zone, L3 — M5+)&quot;]
+    DS[&quot;&lt;b&gt;D SERVERS&lt;/b&gt; (dumb storage)&lt;br/&gt;store/return fragments by id,&lt;br/&gt;verify checksum · one per disk&lt;br/&gt;— a failure domain&quot;]
+    ZONES[(&quot;other zones&quot;)]
+
+    CLIENT --&gt;|&quot;atomic commit&quot;| META
+    CUST --&gt;|&quot;read map / repair&quot;| META
+    CLIENT --&gt;|&quot;direct fragment read &amp;amp; write&quot;| DS
+    CUST --&gt;|&quot;scrub / verify / rebuild fragments&quot;| DS
+    REPL --&gt;|&quot;copy committed chunks&quot;| ZONES
+    META -.-&gt;|&quot;chunk locations&quot;| REPL
+</div>
+<p>The metadata store sits at the centre because the <strong>atomicity guarantee lives in
+one mutation there</strong>; the other four components collaborate around it.</p>
+<table>
+<thead>
+<tr>
+<th>Actor</th>
+<th>One-line role</th>
+<th>What it is, precisely</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Metadata store</strong> <em>(the commit point)</em></td>
+<td>Holds the map and hosts the single atomic mutation that makes a write visible.</td>
+<td>The linchpin. Inodes, dirents, chunk maps, the pending-chunk ledger, version counters. The atomicity guarantee — the project's reason to exist — lives in <em>one mutation here</em>, not in any other component. <code>redb</code> embedded / TiKV production, behind <code>MetadataStore</code>.</td>
+</tr>
+<tr>
+<td><strong>Client</strong> <em>(the thick brain)</em></td>
+<td>Erasure-codes, writes fragments directly to D servers, issues the atomic commit, reconstructs on read.</td>
+<td>Where the intelligence lives. It is the <em>only</em> component that understands what a <em>file</em> is: chunk → RS(k,m) encode → direct parallel fragment writes → atomic commit; on read, reconstruct from any <em>k</em> of <em>n</em>. Embedded in every L1 gateway. <code>client</code> crate, <code>reed-solomon-simd</code>.</td>
+</tr>
+<tr>
+<td><strong>D server</strong> <em>(dumb storage)</em></td>
+<td>Stores and returns fragments by id, verifies checksums, reports health.</td>
+<td>Deliberately stupid: no placement logic, no metadata, no erasure coding, no reconstruction. A disk with a gRPC interface and a checksum check. <strong>One per disk</strong> — each is an independent failure domain (ADR-0034). <code>dserver</code> crate, <code>ChunkStore</code> trait.</td>
+</tr>
+<tr>
+<td><strong>Custodian</strong> <em>(background health)</em></td>
+<td>Keeps stored data healthy over time and emits durability telemetry.</td>
+<td>Four jobs: <strong>GC</strong> (collect orphaned/failed-write garbage), <strong>scrub</strong> (re-verify checksums to catch bit-rot <em>before</em> it's needed), <strong>reconstruct</strong> (rebuild lost fragments when a D server dies), <strong>rebalance</strong> (drain hot/decommissioning servers). Reads and repairs against the metadata store and D servers. Emits the durability plane (ADR-0011). <code>custodian</code> crate.</td>
+</tr>
+<tr>
+<td><strong>Replication worker</strong> <em>(cross-zone, L3 — M5+)</em></td>
+<td>Replicates committed chunks between zones, asynchronously, off the foreground write path.</td>
+<td>Copies whole committed chunks to other zones per policy; a remote replica becomes readable only once its catalog record commits. Async by default; sync-N-zone is a per-tenant opt-in. Does not exist at single-zone scale. <code>proto</code>/NATS JetStream.</td>
+</tr>
+</tbody>
+</table>
+<p>Holding these together, off the data path: <strong>coordination (L5)</strong> — service
+discovery, leader election, locks — where D servers register and the custodian
+leader-elects, so the actors can find one another.</p>
+<h3>How they collaborate — the write path as actor interaction</h3>
+<p>The single most important collaboration, and the one that defines the system:</p>
+<ol>
+<li>The <strong>client</strong> registers chunk ids in the <strong>metadata store</strong>'s pending-chunk
+ledger (leased; the file exists nowhere yet).</li>
+<li>The <strong>client</strong> erasure-codes the data and writes fragments <strong>directly to the
+D servers</strong> — bulk data flows client→D-server, crossing no shared component.
+The D servers verify checksums. A failure here is harmless, unreferenced
+garbage.</li>
+<li>The <strong>client</strong> issues <em>one atomic mutation</em> to the <strong>metadata store</strong>: write
+the chunk map, set <code>COMMITTED</code>, bump the version (conditional on the prior).
+<strong>This is the commit point — the file now exists.</strong> Concurrent writers conflict
+here; exactly one wins.</li>
+<li>The <strong>client</strong> releases the ledger entries.</li>
+</ol>
+<p>Later and asynchronously, the <strong>custodian</strong> scrubs the D servers' fragments
+against the map, rebuilds any that are lost (committing the new locations via the
+<em>same</em> atomic mutation pattern), and emits durability telemetry; the <strong>replication
+worker</strong> (multi-zone) copies committed chunks to other zones. Readers never see a
+hybrid — only the old version or the new.</p>
+<p>The shape to carry away: <strong>dumb storage at the bottom, a thick client and
+background custodians holding the intelligence, and a metadata commit point at the
+centre as the locus of atomicity — with cross-zone replication off to the side.</strong>
+The layer view (§5.2) now shows how these actors map onto scope tiers.</p>
+<hr />
+<h2>5.2 The layer view — scope tiers and the scalability property</h2>
 <p>The system is organized into five layers. L4 and L5 operate within a single zone (one datacenter) and are unaware that other zones exist. L1, L2, and L3 are the layers that span zones. The decisive property throughout: <strong>the layer with global scope (L2) holds only small, slow-changing, high-value truth, so it can afford global consensus without becoming a bottleneck</strong>, while bulk data flows directly between client and storage servers, crossing no shared component.</p>
 <pre><code>L1  Access layer            S3 / FUSE / WebDAV / SDK gateways      (stateless)
 L2  Global control plane     namespace, placement, ACLs, registry   (global consensus)
@@ -48,8 +158,12 @@ L3  Cross-zone replication    async chunk copy, global custodians    (off the da
 L4  Zonal file system         metadata store, D servers, custodians, client library
 L5  Bootstrap &amp; coordination  service discovery, leader election, locks, config
 </code></pre>
+<p>Where the §5.1 actors live: the <strong>client</strong> is defined in L4 but <em>embedded in</em> the
+L1 gateways; the <strong>metadata store</strong>, <strong>D servers</strong>, and <strong>custodians</strong> are L4
+(zonal); the <strong>replication worker</strong> is L3 (cross-zone); <strong>coordination</strong> is L5.
+The actors are unchanged — this view re-cuts them by scope.</p>
 <hr />
-<h2>L1 — Access layer</h2>
+<h3>L1 — Access layer</h3>
 <p>Stateless protocol translators. They hold no durable state, scale horizontally, authenticate the caller, and embed the client library (L4) to do the actual storage work. All consistency logic lives below them.</p>
 <table>
 <thead>
@@ -83,7 +197,7 @@ L5  Bootstrap &amp; coordination  service discovery, leader election, locks, con
 </tbody>
 </table>
 <hr />
-<h2>L2 — Global control plane</h2>
+<h3>L2 — Global control plane</h3>
 <p>The brain of the multi-zone system: the one component with a global, authoritative view of what exists and where it should live. It controls by <em>deciding and recording</em>; it distributes by <em>routing actors to the right zones</em>, never by carrying the payload itself.</p>
 <table>
 <thead>
@@ -119,7 +233,7 @@ L5  Bootstrap &amp; coordination  service discovery, leader election, locks, con
 <p>Holds <em>metadata about metadata</em> — kilobytes per file. Consulted on namespace and placement operations (create, rename, share, delete, &quot;where do I read this&quot;), which are rare relative to data operations and ideally cached by clients.</p>
 <p>The default L2 backend is the Apache-2.0, CNCF <strong>TiKV</strong> stack — <strong>TiDB</strong> for the SQL surface over it — with <strong>YugabyteDB</strong> or <strong>PostgreSQL</strong> as alternatives behind the <code>NamespaceStore</code> trait (ADR-0020). CockroachDB is Spanner-class and works as a backend, but it is <strong>not</strong> a default: it moved to a source-available (non-OSI) licence in 2024, which is at odds with the project's fully-open, sovereignty-friendly substrate goal.</p>
 <hr />
-<h2>L3 — Cross-zone replication</h2>
+<h3>L3 — Cross-zone replication</h3>
 <p>Turns independent single-datacenter systems into one geographically distributed system, without ever sitting on the foreground write path.</p>
 <table>
 <thead>
@@ -149,7 +263,7 @@ L5  Bootstrap &amp; coordination  service discovery, leader election, locks, con
 </table>
 <p>Default replication is <strong>async</strong> (home-zone commit acknowledges immediately). <strong>Sync N-zone</strong> replication is a per-tenant opt-in that eliminates the data-loss window at the cost of cross-region write latency.</p>
 <hr />
-<h2>L4 — Zonal file system (the Colossus analog, one per datacenter)</h2>
+<h3>L4 — Zonal file system (the Colossus analog, one per datacenter)</h3>
 <p>Where atomicity lives and where the bulk of correctness risk concentrates.</p>
 <table>
 <thead>
@@ -183,14 +297,16 @@ L5  Bootstrap &amp; coordination  service discovery, leader election, locks, con
 </tbody>
 </table>
 <p>A zone is the unit of atomicity and the unit of (intra-provider) federation.</p>
-<h3>The metadata model</h3>
+<h4>The metadata model</h4>
 <p>Hierarchical: <strong>inode + dirent</strong>, not path-as-key.</p>
 <ul>
 <li><code>inode:&lt;id&gt;</code> → attributes, chunk map (or inline data for small files), state, version.</li>
 <li><code>dirent:&lt;parent_id&gt;/&lt;name&gt;</code> → child inode id.</li>
 </ul>
 <p>This makes rename a single dirent mutation (atomic under the same mechanism as a write) instead of a mass key rewrite, and makes cross-zone sharing expressible (a dirent pointing at an inode owned elsewhere). It is the strongest concrete driver of the TiKV-over-HBase choice, because file creation must atomically write both the inode and its dirent — a multi-key transaction. See section 6 and ADR-0008.</p>
-<h3>The write protocol (the commit point)</h3>
+<h4>The write protocol (the commit point)</h4>
+<p>The same collaboration described in §5.1 as actor interaction, here in terms of
+the L4 mechanics it touches:</p>
 <ol>
 <li><strong>Intent</strong> — client registers chunk IDs in the pending-chunk ledger with a lease. The chunks exist nowhere in the namespace.</li>
 <li><strong>Data path</strong> — client erasure-codes and writes fragments directly to D servers, which verify checksums. Failures here are harmless garbage.</li>
@@ -199,7 +315,7 @@ L5  Bootstrap &amp; coordination  service discovery, leader election, locks, con
 </ol>
 <p>Readers never consult the ledger; they see the old version or the new one, never a hybrid.</p>
 <hr />
-<h2>L5 — Bootstrap and coordination</h2>
+<h3>L5 — Bootstrap and coordination</h3>
 <p>The smallest layer by data volume and the one everything else depends on. It answers the questions a distributed system must answer before it can do any real work. Stores kilobytes; never on the data path.</p>
 <table>
 <thead>
@@ -225,7 +341,7 @@ L5  Bootstrap &amp; coordination  service discovery, leader election, locks, con
 <p>The Colossus-style bootstrap recursion bottoms out here: etcd depends on nothing above it. Losing L5 loses no data; established connections keep working from cached state. What is lost is the ability to <em>react</em> — failovers, elections, topology changes — until coordination returns.</p>
 <p><strong>openraft</strong> is reserved as a future embedded coordination backend (a no-external-dependency production mode) behind the same trait, validated by the existing DST harness once the trait semantics are pinned by two implementations. Not built for v1 (ADR-0006).</p>
 <hr />
-<h2>Cross-cutting components</h2>
+<h2>5.3 Cross-cutting components</h2>
 <table>
 <thead>
 <tr>
@@ -290,6 +406,7 @@ L5  Bootstrap &amp; coordination  service discovery, leader election, locks, con
 
 <!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
      contain a diagram; empty otherwise. -->
-
+<script src="/assets/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true,theme:"neutral"});</script>
 </body>
 </html>

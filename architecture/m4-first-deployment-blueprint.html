@@ -68,7 +68,7 @@ independent failure, and do you have enough of them?</strong> With RS(6,3) you w
 fewer domains with multiple fragments each and a consciously-reduced tolerance.
 Everything below is organized around getting that right.</p>
 <h2>Component inventory (both variants)</h2>
-<p>The M4 stack has six process roles. Their <em>placement</em> differs between homelab and
+<p>The M4 stack has seven process roles. Their <em>placement</em> differs between homelab and
 Hetzner; the <em>roles</em> do not.</p>
 <table>
 <thead>
@@ -100,6 +100,11 @@ Hetzner; the <em>roles</em> do not.</p>
 <td><strong>High</strong> — 3 nodes for quorum; lose 2 and discovery/registration/leader-election stall. Small but control-critical.</td>
 </tr>
 <tr>
+<td><strong>CA (step-ca)</strong></td>
+<td>The internal PKI that issues short-lived mTLS certs for the fabric (<a href="/adr/0036-internal-ca-step-ca-spire.html">ADR-0036</a>); the certificate is each component's identity (<a href="/adr/0025-internal-service-to-service-trust.html">ADR-0025</a>). step-ca now, SPIRE reserved for fleet scale; the dev profile uses a built-in self-signed CA behind the same seam.</td>
+<td><strong>High</strong> — fail-closed mTLS (ADR-0025) makes an unreachable CA halt <em>every</em> new dial and cert rotation; run it <strong>HA, off the D-server hosts</strong>.</td>
+</tr>
+<tr>
 <td><strong>Gateway</strong></td>
 <td>Stateless S3 front door; embeds the client library (chunk, EC, commit).</td>
 <td><strong>Low</strong> — stateless, horizontally scalable, restartable.</td>
@@ -112,11 +117,12 @@ Hetzner; the <em>roles</em> do not.</p>
 </tbody>
 </table>
 <p>The asymmetry to internalize: <strong>D servers carry the durability</strong>, <strong>TiKV+PD carry
-the metadata</strong> and <strong>etcd carries the coordination plane</strong> (both control tiers are
-precious, small, and quorum-replicated), and <strong>gateway+custodian are stateless</strong>
-(cheap to restart/move). A good topology spends its failure-domain budget on the D
-servers first, gives the metadata (TiKV+PD) and coordination (etcd) tiers their own
-quorum spread, and treats gateway+custodian as movable. The same asymmetry drives
+the metadata</strong>, <strong>etcd carries the coordination plane</strong>, and <strong>step-ca carries the
+trust plane</strong> (all three control tiers are precious, small, and HA/quorum-replicated),
+and <strong>gateway+custodian are stateless</strong> (cheap to restart/move). A good topology spends
+its failure-domain budget on the D servers first, gives the metadata (TiKV+PD),
+coordination (etcd), and trust (step-ca) tiers their own HA/quorum spread, and treats
+gateway+custodian as movable. The same asymmetry drives
 <strong>backup</strong> (see <em>Backup model</em> below): only the metadata (and the small L5 config)
 is backed up out-of-band — D-server fragments are <strong>not</strong>, because EC + custodian
 reconstruction already protects them.</p>
@@ -215,6 +221,16 @@ one of the two <code>2379</code> defaults); give etcd its own 3 nodes only if yo
 metadata and coordination to fail independently. Keeping the control tier off the
 D-server hosts means a control-node loss and a storage-node loss are independent
 events.</li>
+<li><strong>Internal CA (step-ca) — on the 3 control nodes (or a small dedicated node).</strong>
+Issues the short-lived mTLS certs the whole fabric dials with
+(<a href="/adr/0036-internal-ca-step-ca-spire.html">ADR-0036</a>). Because mTLS is fail-closed
+(ADR-0025), it <strong>must be up before any other role</strong> and run <strong>HA, off the D-server
+hosts</strong> (<a href="/architecture/07-deployment-view.html">§7.3</a>). HA is <strong>not</strong> automatic from running three
+copies: step-ca's embedded Badger/BoltDB is single-node, so a load-balanced HA CA
+means <strong>multiple instances behind a load balancer sharing a PostgreSQL/MySQL backend
+and identical root/intermediate signing material</strong>. Co-locating those on the 3
+control nodes adds no machine but does add that shared SQL backend. SPIRE reserved
+for fleet scale; single-binary uses a dev-CA.</li>
 <li><strong>Gateway — 1–2 small cloud servers</strong>, stateless, behind Hetzner's load balancer
 if you want HA on the S3 front door. (One is fine for first deployment.)</li>
 <li><strong>Custodian — co-locate with a gateway or a small dedicated server</strong>; stateless,
@@ -226,9 +242,9 @@ particular <strong>must be network-isolated</strong> (ADR-0006 / <a href="/archi
 with its auth only defense-in-depth behind the mTLS fabric. The S3 endpoint is the
 only thing that needs public exposure (behind the LB).</li>
 </ul>
-<p><strong>Instance count, Hetzner full-strength:</strong> 9 D + 3 TiKV/PD/etcd control + 1–2
-gateway/custodian = <strong>~13–14 servers</strong>. Cheaper first cut: 6 D + 3 TiKV/PD/etcd
-control + 1 gateway = <strong>10</strong>.
+<p><strong>Instance count, Hetzner full-strength:</strong> 9 D + 3 TiKV/PD/etcd/step-ca control + 1–2
+gateway/custodian = <strong>~13–14 servers</strong> (the CA co-locates on the control nodes, so it
+adds none). Cheaper first cut: 6 D + 3 TiKV/PD/etcd/step-ca control + 1 gateway = <strong>10</strong>.
 All in one location, on a private network, rentable for the duration of a test
 campaign and torn down after — so the <em>cost</em> is hours-of-rental, not owned
 hardware.</p>
@@ -495,6 +511,13 @@ the operator-partner the project needs.</p>
 <td>3 dedicated</td>
 </tr>
 <tr>
+<td>Internal CA (step-ca)</td>
+<td>co-located</td>
+<td>co-located (HA: +shared SQL)</td>
+<td>co-located on control</td>
+<td>co-located on control (HA: +shared SQL)</td>
+</tr>
+<tr>
 <td>Gateway/custodian</td>
 <td>on spare</td>
 <td>dedicated</td>
@@ -567,6 +590,10 @@ and any systemd unit templates).</li>
 don't mix). etcd backs the L5 <code>Coordination</code> seam
 (<a href="/adr/0006-etcd-for-coordination.html">ADR-0006</a>); it is an external dependency,
 not a Wyrd subcommand.</li>
+<li><strong>A step-ca release</strong> for the internal CA
+(<a href="/adr/0036-internal-ca-step-ca-spire.html">ADR-0036</a>), plus a chosen step-ca
+<strong>provisioner</strong> for node enrollment. The single-binary dev profile needs none — it
+uses a built-in self-signed dev-CA behind the same <code>CertificateAuthority</code> seam.</li>
 <li><code>cargo-deny</code>-clean, M4-tagged build — i.e. an actual M4 release, not a
 mid-milestone checkout.</li>
 </ul>
@@ -577,8 +604,8 @@ mid-milestone checkout.</li>
 path — the hourly, instant-teardown fault/durability campaign (§B.3). The
 separate honest-<em>performance</em> benchmark uses <strong>Server Auction bare-metal</strong>,
 provisioned through Hetzner <strong>Robot</strong> (not <code>hcloud</code>) and billed per month; the
-Wyrd-process steps (B.2–B.4) are identical there, only the provisioning and
-teardown differ (see the notes in B.1 and B.5).</p>
+Wyrd-process steps (B.2–B.5) are identical there, only the provisioning and
+teardown differ (see the notes in B.1 and B.6).</p>
 </blockquote>
 <h3>B.1 Provision the nodes</h3>
 <p>Pick <strong>one</strong> location (FSN1, NBG1, or HEL1 — single zone for M4). For the
@@ -588,7 +615,7 @@ x86 SIMD EC path. Dedicated <code>CCX</code> or bare-metal is only for the separ
 honest-performance benchmark, not this functional run.</p>
 <pre><code># Roles — instance sizing (test scale; adjust up for real load)
 #  D servers       : CX23  (2 vCPU, 4 GB, 40 GB NVMe)  × 6  (or 9 for full RS(6,3))
-#  TiKV + PD + etcd: CX33  (4 vCPU, 8 GB, 80 GB NVMe)  × 3  (control quorum: metadata + L5 coordination)
+#  CA+TiKV+PD+etcd  : CX33  (4 vCPU, 8 GB, 80 GB NVMe)  × 3  (control plane: step-ca + metadata + L5 coordination)
 #  gateway+custod  : CX23                              × 1  (or 2 + LB for HA)
 </code></pre>
 <p>Provision via the Hetzner Cloud console, the <code>hcloud</code> CLI, or Terraform. The
@@ -599,7 +626,7 @@ hcloud context create wyrd-m4
 hcloud network create --name wyrd-zone --ip-range 10.0.0.0/16
 hcloud network add-subnet wyrd-zone --network-zone eu-central --type cloud --ip-range 10.0.1.0/24
 
-# D servers (label each with its failure domain — see B.3)
+# D servers (label each with its failure domain — see the failure-domain note below)
 for i in $(seq 0 5); do
   hcloud server create --name d$i --type cx23 --image ubuntu-24.04 \
     --location fsn1 --network wyrd-zone --ssh-key &lt;key&gt; \
@@ -624,14 +651,54 @@ that is M5 cross-region. For M4, label each D server with a <code>fd=</code> gro
 D servers and 3 fd-labels you get the A.1 single-fault profile, with 9 D
 servers and 9 labels the full 3-fault profile (B.1 full).</p>
 </blockquote>
-<h3>B.2 Bring up the control tier (TiKV + PD + etcd)</h3>
+<h3>B.2 Stand up the internal CA (step-ca) — before anything that dials</h3>
+<p>Internal mTLS is <strong>required and fail-closed</strong>
+(<a href="/adr/0025-internal-service-to-service-trust.html">ADR-0025</a>): no component completes
+a single dial until the CA exists and every peer holds a cert — so the CA comes up
+<strong>first</strong>, before the control tier. The technology is <strong>step-ca</strong>, with SPIRE reserved
+for fleet scale (<a href="/adr/0036-internal-ca-step-ca-spire.html">ADR-0036</a>); the
+single-binary dev profile uses a built-in self-signed CA behind the same
+<code>CertificateAuthority</code> seam.</p>
+<p>Run step-ca on the <strong>3 control nodes</strong> (co-located with etcd/PD/TiKV — it is small) or
+on a small dedicated node for stricter isolation. It must be <strong>HA and
+network-isolated</strong>: a single-instance CA is a zone-wide SPOF the moment a cert needs to
+rotate (<a href="/architecture/07-deployment-view.html">§7.3</a>). <strong>HA is not just &quot;run three copies&quot;:</strong> step-ca's
+embedded Badger/BoltDB is single-node, so the supported load-balanced HA pattern is
+<strong>N instances behind a load balancer sharing one PostgreSQL/MySQL backend and the same
+root/intermediate signing material</strong> (<a href="https://smallstep.com/docs/step-ca/configuration/#databases">smallstep's documented HA shape</a>).
+Three identical step-ca instances on the control nodes + one shared SQL backend gives
+HA at no extra machine; three instances each on an embedded DB are three <em>independent</em>
+CAs, not HA.</p>
+<pre><code class="language-sh"># on each control node, BEFORE the control tier — [wyrd-config] exact deploy/ unit + flags
+# 1) bring up step-ca for HA: N instances sharing ONE PostgreSQL/MySQL backend +
+#    identical root/intermediate signing material, behind the LB (embedded DB is single-node)
+docker compose -f deploy/step-ca.yml up -d        # [wyrd-config] exact filename from deploy/
+
+# 2) distribute the CA trust bundle (root) to every node so peers can verify each other
+step ca bootstrap --ca-url https://10.0.1.&lt;ca-lb&gt;:9000 --fingerprint &lt;root-fingerprint&gt;
+
+# 3) each role gets a short-lived, auto-renewed cert with a SPIFFE-shaped SAN
+#    (trust domain &quot;wyrd&quot;; ADR-0036 req 3):
+#       spiffe://wyrd/&lt;zone&gt;/&lt;role&gt;/&lt;instance&gt;   role ∈ {dserver,tikv,pd,etcd,gateway,custodian}
+#    components consume it as an abstract PeerIdentity, never raw cert fields (ADR-0036 req 2–3)
+</code></pre>
+<p><strong>Initial enrollment is the one unpinned piece.</strong> How a brand-new node first proves its
+identity to step-ca to obtain its <em>first</em> cert — a join token, a cloud
+instance-identity document, a bootstrap provisioner — is <strong>left open by ADR-0036</strong>; pick
+a step-ca provisioner and record it in the runbook. After first issuance certs
+<strong>auto-renew</strong>, and every component MUST consume a renewable source rather than cache a
+cert for the process lifetime (ADR-0036 req 4). Verify before continuing: the CA is
+reachable, a test cert issues and verifies against the trust bundle, renewal works, and
+a <strong>plaintext dial is refused</strong>.</p>
+<h3>B.3 Bring up the control tier (TiKV + PD + etcd)</h3>
 <p>From the M4 <code>deploy/</code> stack, on the three control nodes (named <code>tikv*</code> here; they
-also run the L5 etcd ensemble). The M4 proposal ships a <strong>docker-compose TiKV+PD</strong>
-for CI/eval; the <strong>etcd</strong> coordination ensemble
+also run step-ca from B.2 and the L5 etcd ensemble). The M4 proposal ships a
+<strong>docker-compose TiKV+PD</strong> for CI/eval; the <strong>etcd</strong> coordination ensemble
 (<a href="/adr/0006-etcd-for-coordination.html">ADR-0006</a>) comes up alongside it. For a
-real deployment use the same images with PD and etcd each pointed at all three
-nodes. <strong>[wyrd-config]</strong> the exact compose files / systemd units come from
-<code>deploy/</code>.</p>
+real deployment use the same images with PD and etcd each pointed at all three nodes,
+<strong>each configured with its step-ca-issued cert + the trust bundle from B.2</strong> so every
+dial is mTLS (ADR-0025), no plaintext. <strong>[wyrd-config]</strong> the exact compose files /
+systemd units come from <code>deploy/</code>.</p>
 <pre><code class="language-sh"># on each control node: install docker, pull the deploy/ stack
 # 1) etcd ensemble (3-node quorum) — the L5 Coordination backend (client 2379, peer 2380, mTLS)
 docker compose -f deploy/etcd.yml up -d        # [wyrd-config] exact filename from deploy/
@@ -644,7 +711,7 @@ at most 1 — <code>etcdctl endpoint health</code>), <strong>PD has quorum</stro
 1), TiKV stores show healthy (<code>pd-ctl</code>/<code>tikv-ctl</code>, or the deploy stack's health
 check). The <code>&lt;L5-endpoint&gt;</code> every other role dials is this etcd ensemble, e.g.
 <code>10.0.1.&lt;e0&gt;:2379,10.0.1.&lt;e1&gt;:2379,10.0.1.&lt;e2&gt;:2379</code>.</p>
-<h3>B.3 Bring up the D servers (with failure-domain labels)</h3>
+<h3>B.4 Bring up the D servers (with failure-domain labels)</h3>
 <p>On each <code>d*</code> node, run the Wyrd <code>d-server</code> role, pointed at its local disk and
 <strong>labeled with its failure domain</strong>. This label is the single most important
 config in the whole deployment — it is what makes RS(6,3) real.</p>
@@ -653,13 +720,15 @@ wyrd d-server \
   --data-dir /var/lib/wyrd/fragments \
   --listen 10.0.1.&lt;n&gt;:50051 \         # Wyrd D-server gRPC default (crates/server/src/cli.rs)
   --failure-domain $FD_LABEL \          # e.g. fd0/fd1/fd2 — MUST be set, MUST be honest
-  --coordination &lt;L5-endpoint&gt;          # the 3-node etcd ensemble — registers id·endpoint·fd, renews lease
+  --coordination &lt;L5-endpoint&gt; \        # the 3-node etcd ensemble — registers id·endpoint·fd, renews lease
+  --tls-cert /etc/wyrd/tls/dserver.crt --tls-key /etc/wyrd/tls/dserver.key \  # [wyrd-config] step-ca-issued, auto-renewed (B.2)
+  --tls-ca   /etc/wyrd/tls/ca-bundle.crt   # trust bundle — mTLS required, no plaintext fallback (ADR-0025)
 </code></pre>
 <p>The D server registers itself (id + endpoint + failure-domain label) through the
 L5 coordination seam; the gateway discovers it. <strong>Never</strong> point two D servers
 that share real hardware at different <code>fd</code> labels — the label must reflect actual
 independence or the durability math lies.</p>
-<h3>B.4 Bring up the gateway + custodian</h3>
+<h3>B.5 Bring up the gateway + custodian</h3>
 <p>On <code>gw0</code>, select the <strong>TiKV</strong> metadata backend (the M4 composition switch) and
 start the gateway and the custodian.</p>
 <pre><code class="language-sh"># gateway — TiKV backend selected by config (the M4 release point)
@@ -667,17 +736,21 @@ wyrd gateway \
   --metadata-backend tikv \             # [wyrd-config] the M4 redb|tikv selector
   --tikv-pd 10.0.1.&lt;pd0&gt;:2379,10.0.1.&lt;pd1&gt;:2379,10.0.1.&lt;pd2&gt;:2379 \
   --s3-listen 0.0.0.0:8080 \
-  --coordination &lt;L5-endpoint&gt;
+  --coordination &lt;L5-endpoint&gt; \
+  --tls-cert /etc/wyrd/tls/gateway.crt --tls-key /etc/wyrd/tls/gateway.key \  # [wyrd-config] step-ca-issued (B.2) — INTERNAL mTLS
+  --tls-ca   /etc/wyrd/tls/ca-bundle.crt    # the PUBLIC S3 cert is separate (public ACME, not step-ca) — ADR-0036 req 5
 
 # custodian — one active, leader-elected; emits durability telemetry
 wyrd custodian \
   --metadata-backend tikv --tikv-pd &lt;...&gt; \
   --coordination &lt;L5-endpoint&gt; \
+  --tls-cert /etc/wyrd/tls/custodian.crt --tls-key /etc/wyrd/tls/custodian.key \  # [wyrd-config] step-ca-issued (B.2)
+  --tls-ca   /etc/wyrd/tls/ca-bundle.crt \
   --otlp-endpoint &lt;your-collector&gt;      # or scrape its Prometheus endpoint
 </code></pre>
 <p>Expose <strong>only</strong> the gateway's S3 port publicly (behind the Hetzner LB if you want
 HA); everything else stays on the <code>10.0.1.0/24</code> private network.</p>
-<h3>B.5 Tear down (the cost-control step)</h3>
+<h3>B.6 Tear down (the cost-control step)</h3>
 <pre><code class="language-sh"># delete everything when the campaign ends — billing stops at delete, not stop
 hcloud server delete d0 d1 d2 d3 d4 d5 tikv0 tikv1 tikv2 gw0
 hcloud network delete wyrd-zone
@@ -691,8 +764,8 @@ than a weekend.</p>
 <hr />
 <h2>Variant A — Homelab</h2>
 <p>The infra steps differ (your own machines, your own network); the <strong>Wyrd
-process</strong> steps (B.2–B.4) are identical — same <code>deploy/</code> stack, same <code>d-server</code> /
-gateway / custodian roles, same failure-domain labeling.</p>
+process</strong> steps (B.2–B.5) are identical — same step-ca CA, same <code>deploy/</code> stack, same
+<code>d-server</code> / gateway / custodian roles, same failure-domain labeling.</p>
 <h3>A.1 Prepare the machines</h3>
 <ul>
 <li>Flash each node (mini-PC / Pi 5) with a Linux you know (Ubuntu Server 24.04 is
@@ -706,10 +779,11 @@ match the physical thing that fails together (the strip/PSU). This is the
 homelab equivalent of rack/power labels.</li>
 </ul>
 <h3>A.2 Bring up the stack</h3>
-<p>Identical to Hetzner B.2–B.4, with LAN IPs instead of the Hetzner private
-network. TiKV+PD on the 3 <code>tikv</code> nodes (or folded onto 3 D-server nodes for the
-6-machine minimum, accepting the coupling), D servers on the <code>d*</code> nodes with
-their <code>fd</code> labels, gateway+custodian on <code>gw0</code> or a spare.</p>
+<p>Identical to Hetzner B.2–B.5, with LAN IPs instead of the Hetzner private
+network. step-ca on the 3 control nodes <strong>first</strong> (mTLS is fail-closed), then
+TiKV+PD+etcd on those nodes (or folded onto 3 D-server nodes for the 6-machine
+minimum, accepting the coupling), D servers on the <code>d*</code> nodes with their <code>fd</code> labels,
+gateway+custodian on <code>gw0</code> or a spare.</p>
 <h3>A.3 The homelab-specific value</h3>
 <p>Because the hardware is yours and physical, you can do the fault tests Hetzner
 can't: literally pull a power-strip cable to test a whole-failure-domain loss,
@@ -720,9 +794,11 @@ unique contribution.</p>
 <h2>Day-one verification (both variants) — do this before trusting it</h2>
 <p>Run these <em>in order</em>; each gates the next. This is the difference between &quot;the
 processes are running&quot; and &quot;it is actually production-durable.&quot;</p>
-<pre><code>1. Health:        etcd quorum healthy (L5 Coordination up); all D servers
-                  registered &amp; discovered via etcd; PD quorum healthy;
-                  custodian leader elected; gateway serving S3.
+<pre><code>1. Health:        CA (step-ca) reachable, certs issued + auto-renewing, and a
+                  plaintext (non-mTLS) dial is REFUSED (ADR-0025); etcd quorum
+                  healthy (L5 Coordination up); all D servers registered &amp;
+                  discovered via etcd; PD quorum healthy; custodian leader
+                  elected; gateway serving S3.
 2. Round-trip:    S3 PUT an object → GET it back byte-identical.
 3. Spread check:  inspect a written chunk's 9 fragments → confirm they landed in
                   9 DISTINCT failure domains (telemetry/custodian exposes this).

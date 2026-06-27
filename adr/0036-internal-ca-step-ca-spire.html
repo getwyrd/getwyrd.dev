@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0036. Internal CA and identity fabric: step-ca now, SPIRE reserved — Wyrd</title>
+<meta name="description" content="The closed, single-provider federation authenticates zones and">
+<meta property="og:title" content="0036. Internal CA and identity fabric: step-ca now, SPIRE reserved — Wyrd">
+<meta property="og:description" content="The closed, single-provider federation authenticates zones and">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/">Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Proposed · 26.06.2026</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>0036. Internal CA and identity fabric: step-ca now, SPIRE reserved</h1>
+<h2>Context</h2>
+<p>The closed, single-provider federation (ADR-0005) authenticates zones and
+services to one another with <strong>mTLS under a provider-operated internal PKI</strong> —
+not a public web-PKI, not a cross-organization trust system. The architecture
+(section 8.5) named <strong>SPIFFE/SPIRE</strong> as the candidate for that PKI. ADR-0025 then
+fixed the <em>enforcement</em> contract on that posture — mTLS required with no plaintext
+fallback, the certificate as identity, and least authority per component — while
+leaving open <em>which</em> CA issues those certificates. This ADR answers that open
+question: <em>which</em> technology to run, and <em>when</em>.</p>
+<p>The requirements the fabric CA must meet:</p>
+<ul>
+<li><strong>Service-to-service mTLS</strong>, internal only. (The S3 gateway's <em>public</em> TLS
+endpoint is a separate, smaller concern — public ACME/Let's-Encrypt territory —
+and is explicitly <strong>out of scope</strong> of this ADR.)</li>
+<li><strong>Short-lived, automatically-rotated certificates</strong>, because a version-skewed
+fleet during rolling upgrades is the normal state; long-lived,
+manually-managed certs are an operational and security liability.</li>
+<li><strong>Workload identity, not host identity.</strong> Under the one-D-server-per-disk model
+(ADR-0034), many D servers share a host, so host-based identity is too coarse;
+identity must name <em>the process and its role</em>.</li>
+<li><strong>Sovereignty and licensing</strong>, consistent with the dependency doctrine:
+permissive/clearly-licensed, foundation-governed or self-hostable, no hard
+dependency on a US-controlled hosted service.</li>
+</ul>
+<p>Candidates evaluated:</p>
+<ul>
+<li><strong>SPIFFE/SPIRE</strong> (CNCF, Apache-2.0) — the purpose-built standard for
+secret-less <em>workload identity</em> via attestation. The architecturally complete
+answer, and the section 8.5 candidate. Cost: substantial operational weight — a
+stateful SPIRE Server (a new root of trust needing its own datastore/HA) plus a
+SPIRE Agent on every node, and non-trivial node- and workload-attestation
+configuration.</li>
+<li><strong>step-ca / Smallstep</strong> (Apache-2.0) — a self-hosted online CA purpose-built
+for &quot;internal PKI with short-lived, auto-rotated certs&quot; (ACME and other
+provisioners). Far lighter to operate (a single CA service); does <strong>not</strong>
+provide SPIFFE's secret-less workload attestation, but issues exactly the
+short-lived auto-renewed certs the fabric needs.</li>
+<li><strong>Vault PKI</strong> — capable, but <strong>rejected on licensing grounds</strong>: Vault
+moved to the BSL (source-available, non-OSI) in 2023, the same disqualifier
+applied to CockroachDB in the dependency doctrine. (OpenBao — the MPL-licensed
+Linux Foundation fork — would be the sovereignty-clean way to get Vault's model
+if ever wanted; noted, not adopted.)</li>
+<li><strong>Roll-your-own CA</strong> — rejected by the reinvent-vs-consume doctrine: cert
+lifecycle, rotation, revocation, and attestation are exactly the subtle,
+well-solved security primitives to <em>consume</em>, not rebuild. The novelty budget
+is spent on the commit protocol.</li>
+</ul>
+<p>Two facts tilt the <em>timing</em>: (1) at the project's current stage (single-zone,
+approaching M4, first real deployments, an open observability gap), SPIRE's
+benefit — secret-less attestation — mostly materializes at fleet scale, while its
+operational and attestation-debugging cost lands now, competing for attention
+with proving the differentiator; and (2) the trust model is deliberately
+<em>higher-trust</em> than SPIRE's zero-trust target — ADR-0005 has zones self-report
+health and be trusted, with no proof-of-storage — so &quot;do we even need full
+attestation yet&quot; is a genuine open question best answered by operating something
+simpler first.</p>
+<h2>Decision</h2>
+<p>Adopt <strong>step-ca as the internal CA now.</strong> It issues the short-lived,
+auto-rotated mTLS certificates for the service fabric, self-hosted and
+sovereignty-clean.</p>
+<p><strong>SPIRE is reserved as the future upgrade</strong>, not built — the architecturally
+complete workload-identity destination, to be adopted when fleet scale makes
+secret-less attestation worth its operational weight. The dev/single-binary
+profile uses a trivial self-signed / in-memory CA behind the same seam (mirroring
+in-memory coordination in dev, etcd in prod).</p>
+<p>This is the same &quot;reserve the heavier option behind the seam&quot; pattern used for
+openraft (ADR-0006) and Model B (ADR-0034). The reserved seat is kept open by
+<strong>two load-bearing requirements the implementation MUST honor from now on:</strong></p>
+<blockquote>
+<p><strong>1. The CA / identity provider MUST sit behind a narrow seam</strong> (a
+<code>CertificateAuthority</code> / <code>IdentityProvider</code> trait), so step-ca, SPIRE, and the
+dev self-signed CA are composition choices wired only in <code>server</code> — never a
+dependency the components couple to directly (ADR-0010).</p>
+<p><strong>2. Peer identity MUST be a first-class abstraction, distinct from raw
+certificate fields.</strong> Components MUST authenticate and authorize peers against
+an abstract identity (role + zone + disk/instance), <em>derived</em> from the
+certificate by an adapter — never by matching raw DNS names, SANs, or
+SPIFFE-ID strings directly in authorization logic.</p>
+</blockquote>
+<p>Requirement 2 is the one that decides whether the later SPIRE switch is a <em>cheap
+composition change</em> or a <em>painful rewrite</em> — exactly as ADR-0034's first-class
+failure-domain label decides whether Model B is an extension or a refactor. If
+authorization logic matches raw cert fields, SPIRE means touching every auth
+check; if it matches an abstract <code>PeerIdentity</code> behind an adapter, the switch is
+&quot;step-ca-cert → PeerIdentity&quot; and &quot;SPIFFE-ID → PeerIdentity&quot; as two adapters,
+with the consuming logic unchanged.</p>
+<h2>Architecture and implementation requirements</h2>
+<p>To follow this decision and keep the SPIRE upgrade cheap, the implementation MUST:</p>
+<ol>
+<li>
+<p><strong>Put the CA behind a <code>CertificateAuthority</code> / <code>IdentityProvider</code> trait.</strong>
+Components ask the seam for their identity; they do not call step-ca (or, later,
+the SPIRE Workload API) directly. Only <code>server</code> wires the concrete backend.
+Provide a trivial self-signed backend for the dev profile.</p>
+</li>
+<li>
+<p><strong>Model peer identity as a first-class type</strong> (e.g. <code>PeerIdentity { role, zone, instance }</code>), produced by an adapter from the presented certificate.
+<strong>No authorization logic may inspect raw cert fields.</strong> A test MUST assert that
+peer authorization is keyed on the abstract identity, not on cert internals —
+the standing guard that the reserved seat has not silently closed (mirroring
+the ADR-0034 placement-keyed-on-label test).</p>
+</li>
+<li>
+<p><strong>Shape the abstract identity like a SPIFFE ID from day one.</strong> Issue step-ca
+certificates carrying SPIFFE-ID-shaped SANs
+(<code>spiffe://&lt;trust-domain&gt;/&lt;zone&gt;/&lt;role&gt;/&lt;instance&gt;</code>) and derive <code>PeerIdentity</code>
+from that structure. This collapses the <em>identity-format</em> change to near-zero
+at SPIRE-switch time: only the <em>issuer and acquisition path</em> change, not the
+identity shape the rest of the system reasons about.</p>
+</li>
+<li>
+<p><strong>Make identity acquisition pluggable at startup and rotation-aware.</strong>
+A component obtains its identity from the seam (a CA call under step-ca; the
+local Workload API under SPIRE) and MUST consume it from a source that can
+deliver a <strong>rotated</strong> certificate at runtime — never read a cert once and cache
+it for the process lifetime. This serves step-ca renewal <em>and</em> SPIRE's
+streamed rotation, and is required regardless of backend.</p>
+</li>
+<li>
+<p><strong>Keep the fabric CA decision separate from external gateway TLS.</strong> The
+internal mTLS fabric (this ADR) and the S3 gateway's public endpoint are
+different trust contexts; the public endpoint uses public ACME / the provider's
+public-cert process and is not governed here.</p>
+</li>
+<li>
+<p><strong>Document the reserved SPIRE upgrade</strong> in the deployment view (section 7) and
+section 8.5, with its trigger (fleet scale at which secret-less workload
+attestation earns its operational weight) and its irreducible cost (new SPIRE
+Server + per-node Agent + node/workload attestation config — a deploy-time
+migration no abstraction removes), so a future implementer knows it was a
+deliberate deferral with a defined upgrade path.</p>
+</li>
+</ol>
+<h2>Consequences</h2>
+<ul>
+<li>The fabric gets <strong>self-hosted, sovereign, short-lived auto-rotated mTLS</strong> now,
+at low operational weight, matched to the project's current stage and to the
+trusted-closed-federation model (ADR-0005) — without paying SPIRE's attestation
+tax before its benefit materializes.</li>
+<li><strong>The SPIRE upgrade stays cheap on the code side</strong> <em>provided</em> requirements 2–3
+are honored: the per-component change is identity <em>acquisition</em>, and the
+<em>authorization</em> logic is unchanged because it consumes an abstract,
+SPIFFE-shaped <code>PeerIdentity</code>. If that abstraction is ever collapsed into raw
+cert matching, this consequence is lost and SPIRE becomes a pervasive rewrite —
+so the abstraction is the thing reviewers must protect.</li>
+<li>The SPIRE upgrade's <strong>operational cost is irreducible</strong>: standing up the SPIRE
+Server and per-node Agents and configuring attestation is real deploy-time work
+no seam removes. This is accepted — it is a bounded, deferred, deploy-time cost,
+not a pervasive code change.</li>
+<li>Vault PKI is <strong>closed off by the same licensing doctrine</strong> that closed off
+CockroachDB — a consistency the dependency-governance posture already implies.</li>
+<li>A latent risk to watch (same shape as ADR-0034): because step-ca identity is
+1:1-ish with a service today, it is tempting to authorize peers by a raw cert
+field. That collapse silently closes the SPIRE door. The first-class
+<code>PeerIdentity</code> and its guard test are what keep it open.</li>
+<li>Adopting step-ca adds one stateful service (the CA) to production deployments;
+modest, and far lighter than SPIRE's two-component topology.</li>
+</ul>
+<h2>Revisit when</h2>
+<p>Fleet scale, multi-zone operation, or a hardening of the trust model (e.g. a move
+away from trusted self-reporting toward zero-trust-between-workloads) makes
+secret-less workload attestation worth SPIRE's operational weight. Until then,
+step-ca behind the seam stands, and the SPIRE-shaped identity abstraction keeps
+the upgrade a composition change rather than a rewrite.</p>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>
