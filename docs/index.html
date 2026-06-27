@@ -49,7 +49,7 @@
 <td>1. Specifications</td>
 <td><code>specs/</code></td>
 <td>Normative, versioned</td>
-<td>Strict; a version bump is an ecosystem event</td>
+<td>Strict; stable versions are immutable; a version bump is an ecosystem event</td>
 </tr>
 <tr>
 <td>2. Architecture overview</td>
@@ -67,20 +67,20 @@
 <td>4. Enhancement proposals</td>
 <td><code>proposals/</code></td>
 <td>The change process</td>
-<td>Draft → accepted → implemented</td>
+<td>Draft → accepted → implemented; accepted records are immutable</td>
 </tr>
 </tbody>
 </table>
 <h3>1. Specifications (<code>specs/</code>)</h3>
-<p>The normative core. Currently this is the on-disk chunk/fragment format — the one artifact that must remain stable because <strong>data outlives software</strong>. A provider with petabytes written under format <code>v1</code> must be able to read it with software written years later. Specs use RFC 2119 language (MUST / SHOULD / MAY) and ship with conformance test vectors in <code>specs/conformance/</code>.</p>
+<p>The normative core. Currently this is the on-disk chunk/fragment format — the one artifact that must remain stable because <strong>data outlives software</strong>. A provider with petabytes written under format <code>v1</code> must be able to read it with software written years later. Specs use RFC 2119 language (MUST / SHOULD / MAY) and ship with conformance test vectors in <code>specs/conformance/</code>. See ADR-0037 for the spec lifecycle and immutability rule.</p>
 <p>Everything else (wire protocols, component interfaces) is implementation-first with versioned protobuf, not spec-first. See ADR-0002 for the reasoning.</p>
 <h3>2. Architecture overview (<code>architecture/</code>)</h3>
 <p>A trimmed <a href="https://arc42.org/">arc42</a>-derived structure plus <a href="https://c4model.com/">C4</a> diagrams. This is the living description of the system as it currently is. It is edited continuously and should never lag the code; &quot;update the architecture doc&quot; is a legitimate merge requirement on a PR that changes structure.</p>
 <h3>3. Architecture Decision Records (<code>adr/</code>)</h3>
 <p>Short, numbered, immutable records of <em>why</em> a decision was made. They exist so the same debate (&quot;why not Ceph?&quot;, &quot;why client-side erasure coding?&quot;) is not relitigated in every new issue. An ADR is never edited after acceptance; it is superseded by a later ADR that references it. Format: a lightweight <a href="https://cognitect.com/blog/2011/11/15/documenting-architecture-decisions">Nygard-style</a> template. See <code>adr/0001-record-architecture-decisions.md</code>.</p>
 <h3>4. Enhancement proposals (<code>proposals/</code>)</h3>
-<p>Once something is implemented, architectural change flows through proposals (modeled on Kubernetes KEPs and Rust RFCs). A proposal moves from <code>draft/</code> to <code>accepted/</code> and carries motivation, design, alternatives, and graduation criteria. Use <code>templates/proposal.md</code> to start one. Early in the project this is deliberately lightweight; the discipline matters more than the ceremony.</p>
-<p>Starting any of these documents? The fill-in templates for ADRs, proposals, and architecture sections live in <code>templates/</code>.</p>
+<p>Once something is implemented, architectural change flows through proposals (modeled on Kubernetes KEPs and Rust RFCs). A proposal moves from <code>draft/</code> to <code>accepted/</code> and carries motivation, design, alternatives, and graduation criteria. Use <code>templates/proposal.md</code> to start one. Early in the project this is deliberately lightweight; the discipline matters more than the ceremony. See ADR-0037 for the proposal lifecycle and immutability rule.</p>
+<p>Starting any of these documents? The fill-in templates for ADRs, proposals, specifications, and architecture sections live in <code>templates/</code>.</p>
 <h2>Conventions</h2>
 <ul>
 <li><strong>Diagrams as code.</strong> All diagrams live in <code>architecture/diagrams/</code> as Mermaid or D2 source, never as binary exports. Diagrams must be diffable and changeable in a PR. Exported images from drawing tools rot within months.</li>
