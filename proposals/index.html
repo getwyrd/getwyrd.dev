@@ -34,23 +34,84 @@
     <article class="prose">
 <h1>Enhancement proposals</h1>
 <p>KEP/RFC-style proposals for architectural change after initial implementation. Start one by copying <code>../templates/proposal.md</code> into <code>draft/</code>. Accepted proposals move to <code>accepted/</code>. See <code>../README.md</code> for how this class relates to ADRs and the living architecture overview.</p>
-
-<h2>Documents</h2>
-<ul>
-    <li><a href="/proposals/accepted/0001-milestone-0-walking-skeleton.html">Proposal: Milestone 0 — the walking skeleton (implementation plan)</a></li>
-    <li><a href="/proposals/accepted/0002-implementation-arc.html">Proposal: The implementation arc — ordering of when to build what</a></li>
-    <li><a href="/proposals/accepted/0003-milestone-1-erasure-coding.html">Proposal: Milestone 1 — erasure coding (implementation plan)</a></li>
-    <li><a href="/proposals/accepted/0004-milestone-2-networked-d-servers.html">Proposal: Milestone 2 — networked D servers (implementation plan)</a></li>
-    <li><a href="/proposals/accepted/0005-milestone-3-custodians.html">Proposal: Milestone 3 — custodians (implementation plan)</a></li>
-    <li><a href="/proposals/accepted/0013-implementation-arc-rescoped.html">Proposal: The implementation arc (rescoped) — ordering of when to build what</a></li>
-    <li><a href="/proposals/draft/0006-object-lifecycle-and-retention.html">Proposal: Object lifecycle and retention — versioning, trash, lifecycle, and compliance hold (WORM)</a></li>
-    <li><a href="/proposals/draft/0007-milestone-4-production-metadata-backend.html">Proposal: Milestone 4 — production metadata backend (TiKV) (implementation plan)</a></li>
-    <li><a href="/proposals/draft/0008-management-and-administration.html">Proposal: Management and administration — the operator surface (Milestone 8 implementation plan)</a></li>
-    <li><a href="/proposals/draft/0009-d-server-performance.html">Proposal: D-server performance</a></li>
-    <li><a href="/proposals/draft/0010-observability-floor-for-first-deployment.html">Proposal: The observability floor — making the first deployment diagnosable</a></li>
-    <li><a href="/proposals/draft/0011-milestone-5-internal-ca-step-ca.html">Proposal: Milestone 5 — Internal CA (step-ca integration) (implementation plan)</a></li>
-    <li><a href="/proposals/draft/0012-milestone-6-encryption-at-rest-kms.html">Proposal: Milestone 6 — encryption at rest (KeyService / KMS) (implementation plan)</a></li>
-</ul>
+<h2>Index</h2>
+<p>This index is the authoritative record of each proposal's current status and any supersession link (ADR-0038): an accepted proposal's own file is never edited, so a later supersession is recorded <strong>here</strong>, not on the frozen file. The lifecycle and immutability rules are ADR-0037.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Title</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="/proposals/accepted/0001-milestone-0-walking-skeleton.html">0001</a></td>
+<td>Milestone 0 — the walking skeleton</td>
+<td>accepted</td>
+</tr>
+<tr>
+<td><a href="/proposals/accepted/0002-implementation-arc.html">0002</a></td>
+<td>The implementation arc</td>
+<td><strong>superseded by 0013</strong></td>
+</tr>
+<tr>
+<td><a href="/proposals/accepted/0003-milestone-1-erasure-coding.html">0003</a></td>
+<td>Milestone 1 — erasure coding</td>
+<td>accepted</td>
+</tr>
+<tr>
+<td><a href="/proposals/accepted/0004-milestone-2-networked-d-servers.html">0004</a></td>
+<td>Milestone 2 — networked D servers</td>
+<td>accepted</td>
+</tr>
+<tr>
+<td><a href="/proposals/accepted/0005-milestone-3-custodians.html">0005</a></td>
+<td>Milestone 3 — custodians</td>
+<td>accepted</td>
+</tr>
+<tr>
+<td><a href="/proposals/draft/0006-object-lifecycle-and-retention.html">0006</a></td>
+<td>Object lifecycle and retention (versioning, trash, WORM)</td>
+<td>draft</td>
+</tr>
+<tr>
+<td><a href="/proposals/draft/0007-milestone-4-production-metadata-backend.html">0007</a></td>
+<td>Milestone 4 — production metadata backend (TiKV)</td>
+<td>draft</td>
+</tr>
+<tr>
+<td><a href="/proposals/draft/0008-management-and-administration.html">0008</a></td>
+<td>Management and administration (Milestone 8)</td>
+<td>draft</td>
+</tr>
+<tr>
+<td><a href="/proposals/draft/0009-d-server-performance.html">0009</a></td>
+<td>D-server performance</td>
+<td>draft</td>
+</tr>
+<tr>
+<td><a href="/proposals/draft/0010-observability-floor-for-first-deployment.html">0010</a></td>
+<td>The observability floor</td>
+<td>draft</td>
+</tr>
+<tr>
+<td><a href="/proposals/draft/0011-milestone-5-internal-ca-step-ca.html">0011</a></td>
+<td>Milestone 5 — internal CA (step-ca)</td>
+<td>draft</td>
+</tr>
+<tr>
+<td><a href="/proposals/draft/0012-milestone-6-encryption-at-rest-kms.html">0012</a></td>
+<td>Milestone 6 — encryption at rest (KeyService / KMS)</td>
+<td>draft</td>
+</tr>
+<tr>
+<td><a href="/proposals/accepted/0013-implementation-arc-rescoped.html">0013</a></td>
+<td>The implementation arc (rescoped)</td>
+<td>accepted (supersedes 0002)</td>
+</tr>
+</tbody>
+</table>
 
     </article>
   </main>
