@@ -47,6 +47,40 @@
 <li><strong>Management is declarative and self-reconciling</strong> — operators change desired state (in L2); custodians (L3/L4) reconcile reality toward it, the same control-loop pattern as Kubernetes, on the substrate already present.</li>
 </ol>
 <p>The hooks (metric emission, audit stream, desired-state API) exist from when custodians exist; polished dashboards/alerting are later and cheap to add once hooks emit.</p>
+<h3>Reconstruction repair-accounting counters</h3>
+<p>The §1 set above answers <em>how much is at risk and how fast it heals</em>. The reconstruction custodian (the time-to-repair loop) additionally emits three <code>monotonic_counter.*</code> counters on the same <code>tracing</code>→OpenTelemetry / Prometheus seam (ADR-0012) that answer a distinct operator question — <em>is the repair loop actually converging, or churning?</em> — by separating an <strong>attempted</strong> repair from a <strong>successful</strong> one:</p>
+<table>
+<thead>
+<tr>
+<th>Counter</th>
+<th>Incremented when</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>reconstruction_repaired</code></td>
+<td>a repair is <strong>dispatched</strong> — the pass decided to rebuild this chunk's missing shard(s) and repoint its placement</td>
+<td><code>reconstruction::emit_repaired</code></td>
+</tr>
+<tr>
+<td><code>reconstruction_conflict</code></td>
+<td>the version-conditional repoint <strong>lost the CAS race</strong> (a racing writer or superseded custodian moved the placement first); the rebuilt fragments become collectable garbage</td>
+<td><code>reconstruction::emit_conflict</code></td>
+</tr>
+<tr>
+<td><code>reconstruction_aborted</code></td>
+<td>the repair <strong>could not place</strong> the rebuilt shard (the failure-domain selector chose a server outside the fleet view), so nothing was committed</td>
+<td><code>reconstruction::emit_aborted</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>reconstruction_repaired</code> is incremented <strong>up front</strong>, at the assessment frame, because the rebuild runs a heavy erasure-decode plus a version-conditional commit and a metric emitted <em>after</em> that section is unreliable on the <code>tracing</code>→OTel bridge under load. The two <strong>terminal non-success outcomes</strong> are each offset on their own counter, giving the <strong>success-netting approximation</strong>:</p>
+<blockquote>
+<p><strong>successful repairs ≈ <code>reconstruction_repaired</code> − <code>reconstruction_conflict</code> − <code>reconstruction_aborted</code></strong></p>
+</blockquote>
+<p>Read this as a <strong>convergence indicator, not an exact conservation law.</strong> It is exact only when every dispatched repair reaches a terminal outcome — <code>Committed</code>, or one of the two offset outcomes <code>Conflict</code> / <code>Aborted</code>. A repair that instead <strong>errors out</strong> of the pass — no spare failure domain to place the rebuild (<code>select_distinct_domains_excluding</code>), or an I/O failure on the fragment write or the version-conditional commit — propagates <em>after</em> its up-front <code>reconstruction_repaired</code> increment and emits <strong>neither</strong> offset, so over a window the formula <strong>over-counts</strong> committed repairs by the number of such errored attempts (the chunk stays queued and is re-assessed next pass). <code>reconstruction_aborted</code> (#197 / #238) closed the &quot;selector chose a server outside the fleet view&quot; leak; the remaining errored paths are a <strong>known accounting imprecision that is not yet offset</strong> — treat a persistent gap between the netted figure and a falling <code>under-replicated count</code> as a prompt to inspect, not as a tally of lost data.</p>
+<p>These three counters <strong>complement, not replace,</strong> the five higher-level durability metrics of §1: a non-zero <code>reconstruction_conflict</code> / <code>reconstruction_aborted</code> rate while <code>under-replicated count</code> is not falling is the signal that the loop is churning rather than converging. They are emitted from the custodians' first commit; the source of truth for their exact emission is <code>crates/custodian/src/reconstruction.rs</code> (<code>emit_repaired</code> / <code>emit_conflict</code> / <code>emit_aborted</code>), and they sit alongside the proposal 0005 §&quot;durability metrics&quot; set.</p>
 <h2>Consequences</h2>
 <ul>
 <li>The durability guarantee is observable, not merely asserted.</li>
