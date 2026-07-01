@@ -47,7 +47,9 @@
 <h1>M4 first-deployment blueprint — single-zone, homelab and Hetzner</h1>
 <blockquote>
 <p>An operational note, not a normative spec. It describes how to stand up the
-first <em>real</em> single-zone Wyrd deployment at the M4 release point — the
+first <em>real</em> single-zone Wyrd deployment at the first-deployment point (the
+M4 data plane plus the M5 trust fabric; the ★ Step-2 release is M8 —
+proposal 0013) — the
 &quot;Small multi-node Production&quot; profile (TiKV + PD metadata, a separate 3-node
 etcd coordination ensemble, local-disk D servers, gateway, and custodian) — in
 two concrete shapes: a homelab and a Hetzner rental.
@@ -351,9 +353,10 @@ metadata tier are what you actually re-provision.</li>
 <p>One Hetzner <em>location</em> is still one datacenter = one zone. M4 single-zone on
 Hetzner survives <strong>server/disk failures</strong> (the M3 story, now with honest
 independent hardware) but <strong>not the loss of the whole location</strong> — that's exactly
-what M9 cross-zone replication adds. So Hetzner M4 is a production-durable
+what M9 cross-zone replication adds. So the Hetzner shape is a production-durable
 single-<em>site</em> store with honest failure domains: a real, deployable thing for
-non-disaster-recovery use and for early adopters, with the same &quot;keep an
+non-disaster-recovery use and for pre-release early adopters (the ★ release
+itself is M8, per proposal 0013), with the same &quot;keep an
 independent out-of-band backup&quot; rule (<a href="/architecture/08-crosscutting-concepts.html">§8.2</a>)
 applying.</p>
 <hr />
@@ -476,8 +479,9 @@ is your only disaster-recovery story until M9 cross-zone replication.</p>
 <p>This is a single-zone, production-durable, S3-compatible object store. It
 survives disk and server failures gracefully and tells you about its own
 durability. It does <strong>not</strong> survive loss of the whole site (no cross-zone
-replication yet), it is a recently-released system still earning its
-battle-testing, and the on-disk format is not yet stamped stable. Run it for
+replication yet), it is a young, pre-release system still earning its
+battle-testing (the ★ release is M8), and the on-disk format is not yet
+stamped stable. Run it for
 data you have another copy of, or for a tier that can tolerate that maturity —
 not as the sole copy of anything you cannot lose.</p>
 </blockquote>
@@ -601,8 +605,9 @@ not a Wyrd subcommand.</li>
 (<a href="/adr/0036-internal-ca-step-ca-spire.html">ADR-0036</a>), plus a chosen step-ca
 <strong>provisioner</strong> for node enrollment. The single-binary dev profile needs none — it
 uses a built-in self-signed dev-CA behind the same <code>CertificateAuthority</code> seam.</li>
-<li><code>cargo-deny</code>-clean, M4-tagged build — i.e. an actual M4 release, not a
-mid-milestone checkout.</li>
+<li><code>cargo-deny</code>-clean, M4-tagged build — a tagged soft-stopping-point build
+(M4 completes the data plane; the ★ release is M8), not a mid-milestone
+checkout.</li>
 </ul>
 <hr />
 <h2>Variant B — Hetzner (the recommended first deployment)</h2>
@@ -738,7 +743,7 @@ independence or the durability math lies.</p>
 <h3>B.5 Bring up the gateway + custodian</h3>
 <p>On <code>gw0</code>, select the <strong>TiKV</strong> metadata backend (the M4 composition switch) and
 start the gateway and the custodian.</p>
-<pre><code class="language-sh"># gateway — TiKV backend selected by config (the M4 release point)
+<pre><code class="language-sh"># gateway — TiKV backend selected by config (the M4 composition switch)
 wyrd gateway \
   --metadata-backend tikv \             # [wyrd-config] the M4 redb|tikv selector
   --tikv-pd 10.0.1.&lt;pd0&gt;:2379,10.0.1.&lt;pd1&gt;:2379,10.0.1.&lt;pd2&gt;:2379 \

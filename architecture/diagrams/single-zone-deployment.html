@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Single Zone Deployment — Wyrd</title>
-<meta name="description" content="Single-zone deployment — M4 &quot;Small multi-node&quot; production profile">
+<meta name="description" content="Single-zone deployment — first-deployment &quot;Small multi-node&quot; production">
 <meta property="og:title" content="Single Zone Deployment — Wyrd">
-<meta property="og:description" content="Single-zone deployment — M4 &quot;Small multi-node&quot; production profile">
+<meta property="og:description" content="Single-zone deployment — first-deployment &quot;Small multi-node&quot; production">
 <meta property="og:type" content="article">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -44,9 +44,11 @@
     <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
     <article class="prose">
 <h1>Single Zone Deployment</h1>
-<p>Single-zone deployment — M4 &quot;Small multi-node&quot; production profile</p>
+<p>Single-zone deployment — first-deployment &quot;Small multi-node&quot; production</p>
 <div class="mermaid">
-%% Single-zone deployment — M4 &quot;Small multi-node&quot; production profile
+%% Single-zone deployment — first-deployment &quot;Small multi-node&quot; production
+%% profile (the M4 data plane plus the M5 trust fabric; the ★ Step-2 release
+%% point is M8 — proposal 0013).
 %% Diagrams as code. Render with any Mermaid renderer.
 %% See 07-deployment-view.md (§7.4) and m4-first-deployment-blueprint.md.
 %% Shape shown: full-strength RS(6,3) — 9 D servers, one fragment per server,
@@ -56,15 +58,16 @@
 graph TB
     client([&quot;S3 client / application&quot;])
 
-    subgraph zone[&quot;Single zone — one site &amp;nbsp;(no cross-zone replication — that is M5)&quot;]
+    subgraph zone[&quot;Single zone — one site &amp;nbsp;(no cross-zone replication — that is M9)&quot;]
         subgraph access[&quot;Stateless — restartable, horizontally scalable&quot;]
             gw[&quot;S3 gateway&lt;br/&gt;embeds client library&lt;br/&gt;(chunk · erasure-code · commit)&quot;]
             cust[&quot;Custodian (leader-elected)&lt;br/&gt;GC · scrub · reconstruct · durability telemetry&quot;]
         end
 
-        subgraph metaplane[&quot;Metadata + coordination — precious, separately replicated&quot;]
+        subgraph metaplane[&quot;Metadata + coordination + trust — precious, separately replicated&quot;]
             tikv[&quot;TiKV + PD&lt;br/&gt;3-node quorum (Raft)&lt;br/&gt;inodes · dirents · chunk-maps&quot;]
             etcd[&quot;Coordination — etcd (L5)&lt;br/&gt;discovery · leader election · locks&quot;]
+            ca[&quot;Provider CA — step-ca (M5)&lt;br/&gt;short-lived mTLS certs, every internal dial&lt;br/&gt;(ADR-0036 · SPIRE reserved)&quot;]
         end
 
         subgraph storage[&quot;D servers — RS(6,3): 9 fragments/chunk, 1 per server, any 3 lost survive&quot;]
@@ -74,7 +77,7 @@ graph TB
         end
     end
 
-    backup[(&quot;Out-of-band backup&lt;br/&gt;independent of this cluster (§8.2)&lt;br/&gt;the only DR story until M5&quot;)]
+    backup[(&quot;Out-of-band backup&lt;br/&gt;independent of this cluster (§8.2)&lt;br/&gt;the only DR story until M9&quot;)]
 
     client --&gt;|&quot;S3 / HTTPS · SigV4&quot;| gw
     gw --&gt;|&quot;metadata commit · gRPC (PD :2379 / TiKV :20160) · mTLS&quot;| tikv
@@ -88,6 +91,7 @@ graph TB
     cust --&gt;|&quot;find under-replicated · gRPC&quot;| tikv
     cust -.-&gt;|&quot;leader election · etcd gRPC :2379&quot;| etcd
     fdA -.-&gt;|&quot;register (id · endpoint · fd label) · etcd gRPC&quot;| etcd
+    gw -.-&gt;|&quot;enroll · rotate short-lived certs (every role does)&quot;| ca
     tikv -.-&gt;|&quot;metadata export&quot;| backup
     fdA -.-&gt;|&quot;data export&quot;| backup</div>
 

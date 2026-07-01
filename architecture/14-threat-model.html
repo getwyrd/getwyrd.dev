@@ -410,16 +410,20 @@ audit log and envelope encryption (the operator cannot read a tenant's directory
 <ul>
 <li><strong>Clock / time-source trust</strong> — bounded skew + authenticated time + implausible-clock
 fail-closed (ADR-0024).</li>
-<li><strong>Internal service-to-service trust</strong> — the M2 enforcement contract for the mTLS fabric
+<li><strong>Internal service-to-service trust</strong> — the enforcement contract for the mTLS fabric
 already chosen in ADR-0005: least authority per component, certificate-as-identity, no
-plaintext fallback (ADR-0025).</li>
+plaintext fallback (ADR-0025). M2 refuses plaintext on the wire; the <em>enforcement</em> half —
+authorization against a first-class identity, so a valid certificate cannot do
+out-of-role operations — is retired at M5 (proposal 0013), which cites this gap as its
+load-bearing risk.</li>
+<li><strong>Build / release integrity</strong> — signed releases (Sigstore/cosign keyless), SLSA build
+provenance, and commit-SHA-pinned Actions (ADR-0030); binding from the first published
+release artifact.</li>
 </ul>
 <p><strong>Still genuinely open</strong>:</p>
 <ul>
 <li><strong>Key-compromise emergency response</strong> — a runbook for wholesale KEK revocation + forced
 re-encryption (distinct from planned re-wrap rotation, ADR-0021) is not yet written.</li>
-<li><strong>Build / release integrity</strong> — signed releases + SLSA provenance + pinned Actions are not
-yet decided.</li>
 <li><strong>The proto / network input-validation surface</strong> — fuzzing and hardening of the gRPC decode
 path land with the networked tier (M2); only the on-disk reader is hardened today.</li>
 <li><strong>CI security workflows</strong> — a CodeQL (Rust) static-analysis workflow and a coverage-guided
