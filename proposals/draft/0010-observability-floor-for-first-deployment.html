@@ -53,7 +53,7 @@ down? why did this request fail?</em> — have answers. It is deliberately a <st
 not the operator surface</strong>: the full management plane, auth/RBAC, day-2 ops,
 audit log, and polished dashboards are <a href="/proposals/draft/0008-management-and-administration.html">proposal 0008</a>; the d-server
 performance program is <a href="/proposals/draft/0009-d-server-performance.html">proposal 0009</a>; the TiKV backend swap is M4
-(<a href="/proposals/draft/0007-milestone-4-production-metadata-backend.html">proposal 0007</a>). This proposal pulls the <em>telemetry-emission-and-wiring</em>
+(<a href="/proposals/accepted/0007-milestone-4-production-metadata-backend.html">proposal 0007</a>). This proposal pulls the <em>telemetry-emission-and-wiring</em>
 subset forward, decoupled from 0008's API, because the <a href="/architecture/m4-first-deployment-blueprint.html">M4 first-deployment
 blueprint</a> already <strong>instructs the first user</strong> to run <code>wyrd custodian --otlp-endpoint …</code> and to <em>&quot;watch the durability plane from minute one&quot;</em> — and
 none of that is wired into the binary today. The point of this milestone is to
@@ -101,7 +101,7 @@ so an orchestrator cannot tell which node is down.</li>
 metrics, and runs none of the loops</strong> the blueprint tells you to watch. The
 observability <em>design</em> is comprehensive and already exists (<a href="/proposals/draft/0008-management-and-administration.html">0008</a>, <a href="/proposals/draft/0009-d-server-performance.html">0009</a>);
 the gap is that it is <strong>designed-but-unbuilt-and-unwired</strong>, sequenced after M4, and
-M4 itself (<a href="/proposals/draft/0007-milestone-4-production-metadata-backend.html">0007</a>) scopes none of it. This proposal closes exactly that gap, and
+M4 itself (<a href="/proposals/accepted/0007-milestone-4-production-metadata-backend.html">0007</a>) scopes none of it. This proposal closes exactly that gap, and
 no more.</p>
 <p><strong>Why now:</strong> real-world testing is the point at which &quot;designed&quot; stops being enough.
 A first deployment with no diagnostics doesn't just slow debugging — it silently
@@ -171,7 +171,7 @@ the full span graph + cross-plane join is a fast-follow (see Open questions).</l
 elimination) → <a href="/proposals/draft/0009-d-server-performance.html">proposal 0009</a>. This floor tells you <em>that</em> the d-server is
 slow; 0009 tells you <em>why</em> and makes it fast.</li>
 <li><strong>The TiKV backend and the <code>wyrd gateway</code>/<code>d-server</code> production roles' backend
-composition</strong> → M4 (<a href="/proposals/draft/0007-milestone-4-production-metadata-backend.html">0007</a>). This proposal wires telemetry into whatever roles
+composition</strong> → M4 (<a href="/proposals/accepted/0007-milestone-4-production-metadata-backend.html">0007</a>). This proposal wires telemetry into whatever roles
 exist; it does not introduce the metadata backend.</li>
 </ul>
 <h3>What carries over, unchanged</h3>
@@ -253,7 +253,7 @@ operability work layered on M3, like <a href="/proposals/draft/0008-management-a
 implementation milestone whose <strong>definition of done is: the <a href="/architecture/m4-first-deployment-blueprint.html">M4 first-deployment
 blueprint</a>'s day-one checklist is executable as written</strong> — every <code>watch</code>/<code>verify</code>
 step resolves to a real metric, log, or probe. It <strong>gates the M4 real-world testing
-campaign</strong> and runs <strong>in parallel with M4 implementation</strong> (<a href="/proposals/draft/0007-milestone-4-production-metadata-backend.html">0007</a>) — except item
+campaign</strong> and runs <strong>in parallel with M4 implementation</strong> (<a href="/proposals/accepted/0007-milestone-4-production-metadata-backend.html">0007</a>) — except item
 6 (typed errors), which must be sequenced against M4 (below).</p>
 <h3>Suggested PR sequence (each its own definition of done)</h3>
 <p>Branch <code>feat/obs-floor.&lt;n&gt;-&lt;slug&gt;</code>. Ordered so the keystone lands first and value
@@ -283,7 +283,7 @@ maps to one. <em>DoD:</em> the three operator questions each resolve to a named 
 </ol>
 <h3>Sequencing note — the one M4 collision</h3>
 <p>The <strong>typed-error enum is at the trait seam (<code>crates/traits/src/lib.rs</code>); M4 swaps the
-metadata backend <em>behind that same trait</em></strong> (<a href="/proposals/draft/0007-milestone-4-production-metadata-backend.html">0007</a>). A richer enum can ripple
+metadata backend <em>behind that same trait</em></strong> (<a href="/proposals/accepted/0007-milestone-4-production-metadata-backend.html">0007</a>). A richer enum can ripple
 into M4's TiKV <code>MetadataStore</code> implementation (it must produce the new variants).
 <strong>Before doing PR 3 and M4 in parallel, confirm whether they churn the same trait
 definitions.</strong> If they do, sequence deliberately — land the enum first so M4's backend
@@ -389,7 +389,7 @@ the signals wired here. 0008's three-plane telemetry section should rebase onto 
 <li><strong>Complements</strong> <a href="/proposals/draft/0009-d-server-performance.html">proposal 0009</a>: the floor surfaces <em>that</em> the d-server is slow;
 0009 is the performance program that explains and fixes it.</li>
 <li><strong>Gates</strong> the <a href="/architecture/m4-first-deployment-blueprint.html">M4 first-deployment blueprint</a> day-one checklist; <strong>parallel
-with</strong> M4 (<a href="/proposals/draft/0007-milestone-4-production-metadata-backend.html">proposal 0007</a>) except the typed-errors trait-seam item.</li>
+with</strong> M4 (<a href="/proposals/accepted/0007-milestone-4-production-metadata-backend.html">proposal 0007</a>) except the typed-errors trait-seam item.</li>
 <li><strong>Builds on</strong> the M3 custodian work (<a href="/proposals/accepted/0005-milestone-3-custodians.html">proposal 0005</a>: <code>telemetry.rs</code>, the loops,
 the failure-domain model), <a href="/adr/0009-deterministic-simulation-testing.html">ADR-0009</a> (DST authority), <a href="/adr/0010-pluggable-deployment-substrate.html">ADR-0010</a> (no
 concrete backend in leaf crates), <a href="/adr/0014-single-binary-dev-only.html">ADR-0014</a> (single-binary dev/eval),

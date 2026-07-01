@@ -36,7 +36,7 @@
 <div class="wrap">
   <header class="doc-header">
     <p class="doc-class">Enhancement Proposal</p>
-    <p class="doc-meta">Status: draft · 27.06.2026</p>
+    <p class="doc-meta">Status: accepted · 27.06.2026</p>
   </header>
 </div>
 
@@ -48,7 +48,7 @@
 <blockquote>
 <p>The implementation plan for the sixth step of the <a href="/proposals/accepted/0013-implementation-arc-rescoped.html">implementation arc</a>
 (proposal 0013, which supersedes proposal 0002). M4 made metadata production-durable behind
-the unchanged <code>MetadataStore</code> seam (<a href="/proposals/draft/0007-milestone-4-production-metadata-backend.html">0007</a>); <strong>M5</strong> stood up the internal
+the unchanged <code>MetadataStore</code> seam (<a href="/proposals/accepted/0007-milestone-4-production-metadata-backend.html">0007</a>); <strong>M5</strong> stood up the internal
 trust fabric — every internal RPC mutually authenticated under a provider CA,
 peers authorized by a SPIFFE-shaped identity (<a href="/adr/0036-internal-ca-step-ca-spire.html">ADR-0036</a>, <a href="/adr/0025-internal-service-to-service-trust.html">ADR-0025</a>).
 M6 adds the <strong>second load-bearing security tier</strong>: per-object <strong>envelope
@@ -448,7 +448,7 @@ cross-region key custody or KMS-region failover to drill.</p>
 <blockquote>
 <p><strong>Numbering note.</strong> This proposal uses the architecture <strong>realism ladder</strong> (Tier 0
 DST · Tier 1 software faults · Tier 2 single machine · Tier 3 multi-region),
-matching <a href="/architecture/10-quality-risks-glossary.html">§13.4</a>'s &quot;M6 — Tier 0–2 against a real KMS (OpenBao)&quot; and <a href="/proposals/draft/0007-milestone-4-production-metadata-backend.html">0007</a>.
+matching <a href="/architecture/10-quality-risks-glossary.html">§13.4</a>'s &quot;M6 — Tier 0–2 against a real KMS (OpenBao)&quot; and <a href="/proposals/accepted/0007-milestone-4-production-metadata-backend.html">0007</a>.
 The CI/code taxonomy uses a different &quot;Tier-1/Tier-2&quot; scheme; this document means
 the realism ladder throughout.</p>
 </blockquote>
@@ -714,7 +714,7 @@ operationalized (a periodic check, an alert) is an operational [OPEN].</li>
 <li><strong><code>encryption_scheme</code> activation as a <code>v1</code>-stamping trigger.</strong> M6's sustained
 real-KMS encrypted fault-injection run is a candidate trigger for stamping the
 on-disk format <code>v1</code> (spec §Versioning); recorded, not decided — consistent with
-<a href="/proposals/draft/0007-milestone-4-production-metadata-backend.html">0007</a>.</li>
+<a href="/proposals/accepted/0007-milestone-4-production-metadata-backend.html">0007</a>.</li>
 </ul>
 
     </article>

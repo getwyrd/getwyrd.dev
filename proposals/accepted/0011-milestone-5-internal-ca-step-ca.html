@@ -36,7 +36,7 @@
 <div class="wrap">
   <header class="doc-header">
     <p class="doc-class">Enhancement Proposal</p>
-    <p class="doc-meta">Status: draft · 27.06.2026</p>
+    <p class="doc-meta">Status: accepted · 27.06.2026</p>
   </header>
 </div>
 
@@ -51,7 +51,7 @@
 release to make the single-zone product <em>production-usable</em>, with the ★ release
 point moved to <strong>M8</strong>). <a href="/proposals/accepted/0005-milestone-3-custodians.html">M0–M4</a> built and hardened a single-zone object
 store that is erasure-coded (<a href="/proposals/accepted/0003-milestone-1-erasure-coding.html">0003</a>), networked (<a href="/proposals/accepted/0004-milestone-2-networked-d-servers.html">0004</a>), self-maintaining
-(<a href="/proposals/accepted/0005-milestone-3-custodians.html">0005</a>), and metadata-durable (<a href="/proposals/draft/0007-milestone-4-production-metadata-backend.html">0007</a>) — but <strong>every internal RPC on
+(<a href="/proposals/accepted/0005-milestone-3-custodians.html">0005</a>), and metadata-durable (<a href="/proposals/accepted/0007-milestone-4-production-metadata-backend.html">0007</a>) — but <strong>every internal RPC on
 that fabric is still plaintext</strong>: <code>chunkstore-grpc</code> builds tonic
 &quot;default-features only — no <code>tls</code>&quot; (<a href="/adr/0025-internal-service-to-service-trust.html">ADR-0025</a>; confirmed below — the root
 <code>Cargo.toml</code> declares <code>tonic = &quot;0.14&quot;</code> with no features table, and
