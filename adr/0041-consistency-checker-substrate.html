@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0041. Consistency-checker substrate: model the mutable metadata register, not the immutable data path — Wyrd</title>
+<meta name="description" content="ADR-0039 realized proposal 0005 §13.2&#x27;s Tier-1 consistency leg as an in-repo Rust">
+<meta property="og:title" content="0041. Consistency-checker substrate: model the mutable metadata register, not the immutable data path — Wyrd">
+<meta property="og:description" content="ADR-0039 realized proposal 0005 §13.2&#x27;s Tier-1 consistency leg as an in-repo Rust">
+<meta property="og:type" content="article">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@300;400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/assets/style.css">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#211e1a">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/"><svg class="mark" viewBox="0 0 48 48" aria-hidden="true"><polygon class="lz-outer" points="24,3 45,24 24,45 3,24"/><polygon class="lz-inner" points="24,14 34,24 24,34 14,24"/></svg>Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Proposed · 02.07.2026 12:00</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>0041. Consistency-checker substrate: model the mutable metadata register, not the immutable data path</h1>
+<h2>Context</h2>
+<p>ADR-0039 realized proposal 0005 §13.2's Tier-1 consistency leg as an in-repo Rust
+scenario over the custodian repair path, and <strong>deferred the literal, externally
+recognizable Jepsen/Elle credibility artifact to issue #329</strong>, &quot;blocked on substrate
+that can yield a non-vacuous, checkable history against Wyrd's actual model.&quot; This ADR
+records that substrate decision, which is what unblocks #329.</p>
+<p>The block was real but misframed. Eight iterations under #250 pointed a literal
+Clojure/Jepsen/Elle harness at Wyrd and produced only <strong>vacuous histories</strong>, and
+ADR-0039 drew the conclusion that Wyrd &quot;is an immutable, single-write-per-key object
+store&quot; for which &quot;the 'list' or 'register' has to be invented client-side, so the
+checker validates the harness's own bookkeeping.&quot; That is true of the layer those
+iterations observed — the <strong>chunk/fragment data path</strong> (<code>FragmentId → bytes</code>,
+content-addressed, written once by <code>put_fragment</code>, never mutated), which is also the
+layer ADR-0039's shipped Option-B scenario exercises over the repair path. A register
+or list-append checker (Elle, Knossos) presupposes a <strong>mutable, linearizable register</strong>:
+a key whose value is overwritten and read back over time. The immutable data path has
+no such key, so any history over it is vacuous.</p>
+<p>But Wyrd's consistency contract (ADR-0015) does not constrain the immutable data path.
+It constrains the <strong>metadata layer, which is mutable and already carries a genuine
+linearizable register in the shipped product</strong>:</p>
+<ul>
+<li><strong>Guarantee 2 — &quot;a file's writes are linearizable at its home zone; the commit point
+totally orders its versions.&quot;</strong> The file is the inode record keyed by <code>inode:&lt;id&gt;</code>,
+whose monotonic <code>version</code> is bumped under a full-value compare-and-set at the single
+commit point: <code>commit_overwrite</code> / <code>commit_chunk_map</code> write `version = prior.version
+<ul>
+<li>1<code>gated on</code>require(prior)<code>, and &quot;exactly one concurrent writer wins&quot; (a stale writer loses with </code>Conflict`). A key overwritten v1→v2→v3 and read back over time,
+with an atomic CAS linearization point — this is precisely the mutable register Elle
+needs, and it exists today.</li>
+</ul>
+</li>
+<li><strong>Guarantee 1 — &quot;namespace operations are linearizable globally.&quot;</strong> A directory's
+entry set (<code>dirent:&lt;parent&gt;/&lt;name&gt;</code>) is mutated by create / delete / rename (rename
+is a single dirent mutation); a directory is a mutable list/set.</li>
+<li><strong>Guarantee 3 — &quot;per-session read-your-writes and monotonic reads.&quot;</strong> A session's
+view of a file's current version, and the reserved <code>meta:version</code> high-water mark
+(the Option-C version fence), are session-scoped orderings over mutable values.</li>
+</ul>
+<p>So the &quot;substrate decision&quot; is a <strong>targeting decision</strong>, not a missing capability: aim
+the checker at the mutable metadata register the contract actually governs, not at the
+single-write data path the Option-B scenario already covers.</p>
+<h2>Decision</h2>
+<p>We will build #329's literal consistency artifact against the <strong>mutable metadata
+observables that ADR-0015 constrains</strong>, modelling them with standard checker models:</p>
+<ol>
+<li><strong>A file is a read-write register.</strong> The primary, load-bearing model: a key is an
+object path / inode; a write is an overwriting PUT that bumps the inode <code>version</code>
+under the commit-point CAS; a read is a GET returning the current version and value.
+The workload drives <strong>concurrent overwrites and reads of a small shared key set</strong>
+under the fault nemesis, and the recorded history is checked for linearizability of
+the commit point (guarantee 2) — read-after-commit, no torn or stale reads,
+exactly-one-writer-wins, and no version regression. This is the non-vacuous history
+#329 requires; it MUST be modelled on the metadata register, never on the immutable
+fragment layer.</li>
+<li><strong>A directory is a list (list-append) / set.</strong> The secondary model: create appends a
+named entry, delete removes it, rename moves it; a directory read returns the entry
+set. Checked for namespace linearizability (guarantee 1) — no lost create, no
+resurrected delete.</li>
+<li><strong>Sessions carry read-your-writes and monotonic-read checks</strong> over the register and
+the <code>meta:version</code> high-water mark (guarantee 3).</li>
+</ol>
+<p>The verdict engine SHOULD be <strong>Elle</strong>, or an equivalent externally recognized checker —
+the artifact's value is external recognizability, so a recognized checker is preferred
+over a bespoke one. The workload driver MAY be Rust emitting a checker-compatible
+history rather than a full Clojure/Jepsen stack, provided the checker itself is the
+recognized one; the choice of literal-Jepsen-vs-Rust-driver is left to #329's
+implementation. Whatever the toolchain, the checker and any JVM/Clojure dependency
+<strong>MUST run only in a privileged off-Check job and MUST NOT enter <code>cargo xtask ci</code></strong>
+(ADR-0016); the unprivileged merge gate stays pure-Rust.</p>
+<p>We reject: modelling the immutable chunk/fragment data path as the checker's register
+(the vacuous-history mistake of the #250 iterations); and inventing a client-side
+&quot;list&quot; or &quot;register&quot; not backed by a real mutable key in the product (which validates
+the harness's bookkeeping, not Wyrd's contract).</p>
+<h2>Consequences</h2>
+<p>This unblocks #329: the substrate exists in the shipped product, so the artifact is now
+a build task, not a research question. It complements ADR-0039 rather than superseding
+it — the two observe different layers on purpose. Option B (ADR-0039) asserts
+commit-point atomicity, exactly-once convergence, and byte-identical decode over the
+<strong>immutable repair path</strong> with scripted oracles; this ADR aims a <strong>randomized,
+checker-validated</strong> workload at the <strong>mutable commit-point register</strong>. Together they
+cover the durability side (repair is atomic and loses nothing) and the consistency side
+(concurrent writers linearize) of ADR-0015.</p>
+<p>Two dependencies follow, and they place the artifact at M4, not earlier. First, a
+<strong>networked client observable</strong>: there is no client-facing object API today (the gateway
+is in-process, only the fragment-level gRPC <code>ChunkStore</code> is networked), so the harness
+needs the S3 HTTP wire surface (#364) — or a thin client-facing shim — to drive
+overwriting PUT / GET / list / rename with client-observed real-time order. Second, a
+<strong>real cluster and partition nemesis</strong>: the M4 <code>deploy/</code> cluster and the <code>tc netem</code> /
+<code>iptables</code> partition + clock-skew + process-pause nemesis that M4.6 (#257) already
+scopes. #329 therefore builds on #257's cluster and nemesis, adding the register /
+list-append models, the workload, and the recognized checker; the two are sequenced
+(nemesis first, then the checked artifact), not merged.</p>
+<p>Scope is single-zone for M4: the artifact validates guarantee 2's home-zone
+linearizability. The cross-zone strengthening — home-zone failover surviving via the
+<code>meta:version</code> high-water mark, the Option-C fence — is a later artifact at M10/M11, and
+the register model here is exactly what extends to it. A bug the checker finds is
+minimized to a seed and promoted into DST as a permanent regression (ADR-0009), the
+same discipline as every other tier. The clock-skew nemesis interacts with ADR-0024's
+clock-trust posture and with the checker's real-time order, which #329 must account for.</p>
+<p>This commits the project to a public consistency artifact modelled on the metadata
+register; reversing it would mean either accepting a bespoke non-recognized checker or
+conceding that Wyrd has no non-vacuous consistency history — the latter now known to be
+false. This ADR refines the deferral recorded in ADR-0039 and is the substrate decision
+named in #329's definition of done; it references ADR-0015 (the contract checked),
+ADR-0016 (privileged tiers out of <code>xtask ci</code>), and ADR-0009 (bug-finding run →
+regression).</p>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>
