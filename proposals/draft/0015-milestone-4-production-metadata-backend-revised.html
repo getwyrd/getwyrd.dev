@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proposal: Milestone 4 — production metadata backend (TiKV) (implementation plan, revised) — Wyrd</title>
+<meta name="description" content="This draft proposes to supersede 0007">
+<meta property="og:title" content="Proposal: Milestone 4 — production metadata backend (TiKV) (implementation plan, revised) — Wyrd">
+<meta property="og:description" content="This draft proposes to supersede 0007">
+<meta property="og:type" content="article">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@300;400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/assets/style.css">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#211e1a">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/"><svg class="mark" viewBox="0 0 48 48" aria-hidden="true"><polygon class="lz-outer" points="24,3 45,24 24,45 3,24"/><polygon class="lz-inner" points="24,14 34,24 24,34 14,24"/></svg>Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Enhancement Proposal</p>
+    <p class="doc-meta">Status: draft · 02.07.2026</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>Proposal: Milestone 4 — production metadata backend (TiKV) (implementation plan, revised)</h1>
+<blockquote>
+<p><strong>Proposed revision of <a href="/proposals/accepted/0007-milestone-4-production-metadata-backend.html">proposal 0007</a></strong>
+(2026-07-02) — a <strong>draft</strong> that, <em>on acceptance</em>, will supersede the original M4 plan. <strong>Until it is
+accepted, 0007 remains the plan of record and governs; this document does <em>not</em> yet govern.</strong>
+Implementers should treat its scope changes as <strong>proposed, not authoritative</strong> until 0015 is
+accepted and 0007 is marked superseded in the index (ADR-0037/0038). 0007 is retained unchanged as
+a frozen record. The changes are <strong>review-pass refinements</strong> — a deployment-scope correction plus
+risk/anchor hygiene — not a re-plan of the metadata work (the TiKV backend, its transactional
+mapping, and the DST discipline carry over unchanged). See &quot;Changes from proposal 0007&quot; below.</p>
+</blockquote>
+<blockquote>
+<p>The implementation plan for the fourth step of the
+<a href="/proposals/accepted/0013-implementation-arc-rescoped.html">implementation arc</a> (proposal 0013, which supersedes 0002). <a href="/proposals/accepted/0005-milestone-3-custodians.html">Proposals 0001–0005</a> built a
+single-zone object store that is erasure-coded (<a href="/proposals/accepted/0003-milestone-1-erasure-coding.html">0003</a>), networked
+(<a href="/proposals/accepted/0004-milestone-2-networked-d-servers.html">0004</a>), and self-maintaining (<a href="/proposals/accepted/0005-milestone-3-custodians.html">0005</a>) — but it runs entirely on the
+<strong>embedded redb</strong> metadata backend, which by decision carries <strong>no production
+durability promise</strong> (<a href="/adr/0014-single-binary-dev-only.html">ADR-0014</a>: redb is &quot;for development and evaluation
+only&quot;). M4 swaps that backend for <strong>distributed TiKV behind the <em>unchanged</em>
+<code>MetadataStore</code> trait</strong>, and in doing so <strong>proves the central pluggability
+claim</strong>: that the trait abstraction did not leak — that a real distributed
+metadata store is a <strong>composition change in <code>server</code>, not a refactor</strong>
+(<a href="/adr/0008-tikv-metadata-and-pluggable-backends.html">ADR-0008</a>; arc M4). It records <em>how</em> M4 is built; the <em>why</em> of the
+pluggable-backend design lives in the architecture and the ADRs it references
+(<a href="/architecture/05-building-block-view.html">§5</a>, <a href="/adr/0008-tikv-metadata-and-pluggable-backends.html">ADR-0008</a>, <a href="/adr/0010-pluggable-deployment-substrate.html">ADR-0010</a>, <a href="/adr/0016-monorepo-and-crate-structure.html">ADR-0016</a>). M4 is
+<strong>implementation-first behind an already-Accepted ADR</strong> (<a href="/adr/0002-spec-first-on-disk-format-only.html">ADR-0002</a>): the
+TiKV backend and its wire/transaction mapping are discovered by building them —
+<strong>no new spec, and — unlike M3 — no ADR ratification, is required</strong> (all four
+load-bearing ADRs, 0008/0010/0014/0016, are already Accepted; M4 is the first
+<em>implementation</em> of ADR-0008's TiKV half, not a status flip).</p>
+</blockquote>
+<h2>Changes from proposal 0007</h2>
+<p>This draft <strong>proposes to supersede</strong> <a href="/proposals/accepted/0007-milestone-4-production-metadata-backend.html">0007</a>
+(on acceptance) with review-pass refinements; the metadata swap, the TiKV transactional mapping, and
+the DST discipline carry over unchanged. What differs:</p>
+<ul>
+<li><strong>Deployment scope (the material change).</strong> 0007's &quot;peers discovered through L5&quot; deployment
+definition-of-done silently depended on components M4 excludes and that do not exist — a
+cross-process <strong>etcd-backed <code>Coordination</code></strong> backend, plus <strong>runnable gateway/custodian process
+roles</strong> (etcd discovery was deferred in M2, <a href="/proposals/accepted/0004-milestone-2-networked-d-servers.html">0004</a>; the custodian binary was deferred in M3,
+<a href="/proposals/accepted/0005-milestone-3-custodians.html">0005</a>; only the process-local <code>coordination-mem</code> exists). This revision adds a <strong>Deployment
+prerequisite</strong> note naming that as an explicit prerequisite (etcd is Coordination's ADR-0006
+<em>second implementation</em>, exactly as TiKV is <code>MetadataStore</code>'s), reconciles the &quot;Coordination is
+untouched&quot; line (it means the <em>metadata swap</em> touches neither the Coordination trait nor its
+consumers — not that a distributed backend exists), and <strong>gates slice 5 and the deploy graduation
+criterion</strong> on it (static endpoints until the prerequisite lands).</li>
+<li><strong><code>tikv-client</code> maturity risk named.</strong> The production-durability tier rests on the pre-1.0 (0.4.x)
+Rust client; this revision states the maintenance/supply-chain risk and adds an evaluation gate +
+fallback stance before the dependency is committed.</li>
+<li><strong>Large-directory <code>scan</code> guard.</strong> Promoted from open question to a known limitation with an
+interim paging cap — a sharper cliff on the network backend than on redb.</li>
+<li><strong>Tier-2 vs slice-5 clarified.</strong> Tier-2 (single machine, I/O honesty) is a distinct run from
+slice 5's multi-node topology, not one box standing in for the production shape.</li>
+<li><strong>Citation hygiene.</strong> Three drifted line-number anchors replaced with symbol references.</li>
+</ul>
+<h2>Motivation</h2>
+<p>M4 proves that <strong>pluggability is real — the <code>MetadataStore</code> trait survives
+swapping embedded redb for distributed TiKV under load</strong> (<a href="/architecture/09-build-order-and-roadmap.html">§9</a>; arc M4). M0
+retired atomic-commit-across-paths; M1 retired the coding math; M2 retired the
+networking; M3 retired the background-repair correctness risk. Each of those was
+de-risked <strong>on the embedded backend</strong>, where atomicity is cheap because the store
+is <strong>single-process</strong>: redb gives multi-key atomicity &quot;directly … because redb
+serializes write transactions&quot; (<code>crates/metadata-redb/src/lib.rs:6-10</code>). M4 opens
+the last load-bearing Step-2 risk: that this cheapness was <strong>load-bearing</strong> — that
+the system's correctness quietly depended on an embedded store's serialized
+transactions, and that a genuinely distributed backend (concurrent, contended,
+partitionable) would require a <strong>refactor of the consumers</strong> rather than a new
+implementation behind the seam.</p>
+<p>The arc's ordering principle is <strong>risk retired, not features delivered</strong>. M4's
+risk is exactly one proposition, and it is falsifiable:</p>
+<ul>
+<li><strong>The seam holds, or it does not.</strong> The whole point of choosing TiKV over a
+single-row-atomic store (HBase) was <strong>native multi-key transactions</strong>, so the
+inode + dirent atomic create needs <strong>no intent-log gymnastics</strong> — &quot;the exact
+contortion Tectonic's authors describe regretting&quot; (<a href="/adr/0008-tikv-metadata-and-pluggable-backends.html">ADR-0008</a>). If the
+<code>MetadataStore</code> trait leaked, the property that distinguishes Wyrd from
+Tectonic/HBase fails <strong>precisely here</strong>, at the first real distributed commit.
+M4 is the empirical test of <a href="/adr/0008-tikv-metadata-and-pluggable-backends.html">ADR-0008</a>'s own stated consequence: <em>&quot;backend
+choice becomes a composition concern in <code>server</code>, not a refactor.&quot;</em></li>
+</ul>
+<p>M4 is a <strong>soft stopping point</strong> that completes the single-zone <strong>data plane</strong>: the
+result — a self-hostable, EC-efficient, atomically-consistent single-zone object
+store, and after M3/M4 <strong>self-maintaining</strong> and <strong>production-metadata-durable</strong> —
+is feature-complete but <strong>not yet the released product</strong>. In the rescoped arc
+(<a href="/proposals/accepted/0013-implementation-arc-rescoped.html">p2</a>) the <strong>★ Step-2 release point moved to M8</strong> (the secured, encrypted,
+operable single-zone product, &quot;usable within a single datacenter&quot;); M5–M8 add the
+trust fabric, encryption, single-DC failover, and the operator surface that make
+it deployable. That repositioning splits M4's old &quot;release&quot; consequences in two:
+(1) <strong>production durability for metadata begins here</strong> — redb stays the dev/eval
+backend, TiKV becomes the production backend (<a href="/adr/0014-single-binary-dev-only.html">ADR-0014</a>) — and the
+<strong>internal</strong> <code>MetadataStore</code> contract hardens here, pinned by its two
+implementations; but (2) the <strong>public release and backward-compatibility
+commitment moves to M8</strong> — before the M8 release there is still &quot;no public
+API/deployments … nothing to stay compatible with&quot; (<a href="/proposals/accepted/0013-implementation-arc-rescoped.html">p2</a>). So M4 incurs the
+<em>internal</em> trait-stability duty (the trait is now a real contract with two
+backends to carry) without yet incurring the <em>public</em> API/deployment-compat duty
+that the release point M8 brings.</p>
+<p>A second, quieter motivation: M4 is the <strong>second implementation</strong> of the
+<code>MetadataStore</code> trait. Wyrd's discipline is that a trait's semantics are &quot;pinned
+by two implementations&quot; before an embedded backend is trusted under DST
+(<a href="/adr/0006-etcd-for-coordination.html">ADR-0006</a>; echoed for the namespace store in <a href="/adr/0020-global-namespace-store.html">ADR-0020</a>). redb was the
+first; TiKV is the second. So M4 does not merely <em>use</em> the trait — it <strong>pins and
+hardens</strong> it, surfacing any semantics that were accidentally redb-shaped.</p>
+<h2>Design</h2>
+<h3>Scope boundary</h3>
+<p><strong>In scope</strong> — exactly what retires the pluggability risk and makes the metadata
+layer production-durable:</p>
+<ul>
+<li>A new <strong><code>metadata-tikv</code> crate</strong> — a sibling of <code>metadata-redb</code>, depending <strong>only
+on <code>traits</code></strong> (plus <code>tikv-client</code> and <code>tokio</code>), implementing <code>MetadataStore</code>
+over TiKV's <strong>transactional</strong> API. The naming convention (<code>metadata-&lt;backend&gt;</code>)
+and the dependency rule (&quot;implementations … depend on the <code>traits</code> crate, never
+on each other's concretes,&quot; <a href="/adr/0016-monorepo-and-crate-structure.html">ADR-0016</a>) are already established.</li>
+<li><strong>The atomic conditional commit</strong> — mapping <code>WriteBatch { preconditions, puts, deletes }</code> onto <strong>one TiKV transaction</strong> that checks every precondition and
+applies every put/delete <strong>all-or-nothing</strong>, returning <code>CommitOutcome::Conflict</code>
+(an <code>Ok</code>, not an <code>Err</code>) on a failed precondition and reserving <code>Err</code> for genuine
+backend faults (<code>crates/traits/src/lib.rs:182-207</code>). This is the heart of M4.</li>
+<li><strong>Native prefix scan</strong> — replacing redb's whole-table-filter shortcut
+(<code>metadata-redb/src/lib.rs:58-70</code>) with a TiKV <strong>range scan</strong> <code>[prefix, prefix_upper)</code>, paged internally and materialized into the trait's
+<code>Vec&lt;(Vec&lt;u8&gt;, Bytes)&gt;</code> (order stays unspecified, <a href="/architecture/05-building-block-view.html">§traits</a>).</li>
+<li><strong>Backend selection in <code>server</code></strong> — parameterizing the metadata-handling
+helpers in <code>crates/server/src/cli.rs</code> (today hard-coded to <code>RedbMetadataStore</code>)
+over <code>M: MetadataStore</code>, and adding the <strong>redb | tikv</strong> selector by config. This
+is the <strong>composition change</strong> the milestone exists to demonstrate, confined to
+the one crate <a href="/adr/0016-monorepo-and-crate-structure.html">ADR-0016</a> designates as the place concretes are wired.</li>
+<li><strong>The single-zone production deployment</strong> — TiKV (small) + its PD cluster
+(TiKV's own coordinator) + a 3-node etcd ensemble for L5 Coordination +
+local-disk D servers (<a href="/architecture/07-deployment-view.html">§7.1</a>), brought up from <strong><code>deploy/</code>
+artifacts outside the Rust workspace</strong> (<a href="/adr/0010-pluggable-deployment-substrate.html">ADR-0010</a>), with peers discovered
+through <strong>L5 coordination</strong> and <strong>no crate coupling to any orchestrator API</strong>.</li>
+<li><strong>The consistency-contract demonstration</strong> — proving the <strong>single-zone subset</strong>
+of the five-clause contract (<a href="/adr/0015-consistency-contract.html">ADR-0015</a>, <a href="/architecture/08-crosscutting-concepts.html">§8.1</a>) holds under the
+distributed store: a file's writes <strong>linearizable at the commit point</strong> (clause
+2), and <strong>multi-key atomic directory operations</strong> (create / rename / delete)
+all-or-nothing under real contention — the verbatim M4 definition of done.</li>
+<li><strong>The test surface that &quot;under load&quot; demands</strong> — <strong>Tier-0 DST stays on the
+deterministic backend</strong> (it never moves to TiKV — that would violate
+<a href="/adr/0009-deterministic-simulation-testing.html">ADR-0009</a>); the TiKV backend is validated at <strong>Tier-1</strong> (real cluster under
+software-defined faults + a <strong>Jepsen</strong> consistency campaign) and <strong>Tier-2</strong>
+(single real machine, real fsync/NVMe), per <a href="/architecture/10-quality-risks-glossary.html">§13.4</a>'s &quot;M4 — Tier 0–2
+against real TiKV.&quot; Every real-world discovery is promoted back to a <strong>seeded
+DST regression</strong> where the trait exposes it (<a href="/adr/0009-deterministic-simulation-testing.html">ADR-0009</a>).</li>
+<li><strong>Carrying the reserved seats forward intact</strong> — the <code>meta:version</code> consistency
+fence (<a href="/adr/0015-consistency-contract.html">ADR-0015</a> Option C) and the append/CAS/watch hooks (<a href="/adr/0007-reserve-append-cas-watch.html">ADR-0007</a>)
+must remain expressible on TiKV; M4 does <strong>not build</strong> them, but must not
+<strong>foreclose</strong> them.</li>
+</ul>
+<p><strong>Out of scope</strong> — deferred to the milestone that actually retires its risk, the
+seats kept open where retrofit is expensive:</p>
+<ul>
+<li><strong>The global namespace store (L2) and cross-region linearizability</strong> —
+<a href="/adr/0020-global-namespace-store.html">ADR-0020</a> (NamespaceStore, default TiDB) is <strong>status: Proposed</strong> and is an
+<strong>M10</strong> concern. M4 is <strong>strictly the zonal L4 <code>MetadataStore</code></strong> (<a href="/adr/0008-tikv-metadata-and-pluggable-backends.html">ADR-0008</a>),
+linearizable <strong>within one zone</strong>. In a single-zone deployment the namespace
+shares the same metadata store as L4 — <a href="/adr/0020-global-namespace-store.html">ADR-0020</a>:32 pins it to &quot;the same
+embedded redb as L4 in the single-binary and small profiles,&quot; with TiDB
+appearing only at the provider-fleet tier — so global linearizability (clause 1)
+<strong>collapses into</strong> zonal linearizability and M4 neither builds nor ratifies the
+L2 split. <code>NamespaceStore</code> has <strong>zero references in <code>crates/</code></strong> today; M4 scopes
+to <code>MetadataStore</code> and flags NamespaceStore-on-the-production-backend separately
+(see Open questions).</li>
+<li><strong>Cross-zone replication, replication-lag-bounded reads, sync-N-zone opt-in</strong>
+(consistency clauses 4–5) → <strong>M9</strong> (L3). There is <strong>no second zone</strong> at M4 to
+measure lag against or replicate to; deferring is explicit, not silent.</li>
+<li><strong>The version-high-water-mark <em>failover</em> behavior</strong> (<a href="/architecture/08-crosscutting-concepts.html">§8</a>; <a href="/adr/0015-consistency-contract.html">ADR-0015</a>)
+→ <strong>M11</strong>. M4 <strong>preserves the mechanism</strong> (the per-file version is bumped in the
+atomic commit) but does not exercise it under zone loss.</li>
+<li><strong><code>RocksDB</code> as a third backend</strong> — <a href="/adr/0008-tikv-metadata-and-pluggable-backends.html">ADR-0008</a> keeps it &quot;a fallback behind the
+trait,&quot; not a deliverable. M4 builds <strong>only</strong> the TiKV backend.</li>
+<li><strong>The per-zone chunk durability scheme</strong> (none / replication(n) / rs(k,m)) —
+<a href="/adr/0008-tikv-metadata-and-pluggable-backends.html">ADR-0008</a> bundles this with the metadata-backend decision, but it was
+exercised by M1 (EC) and M3 (custodians). <strong>M4 owns only the metadata-backend
+half</strong>; it re-opens no durability-scheme decision.</li>
+<li><strong><code>watch</code> / change-feed</strong> (<a href="/adr/0031-watch-and-change-feed-contract.html">ADR-0031</a>, Proposed) — M4 keeps the seat
+reservable, builds nothing.</li>
+<li><strong>A new paginated/streaming <code>scan</code> method</strong> — would be a <strong>trait change</strong>, out of
+the &quot;unchanged trait&quot; requirement (see Open questions).</li>
+</ul>
+<h3>What carries over from M0–M3, unchanged</h3>
+<p>M4 adds a <em>backend behind the seam</em>; it touches <strong>neither the trait nor the
+consumers above it</strong>. The audit (below) confirms the following carry over
+verbatim:</p>
+<ul>
+<li><strong>The <code>MetadataStore</code> trait</strong> — exactly three async methods, <code>get</code> / <code>scan</code> /
+<code>commit(WriteBatch)</code>, no associated types, object-safe, <code>Send + Sync</code>
+(<code>trait MetadataStore</code> in <code>crates/traits/src/lib.rs</code>). Its doc-comment already names the M4 swap
+as the motivating example: filesystem semantics live &quot;<em>through</em> this primitive
+by the metadata model in <code>core</code>, never baked into the trait … makes a backend
+swap (redb → TiKV) a composition change&quot; (<code>lib.rs:163-172</code>). M4 must keep this
+trait <strong>byte-for-byte unchanged</strong>.</li>
+<li><strong>The metadata model in <code>core</code></strong> — <code>inode:&lt;id&gt;</code> / <code>dirent:&lt;parent&gt;/&lt;name&gt;</code> /
+<code>pending:&lt;chunk_id&gt;</code> / <code>meta:version</code>, all opaque-bytes keys with JSON values,
+and the <strong>per-inode version CAS</strong> expressed as a <strong>full-value precondition</strong>:
+<code>commit_chunk_map</code> does <code>require(inode_key, encode(prior)).put(inode_key, encode(next))</code> with <code>version = prior.version + 1</code>
+(<code>crates/core/src/metadata.rs</code>). TiKV stores these bytes verbatim; it never
+interprets a key or value.</li>
+<li><strong>The commit point</strong> — one <code>MetadataStore::commit</code> of a version-conditional
+<code>WriteBatch</code> (<a href="/architecture/05-building-block-view.html">§5</a>, <a href="/architecture/06-runtime-view.html">§6.1</a>); write, repair (<a href="/architecture/06-runtime-view.html">§6.3</a>), and delete
+(<a href="/architecture/06-runtime-view.html">§6.7</a>) all reuse it. M4 changes <strong>where</strong> that commit lands, not <strong>what</strong>
+it means.</li>
+<li><strong>Placement records (M3)</strong> — embedded in the inode value
+(<code>ChunkRef.placement: Vec&lt;DServerId&gt;</code>, <code>#[serde(default)]</code>,
+<code>core/src/metadata.rs</code>), <strong>not</strong> a separate keyspace. They ride inside the opaque
+inode JSON TiKV already stores; M4 adds <strong>no keyspace</strong> and gets pre-M3 backward
+decode for free — provided it never re-serializes the value (which would break
+the byte-exact CAS — see below).</li>
+<li><strong>The custodian plane (M3)</strong> — GC, scrub, reconstruction, rebalance all operate
+over <code>&amp;dyn MetadataStore</code> / <code>&amp;impl MetadataStore</code> and carry <strong>zero redb
+dependency</strong> (<code>crates/custodian/</code>). M3 was deliberately built to leave the trait
+unchanged so &quot;the M4 swap stays a composition change&quot; (<a href="/proposals/accepted/0005-milestone-3-custodians.html">0005</a>); M4 confirms
+the custodians' atomic location updates hold on TiKV.</li>
+<li><strong>Coordination (L5) and fencing</strong> — <code>elect_leader</code> / <code>Leadership</code> /
+<code>FencingToken</code> are a <strong>separate trait and seam</strong> (<code>traits/src/lib.rs:258-337</code>).
+The <strong>metadata swap touches neither the Coordination trait nor its consumers</strong> —
+that is what &quot;M4 swaps the metadata backend only&quot; means. It is <strong>not</strong> a claim that
+a distributed Coordination <em>backend</em> already exists: today only the process-local
+<code>coordination-mem</code> is implemented, so cross-process L5 discovery does not yet work.
+The multi-node deployment goal below therefore carries an <strong>explicit prerequisite</strong>
+(an etcd-backed <code>Coordination</code> + runnable gateway/custodian roles) — see the
+<em>Deployment prerequisite</em> note under Deployment. M4's <em>metadata</em> work is
+independent of it.</li>
+<li><strong>The EC engine, the gRPC <code>ChunkStore</code>, and the any-<em>k</em> read path</strong> (<a href="/proposals/accepted/0003-milestone-1-erasure-coding.html">0003</a>,
+<a href="/proposals/accepted/0004-milestone-2-networked-d-servers.html">0004</a>) — none cross the <code>MetadataStore</code> seam; all unchanged.</li>
+</ul>
+<h3>The <code>MetadataStore</code> contract M4 must honor verbatim</h3>
+<p>The contract is small and the whole milestone rests on reproducing it exactly. In
+full (<code>trait MetadataStore</code> + <code>WriteBatch</code>/<code>Precondition</code>/<code>CommitOutcome</code> in <code>crates/traits/src/lib.rs</code>):</p>
+<pre><code class="language-rust">async fn get(&amp;self, key: &amp;[u8]) -&gt; Result&lt;Option&lt;Bytes&gt;&gt;;          // point read; None = absent
+async fn scan(&amp;self, prefix: &amp;[u8]) -&gt; Result&lt;Vec&lt;(Vec&lt;u8&gt;, Bytes)&gt;&gt;; // prefix scan; order UNSPECIFIED
+async fn commit(&amp;self, batch: WriteBatch) -&gt; Result&lt;CommitOutcome&gt;;   // the atomic commit point
+
+// WriteBatch { preconditions: Vec&lt;Precondition&gt;, puts: Vec&lt;(K,V)&gt;, deletes: Vec&lt;K&gt; }
+// Precondition { key, expected: Option&lt;Bytes&gt; }   // Some = require exact value; None = require absent
+// CommitOutcome { Committed, Conflict }            // Conflict is Ok, NOT Err
+</code></pre>
+<p>Four properties are load-bearing and each is a porting obligation:</p>
+<ol>
+<li><strong>All-or-nothing across keys.</strong> &quot;Either every precondition holds and every
+put/delete lands, or nothing changes&quot; (<code>lib.rs:182-186</code>). Preconditions and
+mutations must execute in <strong>one</strong> TiKV transaction spanning all keys — never
+per-key operations or separate raw calls.</li>
+<li><strong>CAS is value-equality, not an engine timestamp.</strong> <code>Precondition.expected</code>
+is <code>Some(bytes)</code> (exact match) or <code>None</code> (require-absent). The &quot;version&quot; is an
+<strong>application-level counter inside the JSON value</strong>, so CAS is &quot;the whole prior
+record's bytes equal <code>expected</code>,&quot; checked by <strong>reading the key inside the
+txn</strong>. Any TiKV-side value normalization (re-serialization, recompression) that
+changes a byte would silently turn <strong>every</strong> CAS into a spurious <code>Conflict</code>; M4
+must store values <strong>byte-identically</strong>.</li>
+<li><strong><code>Conflict</code> is an <code>Ok</code>, distinct from <code>Err</code>.</strong> A failed precondition is
+<code>Ok(CommitOutcome::Conflict)</code> &quot;so a stale writer is rejected distinguishably
+from a backend fault&quot; (<code>lib.rs:184-186</code>). There is <strong>no</strong> <code>Conflict</code> error
+variant — the trait error channel is a boxed <code>BoxError</code> reserved for faults
+(<code>lib.rs:56-61</code>). This is the one subtle behavioral contract beyond raw KV, and
+the most error-prone part of the port (see the conflict-classification rule
+below).</li>
+<li><strong><code>scan</code> order is unspecified, results are materialized.</strong> Callers must not —
+and, per the audit, <strong>do not</strong> — rely on order. M4 may return TiKV's naturally
+key-ordered range, but must page through it and collect into the owned <code>Vec</code>.</li>
+</ol>
+<h3>Mapping the contract onto TiKV (the transactional translation)</h3>
+<p>TiKV's transactional API supports the contract cleanly, with <strong>one mandatory
+implementation rule</strong> and <strong>one semantic translation</strong>. (Verified against
+<a href="http://tikv.org">tikv.org</a> and the <code>tikv-client</code> Rust crate — <code>tikv/client-rust</code>, current 0.4.x;
+pin the exact version in <code>Cargo.toml</code> and reconfirm the locking-read and
+write-conflict signatures at build time — see Open questions.)</p>
+<ul>
+<li><strong>The primitive.</strong> <code>TransactionClient::begin_optimistic()</code> /
+<code>begin_pessimistic()</code> returns a <code>Transaction</code> exposing <code>get</code>, <code>get_for_update</code>
+(a <strong>locking</strong> read), <code>scan</code>, <code>key_exists</code>, <code>put</code>, <code>insert</code>, <code>delete</code>,
+<code>commit</code>, <code>rollback</code>. The model is <strong>Google Percolator</strong> two-phase commit
+(prewrite-locks-then-commit), coordinated by the <strong>PD timestamp oracle</strong>, giving
+<strong>snapshot isolation</strong>; the commit point's clause-2 linearizability rests on the
+<strong>locking-read rule below</strong> (read-only precondition keys taken with
+<code>get_for_update</code>), not on SI alone. Transactions span <strong>multiple keys across
+multiple Raft regions natively</strong> — exactly the property <a href="/adr/0008-tikv-metadata-and-pluggable-backends.html">ADR-0008</a> cited.</li>
+<li><strong>The mapping.</strong> <code>commit(WriteBatch)</code> becomes: <em>begin txn → for each
+precondition, read the key <strong>inside</strong> the txn and byte-compare against <code>expected</code>
+(or assert absence for <code>None</code>); on any mismatch, <strong>roll back</strong> and return
+<code>Ok(Conflict)</code> with zero side effects; otherwise issue all <code>put</code>/<code>delete</code>s and
+<strong>2PC-commit</strong>.</em> Multi-key preconditions and multi-key mutations all land in the
+one transaction.</li>
+<li><strong>The mandatory rule — lock read-only precondition keys.</strong> TiKV snapshot
+isolation detects conflicts only on keys a transaction <strong>writes</strong>; a key it only
+<strong>reads</strong> is not conflict-checked (classic write-skew). A <code>Precondition</code> whose
+key is <strong>also</strong> in <code>puts</code>/<code>deletes</code> (e.g. <code>commit_chunk_map</code>'s <code>require</code>+<code>put</code>
+on the same <code>inode_key</code>) is safe even in optimistic mode. But a precondition on
+a key the batch <strong>only reads</strong> — possible in the general <code>WriteBatch</code>, and in the
+<strong><code>rename</code></strong> pattern (the <code>get</code> happens <em>outside</em> the txn; correctness rests
+entirely on the commit's <code>require</code> re-pinning that value atomically) — is <strong>not</strong>
+protected by optimistic SI alone. M4 must therefore read <strong>every</strong> precondition
+key with <strong><code>get_for_update</code></strong> (a locking read), and SHOULD default to
+<strong><code>begin_pessimistic</code></strong>, trading some throughput for the atomicity the trait
+demands. Benchmark the pessimistic-locking cost against expected metadata
+contention.</li>
+<li><strong>The semantic translation — two conflict signals, one outcome, faults stay
+faults.</strong> Both (a) an M4-detected precondition mismatch and (b) a <strong>TiKV
+write-write race</strong> (surfaced as <code>KeyError::WriteConflict</code> from <code>commit</code>) must
+fold into <code>Ok(CommitOutcome::Conflict)</code> — a lost race <strong>is</strong> the trait's
+&quot;conflict.&quot; A write-conflict must <strong>not</strong> be propagated as <code>Err</code> and must <strong>not</strong>
+be blindly retried at this layer. Everything else — network errors,
+region-unavailable, PD timeouts, lock-resolution/deadlock — is a genuine fault
+and stays in <code>Err(BoxError)</code>. Getting this partition exactly right is the
+single most delicate piece of the port.</li>
+<li><strong>Do not reach for the raw API.</strong> <code>RawClient::compare_and_swap</code> is <strong>single-key
+only</strong> and cannot be mixed with the transactional API on the same database. The
+multi-key version-CAS <strong>must</strong> be the transactional read-check-write above.</li>
+</ul>
+<h3>Composition, not refactor — the thesis, with the honest count</h3>
+<p>The milestone's claim is that the swap is &quot;a <code>server</code>-crate composition change,
+not a refactor&quot; (arc M4). An audit of every <code>MetadataStore</code> consumer
+(<code>crates/core</code>, <code>crates/custodian</code>, <code>crates/server</code>) <strong>confirms the thesis</strong> — and
+states its honest size rather than overselling it:</p>
+<ul>
+<li><strong><code>core</code> carries zero production redb dependency.</strong> Its metadata model, write
+path, read path, and repair queue are generic over <code>&amp;impl/&amp;dyn MetadataStore</code>
+and import only <code>wyrd_traits</code>. <code>wyrd-metadata-redb</code> appears in <code>core/Cargo.toml</code>
+<strong>only under <code>[dev-dependencies]</code></strong> (one restart-regression test). No change for
+M4.</li>
+<li><strong><code>custodian</code> carries zero redb dependency</strong>, production or dev
+(<code>custodian/Cargo.toml</code>). The L4 maintenance plane needs <strong>no change</strong> for TiKV.</li>
+<li><strong>The <code>Gateway</code> is generic</strong> — <code>Gateway&lt;M, C, Co&gt; where M: MetadataStore</code>,
+holding <code>meta: M</code> by value, handling results purely through the <code>CommitOutcome</code>
+enum (<code>server/src/lib.rs</code>). Backend selection is &quot;pass a different concrete,&quot; not
+a <code>dyn</code>/feature/config reach-through.</li>
+<li><strong>No consumer relies on redb's read-snapshot isolation across calls</strong>, and <strong>no
+consumer relies on <code>scan</code> order</strong> — the &quot;never a hybrid version&quot; read guarantee
+rests on a <strong>single atomic inode <code>get</code></strong> plus chunk immutability, not on a
+read-transaction spanning multiple calls (<code>core/src/read.rs</code>); every <code>scan</code>
+caller collects into a set/map. <strong>No direct redb API</strong> (<code>Database</code>,
+<code>begin_read/write</code>, <code>TableDefinition</code>) appears anywhere outside
+<code>metadata-redb/src/lib.rs:16</code>.</li>
+</ul>
+<p>The <strong>entire</strong> production redb coupling is therefore in <strong><code>crates/server/src/cli.rs</code></strong> —
+the one crate ADR-0016 designates for wiring concretes — and it is three concrete
+things, all addressable inside M4:</p>
+<ol>
+<li><strong>~8 sites construct/​type <code>RedbMetadataStore</code> concretely</strong> (the disk-open and
+helper signatures; ~9 references counting the import). M4 parameterizes these
+over <code>M: MetadataStore</code> and adds the selector. &quot;One-line switch&quot; would be
+<strong>overstated</strong>: it is ~8 sites in one file, plus building the selection
+mechanism that <strong>does not exist today</strong> (no feature flag, config key, or enum
+dispatch chooses the backend).</li>
+<li><strong>The async-runtime wiring.</strong> redb's methods are async-signature but
+<strong>synchronous-bodied</strong>; the local CLI paths drive them with <code>pollster::block_on</code>.
+A <code>tokio</code>-bound TiKV client cannot run under <code>pollster::block_on</code> for real
+async I/O, so the local paths must move onto the <code>tokio</code> runtime the cluster
+paths already use. Confined to <code>cli.rs</code>; the trait is <strong>already async</strong>, so no
+signatures ripple into <code>core</code>/<code>custodian</code>.</li>
+<li><strong><code>alloc_inode</code>'s unbounded retry-on-<code>Conflict</code> loop</strong> (<code>fn alloc_inode</code> in <code>cli.rs</code>). Over
+embedded redb a conflicting commit is a sub-microsecond local transaction, so a
+busy spin is harmless; over distributed TiKV <strong>every iteration is a network
+round-trip</strong>, so the backoff-free spin is a latency/load footgun. M4 gives it
+<strong>bounded retries with backoff</strong>. (Note: this is dev-CLI inode allocation; the
+deployable <code>Gateway</code> uses an in-process <code>AtomicU64</code> and has <strong>no</strong> such loop,
+and <code>core</code>'s commit callers <strong>propagate</strong> <code>Conflict</code> rather than retrying — so
+no library code assumes cheap commits.)</li>
+</ol>
+<p>None of these is a cross-cutting refactor of consumer logic. <strong>The real
+engineering weight — the atomic multi-key precondition CAS — lands in the new
+<code>metadata-tikv</code> crate</strong>, behind the seam, exactly as the thesis predicts.</p>
+<h3>Multi-key atomic directory operations under the distributed store</h3>
+<p>The verbatim M4 definition of done is that &quot;<strong>multi-key atomic directory
+operations hold under the distributed store</strong>&quot; (arc M4). The inode + dirent model
+makes these concrete (<a href="/architecture/05-building-block-view.html">§5</a>):</p>
+<ul>
+<li><strong>create</strong> = atomic <code>{ put inode + put dirent }</code>, guarded by <code>require_absent</code> on
+both keys (no allocator in the store; the caller supplies the id —
+<code>core/src/metadata.rs</code>).</li>
+<li><strong>rename</strong> = atomic <code>{ delete old dirent + put new dirent }</code>, with <code>require</code> on
+the source value re-pinned at commit and <code>require_absent</code> on the target.</li>
+<li><strong>delete</strong> = atomic <code>{ remove dirent + tombstone/advance inode state + bump version }</code>.</li>
+<li><strong>the file commit</strong> = the version-conditional <code>{ write chunk map + set COMMITTED + bump version }</code>, &quot;concurrent writers conflict here; exactly one
+wins&quot; (<a href="/architecture/05-building-block-view.html">§5</a>).</li>
+</ul>
+<p>A <strong>distributed</strong> backend is the <em>real</em> test of these because embedded redb makes
+them cheap by serializing the whole process; TiKV faces genuine concurrency,
+contention, and partitions. M4 demonstrates the <strong>single-zone subset</strong> of the
+frozen five-clause consistency contract (<a href="/adr/0015-consistency-contract.html">ADR-0015</a>, <a href="/architecture/08-crosscutting-concepts.html">§8.1</a>): <strong>clause 2</strong>
+(a file's writes linearizable at the commit point) is the load-bearing
+demonstration; <strong>clause 1</strong> collapses into zonal linearizability (single zone, no
+distinct L2 — <a href="/adr/0020-global-namespace-store.html">ADR-0020</a>:32); <strong>clause 3</strong> (read-your-writes / monotonic
+reads) is <strong>trivially satisfied</strong> at one zone and only becomes a testable
+cross-zone behavior at M9/M10; <strong>clauses 4–5</strong> (replication lag, sync-N-zone) are
+cross-zone and deferred. M4 must also keep <strong>bumping <code>meta:version</code> inside the
+atomic commit</strong>, preserving the reserved Option-C fence as a non-breaking future
+strengthening — the regression risk here is <em>dropping the reservation</em>, not
+<em>using</em> it.</p>
+<h3>Deployment: TiKV/PD as a stateful, disk-affine, orchestrator-agnostic tier</h3>
+<p>M4 introduces the system's first heavy external <strong>stateful</strong> dependency, and
+<a href="/adr/0010-pluggable-deployment-substrate.html">ADR-0010</a> constrains how it lands. The M4 topology is the single-zone
+<strong>&quot;Small multi-node Production&quot;</strong> profile (<a href="/architecture/07-deployment-view.html">§7.1</a>): <strong>TiKV (small) + its own
+PD cluster + a 3-node etcd ensemble for L5 Coordination + local-disk D servers —
+no L2/L3/TiDB</strong>. The two coordinators are <strong>distinct</strong> and both are required: PD
+(the Placement Driver) ships with TiKV and coordinates its regions and timestamp
+oracle; the <strong>etcd ensemble</strong> backs Wyrd's <code>Coordination</code> trait — discovery,
+leader election, fencing (<a href="/adr/0006-etcd-for-coordination.html">ADR-0006</a>; <a href="/architecture/07-deployment-view.html">§7.1</a> lists the profile's
+coordination as &quot;3-node etcd&quot;). TiKV and PD are stateful and want <strong>node affinity
+to disks</strong>: deployed as StatefulSets with local persistent volumes and an operator
+on Kubernetes, <strong>or</strong> systemd on the storage hosts — but <strong>&quot;Kubernetes is
+available, never required,&quot;</strong> &quot;no code couples to orchestrator APIs,&quot; and &quot;peers
+are discovered through L5&quot; (<a href="/adr/0010-pluggable-deployment-substrate.html">ADR-0010</a>; <a href="/architecture/07-deployment-view.html">§7.2</a>). The bring-up artifacts
+live in <strong><code>deploy/</code>, outside the Cargo workspace</strong> — the structural guard that
+&quot;makes it hard for orchestrator coupling to sneak into a component.&quot; M4 ships a
+<strong>docker-compose</strong> stack (TiKV + PD + the L5 etcd ensemble) for CI/eval; the Helm
+chart/operator are later.</p>
+<blockquote>
+<p><strong>Deployment prerequisite (scope boundary — do not conflate with the metadata swap).</strong>
+The metadata-backend work above is self-contained and is the milestone's real risk.
+The <em>multi-node, discovery-driven</em> stand-up it enables, however, has a hard
+dependency that is <strong>not</strong> part of M4's metadata scope and does not exist yet:
+<strong>cross-process L5 discovery</strong>. Today only the process-local <code>coordination-mem</code> is
+implemented, so separate processes are not mutually discoverable — etcd discovery was
+&quot;deferred to a composition swap&quot; back in M2 (<a href="/proposals/accepted/0004-milestone-2-networked-d-servers.html">0004</a>) — and there is <strong>no runnable
+gateway or custodian process role</strong> (the custodian binary was explicitly deferred in
+M3, <a href="/proposals/accepted/0005-milestone-3-custodians.html">0005</a>; the gateway exists only as <code>put</code>/<code>get</code> client mode). &quot;Peers discovered
+through L5&quot; therefore requires, as a <strong>named prerequisite</strong>:
+(1) an <strong>etcd-backed <code>Coordination</code></strong> implementation (a <code>coordination-etcd</code> crate
+behind the existing trait), and (2) <strong>runnable gateway + custodian process roles</strong>.
+This is a genuine parallel to the metadata story: by the ADR-0006 &quot;pin the trait with
+two implementations&quot; discipline, <strong>etcd is Coordination's required second implementation</strong>
+exactly as TiKV is <code>MetadataStore</code>'s — so it is its own body of work, not carry-over.
+M4's deployment slice (slice 5) and its deployment graduation criterion are <strong>gated on
+this prerequisite</strong>; until it lands, M4's Tier-1/Tier-2 clusters are wired with <strong>static
+endpoints</strong> (the current <code>--endpoints</code> path and the docker-compose fault harnesses),
+which is sufficient to prove the metadata risk. Where this prerequisite is sequenced
+(a dedicated slice, or a preceding coordination milestone) is an open scope decision;
+it must be resolved before slice 5 can claim &quot;peers discovered through L5.&quot;</p>
+</blockquote>
+<h3>Backends, profiles, and what &quot;production&quot; means</h3>
+<p>M4 <strong>adds</strong> a backend; it does <strong>not</strong> replace redb. <a href="/adr/0014-single-binary-dev-only.html">ADR-0014</a> is explicit:
+the single-binary/redb profile is <strong>dev/eval only</strong>, with <strong>no production
+durability promise</strong>, and &quot;production durability begins at the real multi-node
+backends.&quot; So after M4:</p>
+<ul>
+<li><strong>redb</strong> stays the <strong>dev / single-binary / NAS</strong> metadata backend (deterministic,
+disk-free in-memory variant for tests, embedded on disk for the NAS profile).</li>
+<li><strong>TiKV</strong> is the <strong>production</strong> metadata backend — the one that carries the
+durability promise the release point announces.</li>
+</ul>
+<p>M4 must <strong>not</strong> quietly expand redb's role into a supported production tier; that
+&quot;would require a stated durability floor … and the corresponding test surface;
+that is a future decision, not this one&quot; (<a href="/adr/0014-single-binary-dev-only.html">ADR-0014</a>).</p>
+<h3>DST and tests (the heart of M4)</h3>
+<p><a href="/adr/0009-deterministic-simulation-testing.html">ADR-0009</a> remains the correctness authority, and M4's most important
+architectural decision about testing is <strong>what <em>not</em> to do</strong>: <strong>TiKV does not go
+inside the deterministic simulator.</strong> The <code>MetadataStore</code> seam splits the burden —
+<strong>DST proves the <em>system</em>; the real tiers prove the <em>backend</em></strong> — and the line is
+principled, not a workaround.</p>
+<p><strong>Tier-0 — deterministic simulation (the spine, unchanged).</strong> The commit protocol,
+the version-conditional CAS (exactly-one-winner, <a href="/architecture/10-quality-risks-glossary.html">§Q5</a>), no-torn-write
+(<a href="/architecture/10-quality-risks-glossary.html">§Q3</a>), the GC-ledger lifecycle, repair/delete reuse of the commit point,
+and the monotonic <code>meta:version</code> bump all stay proven against the <strong>deterministic
+in-memory/redb backend</strong>, single-threaded and seed-reproducible. This is sound
+precisely because the production logic is <strong>byte-identical across backends</strong> (it
+depends only on the trait), so proving it over the deterministic backend proves it
+for any backend. The strategy forbids the alternative outright: &quot;a real
+environment is therefore never used to test correctness the simulation already
+covers … that is DST's job&quot; (<a href="/architecture/10-quality-risks-glossary.html">§13.1</a>; <a href="/adr/0009-deterministic-simulation-testing.html">ADR-0009</a>: DST &quot;complements, it
+does not replace&quot; the real tiers). <strong>M4 must not re-prove atomicity against TiKV.</strong></p>
+<p><strong>Tier-1 — software-defined faults against a <em>real</em> TiKV cluster.</strong> This is where
+the M4-specific evidence lives — what the simulator structurally cannot show: that
+the abstractions DST simulates <strong>match the real store</strong> (<a href="/architecture/10-quality-risks-glossary.html">§13.1</a>). On the M4
+single-zone topology under <code>tc netem</code> / <code>iptables</code> partitions / cgroup throttling
+/ <code>libfaketime</code> clock skew:</p>
+<ul>
+<li><strong>Integration</strong> — the bare composition swap: the same system runs on TiKV behind
+the unchanged trait; multi-key atomic create/rename/delete succeed. The direct
+M4 DoD and trait-leak retirement.</li>
+<li><strong>Jepsen consistency</strong> — a nemesis injecting <strong>real</strong> partitions, clock skew, and
+process pauses against the TiKV-backed cluster, validating the single-zone
+consistency clauses (linearizability of the commit point; exactly-one-winner
+under genuine concurrency). The Jepsen line <strong>began at M2</strong> over the networked
+path (<a href="/proposals/accepted/0004-milestone-2-networked-d-servers.html">0004</a>; <a href="/architecture/10-quality-risks-glossary.html">§13.4</a>) and was extended over the repair path at M3
+(<a href="/proposals/accepted/0005-milestone-3-custodians.html">0005</a>); M4 extends it across the backend swap. A clean public Jepsen result
+is itself a credibility artifact.</li>
+</ul>
+<p><strong>Tier-2 — first real-world hardware (single owned machine).</strong> Real <code>fsync</code>, real
+NVMe latency, real OS behavior against real TiKV — honest single-node performance
+and I/O semantics the in-memory fakes abstract away (a single failure domain, so
+it proves real-silicon behavior, <strong>not</strong> failure-domain independence). This is a
+<strong>distinct environment</strong> from slice 5's multi-node &quot;Small multi-node Production&quot;
+stand-up: Tier-2 is one machine for I/O honesty, slice 5 is the multi-node
+topology/discovery shape — the same code, two different runs, not one box standing
+in for the production topology.</p>
+<p><strong>Tier-3 — multi-region — does <em>not</em> begin until M9</strong> (<a href="/architecture/10-quality-risks-glossary.html">§13.4</a>): single-zone
+M4 has no use for real WAN or cross-zone failure independence.</p>
+<blockquote>
+<p><strong>Numbering note.</strong> This proposal uses the architecture <strong>realism ladder</strong>
+(Tier 0 DST · Tier 1 software faults + Jepsen · Tier 2 single machine · Tier 3
+multi-region), matching <a href="/proposals/accepted/0005-milestone-3-custodians.html">0005</a> and <a href="/architecture/10-quality-risks-glossary.html">§13.2/§13.4</a>. The CI/code taxonomy
+(<a href="/proposals/accepted/0004-milestone-2-networked-d-servers.html">0004</a>'s test taxonomy) uses a <strong>different</strong> scheme where &quot;Tier-1&quot; is the
+in-process DST/wire suite and &quot;Tier-2&quot; is the container integration job — a clash
+<a href="/architecture/10-quality-risks-glossary.html">§13</a> flags explicitly. Both schemes appear in the tree; this document means
+the realism ladder throughout.</p>
+</blockquote>
+<p><strong>Fidelity to ADR-0009 — the compounding loop.</strong> Every behavior the real TiKV
+cluster surfaces that the redb fake did not model (a transaction-conflict timing,
+a PD timestamp-oracle edge, a fault shape) is <strong>promoted back into DST as a new
+seeded regression</strong> <em>wherever it manifests through the trait contract</em> — the
+FoundationDB/TigerBeetle pattern, &quot;the highest-leverage idea in the strategy&quot;
+(<a href="/architecture/10-quality-risks-glossary.html">§13.1</a>). The trait surface is both the thing M4 validates <strong>and</strong> the
+channel through which real-world findings flow back into the deterministic spine;
+DST never cedes authority to the real tiers.</p>
+<p><strong>Pinning the trait with the second implementation.</strong> Because M4 is the <strong>second</strong>
+<code>MetadataStore</code> implementation (<a href="/adr/0006-etcd-for-coordination.html">ADR-0006</a> discipline), M4 hardens the trait:
+it adds a <strong>deterministic contract/property harness</strong> that drives <strong>both</strong> backends
+through the <strong>identical</strong> suite, and revisits the one <strong>redb-shaped determinism
+rationale</strong> in the DST harness — the concurrency test argues &quot;each <code>commit()</code> is
+internally synchronous (one redb write transaction, no <code>await</code> inside),&quot; which is
+<strong>not</strong> true of a TiKV commit that awaits on network I/O. The &quot;exactly one wins&quot;
+invariant still holds under TiKV's CAS, but the harness's stated reasoning (and
+possibly its interleaving coverage) needs updating when a simulated-TiKV model is
+added.</p>
+<h3>Crate touch-points</h3>
+<p>Building on the workspace as it stands after M3 (<code>chunk-format</code>, <code>chunkstore-fs</code>,
+<code>chunkstore-grpc</code>, <code>coordination-mem</code>, <code>core</code>, <code>custodian</code>, <code>dst</code>, <code>metadata-redb</code>,
+<code>proto</code>, <code>server</code>, <code>testkit</code>, <code>traits</code>):</p>
+<ul>
+<li><strong><code>metadata-tikv</code></strong> (<strong>new</strong>) — <code>impl MetadataStore for TikvMetadataStore</code> over
+the <code>tikv-client</code> transactional API: the atomic conditional commit, native
+prefix scan, the conflict-classification rule, the locking-read rule. Deps
+<code>traits</code> + <code>tikv-client</code> + <code>tokio</code>; <strong>never</strong> <code>core</code> or another concrete
+(<a href="/adr/0016-monorepo-and-crate-structure.html">ADR-0016</a>).</li>
+<li><strong><code>server</code></strong> — parameterize the <code>cli.rs</code> metadata helpers over <code>M: MetadataStore</code>; add the <strong>redb | tikv</strong> backend selector (config); move the
+local paths onto <code>tokio</code>; give <code>alloc_inode</code> bounded backoff. redb stays the
+dev/single-binary default (<a href="/adr/0014-single-binary-dev-only.html">ADR-0014</a>).</li>
+<li><strong><code>traits</code></strong> — <strong>unchanged</strong> (the milestone's whole premise; any change here is a
+failure of M4's thesis).</li>
+<li><strong><code>core</code>, <code>custodian</code></strong> — <strong>unchanged</strong> (zero redb dependence confirmed by the
+audit).</li>
+<li><strong><code>dst</code></strong> — a deterministic simulated-TiKV model (or a trait-level contract
+property harness) so the property suite drives both backends; update the
+<code>concurrency.rs</code> determinism rationale for an await-inside-commit backend; new
+seeds.</li>
+<li><strong><code>testkit</code></strong> — a real-TiKV-cluster fault seam (partition/latency/pause) for the
+Tier-1 integration + Jepsen runs.</li>
+<li><strong><code>xtask</code></strong> — a TiKV integration runner and a Jepsen-against-TiKV runner; wire
+the <code>deploy/</code> docker-compose TiKV+PD into CI.</li>
+<li><strong><code>deploy/</code></strong> (<strong>new, outside the workspace</strong>) — docker-compose for TiKV (small)
+<ul>
+<li>its PD cluster + a 3-node etcd ensemble (L5 Coordination) for CI/eval;
+Helm/operator deferred (<a href="/adr/0010-pluggable-deployment-substrate.html">ADR-0010</a>).</li>
+</ul>
+</li>
+<li><strong>deps</strong> — <code>tikv-client</code> (+ its <code>tokio</code>/<code>grpcio</code> transitive tree); confirm under
+the <code>cargo-deny</code> allowlist (<a href="/adr/0003-apache-2-license-and-dco.html">ADR-0003</a>). <strong>Maturity risk to weigh explicitly:</strong>
+the Rust <code>tikv-client</code> (client-rust) is <strong>pre-1.0 (0.4.x)</strong> and has historically
+trailed the Go client in maintenance cadence and feature parity (async-commit/1PC,
+<code>get_for_update</code> ergonomics). M4 rests the <em>production-durability</em> tier on it, so the
+first slice SHOULD include an <strong>evaluation gate</strong> — confirm the locking-read and
+write-conflict paths against the pinned version (see Open questions), and record a
+fallback stance (tolerate a vendored patch, or re-evaluate the backend) before the
+dependency is committed. Its <code>grpcio</code> transitive tree is also the widest new surface
+for the <code>cargo-deny</code> review.</li>
+</ul>
+<h2>Alternatives considered</h2>
+<ul>
+<li><strong>Put TiKV inside DST (containerized) as the correctness authority:</strong> <strong>rejected</strong>
+— <a href="/adr/0009-deterministic-simulation-testing.html">ADR-0009</a> forbids using a real environment for correctness DST already
+covers, and containers break seed determinism. TiKV is validated at Tier 1–2 as
+a <em>complement</em>; DST stays on the deterministic backend.</li>
+<li><strong>Optimistic transactions with plain reads for preconditions:</strong> <strong>rejected as the
+default</strong> — TiKV SI does not conflict-check read-only keys, so a precondition on
+a key the batch does not also write is exposed to write-skew. M4 reads
+precondition keys with <code>get_for_update</code> and defaults to <strong>pessimistic</strong>
+transactions; optimistic mode is acceptable <strong>only</strong> if every read-only
+precondition key is locked, and is a measured throughput trade, not a default.</li>
+<li><strong>The raw API with single-key <code>compare_and_swap</code>:</strong> <strong>rejected</strong> — single-key
+only, cannot express the multi-key inode+dirent atomicity that is the entire
+reason TiKV was chosen over HBase (<a href="/adr/0008-tikv-metadata-and-pluggable-backends.html">ADR-0008</a>), and cannot be mixed with the
+transactional API on one database.</li>
+<li><strong>Map a TiKV write-conflict to <code>Err</code> (or retry it inside the backend):</strong>
+<strong>rejected</strong> — a lost race <strong>is</strong> the trait's <code>Conflict</code>; surfacing it as <code>Err</code>
+would conflate a stale writer with a backend fault and break the
+<code>version_cas_rejects_a_stale_writer</code> property. The backend folds write-conflicts
+into <code>Ok(Conflict)</code> and reserves <code>Err</code> for faults.</li>
+<li><strong>Add a paginated/streaming <code>scan</code> to the trait for large directories:</strong>
+<strong>deferred</strong> — it is a <strong>trait change</strong>, violating the &quot;unchanged trait&quot;
+requirement that is the milestone's point. M4 buffers (<code>scan</code> already returns a
+materialized <code>Vec</code>); whether very large directories warrant a later trait
+evolution is an Open question, decided by measurement, not now.</li>
+<li><strong>Replace redb with TiKV everywhere (drop the embedded backend):</strong> <strong>rejected</strong> —
+<a href="/adr/0014-single-binary-dev-only.html">ADR-0014</a> keeps redb the dev/eval backend; M4 <strong>adds</strong> a production choice,
+it does not remove the dev one.</li>
+<li><strong>Build the L2 NamespaceStore (TiDB) in the same milestone:</strong> <strong>rejected /
+deferred to M10</strong> — <a href="/adr/0020-global-namespace-store.html">ADR-0020</a> is Proposed and is cross-region; M4 is
+strictly the zonal L4 store, and in single-zone deployments the namespace folds
+into the same store.</li>
+<li><strong>Mint a new ADR for the TiKV backend:</strong> <strong>not minted</strong> — <a href="/adr/0008-tikv-metadata-and-pluggable-backends.html">ADR-0008</a> already
+decides it and is <strong>Accepted</strong>; M4 is its first <em>implementation</em>, not a new
+decision. (Contrast M3, which <em>proposed</em> ratifying the still-Proposed
+ADR-0011/0012 as part of its milestone.)</li>
+</ul>
+<h2>Graduation criteria (definition of done)</h2>
+<ul>
+<li><strong>The same system runs on TiKV behind the <em>unchanged</em> <code>MetadataStore</code> trait</strong> —
+selected by config in <code>server</code>; <code>traits</code>, <code>core</code>, and <code>custodian</code> are byte-for-byte
+unchanged.</li>
+<li><strong>Multi-key atomic directory operations hold under the distributed store</strong> —
+create / rename / delete and the file commit are all-or-nothing on TiKV, proven
+under contention and partition (Tier-1 integration + Jepsen).</li>
+<li><strong>The version-conditional CAS contract is preserved exactly</strong> — exactly-one-winner
+under concurrency; a stale writer gets <code>Ok(Conflict)</code>; <code>require_absent</code> collision
+guards hold; a TiKV write-conflict surfaces as <code>Conflict</code> (not <code>Err</code>) and a
+genuine fault surfaces as <code>Err</code>; values are stored byte-identically so no CAS is
+spuriously rejected.</li>
+<li><strong>The swap is a <code>server</code>-crate composition change, not a refactor</strong> — the diff
+outside <code>metadata-tikv</code> is confined to <code>server</code> (selection + async wiring +
+bounded <code>alloc_inode</code> backoff) plus test/deploy scaffolding; no consumer logic is
+refactored.</li>
+<li><strong><code>meta:version</code> is bumped inside the atomic commit on TiKV</strong>, preserving the
+reserved Option-C fence; the append/CAS/watch seats remain expressible.</li>
+<li><strong>Tier-0 DST stays green and seed-reproducible</strong> on the deterministic backend
+(seeds committed); the trait is <strong>pinned by both implementations</strong> through the
+shared property harness.</li>
+<li><strong>Tier-1 integration + Jepsen consistency green</strong> against real containerized TiKV
+under fault injection; <strong>Tier-2</strong> single-node real-I/O run green. Any bug-finding
+discovery is promoted to a <strong>seeded DST regression</strong> where the trait exposes it.</li>
+<li><strong>The production deployment stands up from <code>deploy/</code></strong> (TiKV-small + its PD
+cluster + a 3-node etcd ensemble for L5 + local-disk D servers), with <strong>no crate
+importing an orchestrator API</strong>. <strong>&quot;Peers discovered through L5&quot; is gated on the
+deployment prerequisite</strong> (an etcd-backed <code>Coordination</code> + gateway/custodian process
+roles — see the <em>Deployment prerequisite</em> note); until that ships, M4's clusters are
+wired with static endpoints and this criterion is met at that reduced bar.</li>
+<li><strong>redb remains the dev/single-binary backend</strong> with no production-durability
+promise (<a href="/adr/0014-single-binary-dev-only.html">ADR-0014</a>); TiKV carries the production promise.</li>
+<li><code>fmt</code>/<code>clippy</code> clean; <code>Cargo.lock</code> updated; <code>cargo-deny</code> passes with the
+<code>tikv-client</code> dependency tree.</li>
+</ul>
+<h3>Suggested PR sequence (each with its own definition of done)</h3>
+<p>Each step is one PR, tracked under the <strong>M4</strong> milestone (branch
+<code>feat/m4.&lt;n&gt;-&lt;slug&gt;</code>, commit subject <code>feat(&lt;crate&gt;): … (M4.&lt;n&gt;, #&lt;issue&gt;)</code>):</p>
+<ol>
+<li><strong><code>metadata-tikv</code> skeleton + the conformance suite as a contract test</strong> — new
+crate (<code>traits</code> + <code>tikv-client</code> + <code>tokio</code>); a throwaway single-node TiKV in
+<code>deploy/</code> for CI; run the <strong>existing</strong> <code>MetadataStore</code> conformance suite (the one
+redb passes) against TiKV for <code>get</code>/<code>scan</code>/<code>commit</code> basics. <em>DoD:</em> TiKV passes
+the <strong>shared</strong> (not forked) conformance suite for the basic operations; CI can
+reach a TiKV.</li>
+<li><strong>The atomic conditional commit + conflict semantics</strong> — <code>commit(WriteBatch)</code> as
+one transaction: lock + read + byte-compare every precondition
+(<code>get_for_update</code>, pessimistic by default), all-or-nothing puts/deletes; map a
+precondition miss <strong>and</strong> a write-write race to <code>Ok(Conflict)</code>; reserve <code>Err</code> for
+faults; never use the raw <code>compare_and_swap</code>. <em>DoD:</em> the version-CAS property
+tests (exactly-one-winner, stale-writer-rejected, <code>require_absent</code> collision)
+pass over TiKV; a forced write-conflict surfaces as <code>Conflict</code>, not <code>Err</code>.</li>
+<li><strong>Native prefix scan + documented read consistency</strong> — replace the
+whole-table-filter shortcut with a TiKV range scan <code>[prefix, prefix_upper)</code>,
+paged and materialized; document the read-snapshot semantics. <em>DoD:</em> dirent
+prefix scans return correct sets at scale; no consumer order-dependence
+regressed; <code>rename</code>'s read-then-commit pattern is safe under the locking rule.</li>
+<li><strong>Backend selection in <code>server</code> (the composition change)</strong> — parameterize the
+~7 <code>cli.rs</code> helpers over <code>M: MetadataStore</code>; add the <strong>redb | tikv</strong> selector by
+config; move the local paths onto <code>tokio</code>; give <code>alloc_inode</code> bounded backoff.
+redb stays the dev default. <em>DoD:</em> <code>server</code> runs identically on redb (dev) and
+TiKV (prod) by config; the diff outside <code>metadata-tikv</code> is confined to <code>server</code>;
+<code>core</code>/<code>custodian</code> untouched; <code>cargo xtask ci</code> green on both backends.</li>
+<li><strong>Production deployment — TiKV/PD as a stateful, disk-affine, orchestrator-agnostic
+tier</strong> — <code>deploy/</code> docker-compose for TiKV-small + its PD cluster + a 3-node etcd
+ensemble (L5 Coordination) + local-disk D servers; discovery through
+L5/Coordination; no orchestrator coupling in any crate. <strong>Gated on the deployment
+prerequisite</strong> (an etcd-backed <code>Coordination</code> + runnable gateway/custodian process
+roles — see the <em>Deployment prerequisite</em> note): the <code>deploy/</code> artifacts and the
+TiKV/PD tier land here, but the &quot;peers discovered through L5&quot; DoD cannot be met until
+that prerequisite ships. Until then this slice delivers the stack <strong>with static
+endpoints</strong>, and the L5-discovery DoD moves with the prerequisite. <em>DoD (with the
+prerequisite):</em> the single-zone &quot;Small multi-node Production&quot; stack stands up from
+<code>deploy/</code>; peers discovered through Coordination; no crate imports a k8s/orchestrator
+API.</li>
+<li><strong>Tier-1 integration + Jepsen consistency; Tier-2 single-node</strong> — end-to-end
+PUT/GET + multi-key create/rename/delete on TiKV under <code>tc netem</code>/<code>iptables</code>
+faults; a Jepsen nemesis (partitions, clock skew, pauses) over the single-zone
+consistency clauses; a Tier-2 run on one real machine (real fsync/NVMe). Promote
+any discovery to a seeded DST regression. <em>DoD:</em> integration + Jepsen green in
+CI; multi-key atomic dir ops proven to hold under partition/contention; a
+bug-finding seed committed; the Tier-2 job green.</li>
+<li><strong>DST: pin the trait with the second implementation</strong> — a deterministic
+simulated-TiKV model (or trait-level contract harness) so the property suite
+drives <strong>both</strong> backends; update the <code>concurrency.rs</code> determinism rationale for
+an await-inside-commit backend. <em>DoD:</em> DST drives both backends through the
+identical property suite, green and seed-reproducible; the two-implementations-pin
+discipline (<a href="/adr/0006-etcd-for-coordination.html">ADR-0006</a>) is satisfied.</li>
+</ol>
+<p>(M4 is sized like M1/M2's seven slices and narrower in surface than M3's eight —
+it is one new backend crate plus a composition switch plus the real-store test
+campaign, not a new plane. Slices 1–4 are the implementation spine; 5–7 are the
+release-grade deployment and proof. The crate boundary means slice 1 can begin in
+parallel with the tail of M3 once the trait is confirmed frozen.)</p>
+<h2>Backward compatibility</h2>
+<p>M4 is <strong>not</strong> the release point (that is <strong>M8</strong> in the rescoped arc, <a href="/proposals/accepted/0013-implementation-arc-rescoped.html">p2</a>), so
+M4 incurs only the <strong>internal</strong> contract duties that landing the production
+backend creates; the <strong>public</strong> API / deployment-compatibility commitment begins
+at the M8 release. The M4 duties, narrowly and deliberately:</p>
+<ul>
+<li><strong>The <code>MetadataStore</code> trait</strong> — <strong>unchanged</strong>, and now <strong>pinned by two
+implementations</strong>. After M4 it is a real internal contract; a future change is a
+trait evolution with both backends to carry, not a free edit. (Pre-1.0, still no
+<em>published</em> API.)</li>
+<li><strong>The metadata model / keyspace</strong> — <strong>unchanged</strong> and additive: the same
+<code>inode:</code>/<code>dirent:</code>/<code>pending:</code>/<code>meta:version</code> keys and JSON values, stored
+byte-identically on TiKV. Placement (M3) stays embedded in the inode value with
+<code>#[serde(default)]</code>, so pre-M3 records still decode. <strong>No data migration</strong> —
+redb-profile data is dev/eval only (<a href="/adr/0014-single-binary-dev-only.html">ADR-0014</a>) and is not migrated into a
+production TiKV deployment; a fresh production zone starts on TiKV.</li>
+<li><strong>The on-disk <em>fragment</em> format</strong> — <strong>unchanged</strong> by M4 (M4 touches metadata, not
+the chunk layout) and <strong>stays v0/unstable</strong>. <code>v1</code> stamping is <strong>not</strong> automatically
+tied to M4: its gate is &quot;a second independent reader <strong>or</strong> a sustained
+fault-injection run&quot; (<a href="/proposals/accepted/0013-implementation-arc-rescoped.html">p2</a>). M4's <strong>Tier-2 sustained run on real TiKV</strong> is a
+<strong>candidate</strong> <code>v1</code> trigger — recorded here, not decided (consistent with
+<a href="/proposals/accepted/0003-milestone-1-erasure-coding.html">0003</a>/<a href="/proposals/accepted/0005-milestone-3-custodians.html">0005</a>).</li>
+<li><strong>The deployment surface</strong> — the <code>deploy/</code> topology (TiKV+PD+D-servers, L5
+discovery) is <strong>introduced</strong> here as the production metadata tier, but it is
+<strong>not yet the stable operator-facing surface</strong>: that is part of the M8 release
+(the management plane and documented day-2 shape, proposal 0008). M4 fixes the
+internal topology; M8 commits to it publicly.</li>
+<li><strong>Reserved seats honored</strong> — the <code>meta:version</code> fence (<a href="/adr/0015-consistency-contract.html">ADR-0015</a>) and the
+append/CAS/watch hooks (<a href="/adr/0007-reserve-append-cas-watch.html">ADR-0007</a>) remain expressible on TiKV; M4 builds
+none of them but forecloses none.</li>
+</ul>
+<h2>Open questions</h2>
+<ul>
+<li><strong>Optimistic vs pessimistic transactions, measured.</strong> M4 defaults to pessimistic
+(or optimistic-with-<code>get_for_update</code>-on-every-precondition-key) for correctness;
+the <strong>throughput cost</strong> under real metadata contention is a measurement, and the
+default should be revisited against Tier-1/Tier-2 numbers. Async-commit/1PC
+optimizations exist and change latency without changing the atomicity/conflict
+semantics relied on here — to evaluate later, not in the first cut.</li>
+<li><strong><code>tikv-client</code> version and exact API shapes.</strong> Pin the crate version in
+<code>Cargo.toml</code> and reconfirm at build time the <strong>locking-read</strong> entry point
+(<code>get_for_update</code> vs a <code>TransactionOptions</code> flag) and the <strong>write-conflict</strong>
+error path (<code>tikv_client::Error</code> wrapping <code>KeyError::WriteConflict</code>) — these were
+verified across crate docs and TiKV PRs but the concrete Rust signatures should
+be confirmed against the pinned version. Confirm the client's futures are
+<code>Send + Sync</code> for the object-safe, simulator-driven trait.</li>
+<li><strong>Read consistency to document.</strong> The trait promises nothing about <code>get</code>/<code>scan</code>
+snapshot semantics; TiKV reads default to a snapshot at a timestamp. M4 must
+<strong>decide and document</strong> the read consistency (especially the <code>rename</code> <code>get</code> that
+precedes <code>commit</code>) — the commit precondition re-check is what guarantees safety,
+but read staleness interacts with read-your-writes (<a href="/adr/0015-consistency-contract.html">ADR-0015</a> clause 3),
+which only becomes a cross-zone behavior later.</li>
+<li><strong>Large-directory <code>scan</code> buffering.</strong> <code>scan</code> returns a materialized <code>Vec</code>; a
+directory with very many dirents buffers fully in memory. On redb that's a local
+read, but on TiKV a single unbounded range scan pulls the whole prefix <strong>over the
+network</strong> into the gateway's heap — a sharper cliff on the production backend.
+Whether M4 accepts this or a later trait evolution adds a paginated/streaming scan
+is a <strong>measurement</strong> question (a trait change is out of M4's &quot;unchanged trait&quot;
+scope), but M4 SHOULD ship an <strong>interim guard</strong> rather than leave it unbounded — an
+internal paging cap on the range read and/or a documented max-dirents-per-listing —
+so a pathological directory cannot OOM the gateway before that decision is made.</li>
+<li><strong>The <code>meta:version</code> fence as a <code>v1</code>-stamping trigger.</strong> M4's sustained
+real-store fault-injection is a candidate trigger for stamping the on-disk format
+<code>v1</code>; recorded, not decided.</li>
+<li><strong>DST model fidelity for an await-inside-commit backend.</strong> How faithfully a
+<em>deterministic simulated-TiKV</em> should model 2PC/TSO interleavings (vs a
+trait-level contract harness) to keep the &quot;exactly one wins&quot; coverage honest is
+an M4 design point, surfaced by the second-implementation pinning.</li>
+<li><strong><code>NamespaceStore</code>-on-TiKV.</strong> The deployment view says the namespace shares the
+metadata store in single-zone profiles, but <code>NamespaceStore</code> is <strong>not in code</strong>.
+When it lands, does it ride the same TiKV <code>MetadataStore</code> instance in single-zone
+deployments, becoming a distinct TiDB deployment only at the provider-fleet tier
+(<a href="/adr/0020-global-namespace-store.html">ADR-0020</a>)? Out of M4 scope; flagged so the boundary stays deliberate.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>
