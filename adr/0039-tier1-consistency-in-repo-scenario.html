@@ -36,7 +36,7 @@
 <div class="wrap">
   <header class="doc-header">
     <p class="doc-class">Architecture Decision Record</p>
-    <p class="doc-meta">Status: Proposed · 28.06.2026 00:55</p>
+    <p class="doc-meta">Status: Accepted · 28.06.2026 00:55</p>
   </header>
 </div>
 
@@ -85,10 +85,18 @@ the property it stands for actually verified.</p>
 path&quot; as an <strong>in-repo Rust scenario</strong> that drives the <strong>production</strong> custodian
 reconcile path (<code>custodian::reconcile_step</code> → <code>reconstruction::reconcile</code>)
 against a real containerized D-server cluster, injects <strong>both</strong> a crash (a killed
-node) and a <strong>real network partition</strong> (a node alive-but-unreachable, injected
-mid-repair and then healed), and asserts the ADR-0015 contract over the repair
-path directly: read-after-commit, no torn/stale reads, commit-point-atomic repair
-that converges <strong>exactly once</strong> across the heal. Its routing decision is a
+node, <code>docker kill</code>) and an <strong>isolation fault</strong> (a node made unreachable
+mid-repair via <code>docker pause</code>, then healed with <code>unpause</code>), and asserts the
+ADR-0015 contract over the repair path directly: read-after-commit, no torn/stale
+reads, commit-point-atomic repair that converges <strong>exactly once</strong> across the heal.
+The isolation fault is a <strong>process-freeze nemesis</strong> (<code>docker pause</code> suspends the
+container via the freezer cgroup), not a network-level packet-drop partition;
+because Wyrd's D-servers are <em>dumb</em> storage that initiate no commits of their own,
+a frozen node and a network-partitioned one are observably equivalent to the
+custodian repair path under test — the node is unreachable, repair proceeds around
+it, and the contract must hold across the heal. A stronger network-level partition
+that keeps the isolated node <em>live</em> is an additive upgrade to this leg (#399), not
+a change to the contract asserted. Its routing decision is a
 test-observable value, and it runs in a dedicated <strong>privileged</strong> CI job kept out
 of <code>cargo xtask ci</code> (ADR-0016). This is the leg shipped by #250, mirroring the
 two merged sibling legs (#195 disk-fault, #196 kill-reconstruct).</p>
@@ -104,17 +112,19 @@ file — ADR-0038). Proposal 0005 otherwise stands.</p>
 <h2>Consequences</h2>
 <ul>
 <li>The consistency contract over the repair path is now <strong>actually exercised</strong>
-under crash and partition faults, replacing inert dispatch scaffolding. The
+under crash and node-isolation faults, replacing inert dispatch scaffolding. The
 scenario binds the production reconcile API at compile time, so an API
 regression fails the merge gate even though the live run is off-Check.</li>
 <li>The verification is <strong>in-repo and maintainable</strong> — Rust the team already owns,
 no Clojure/JVM toolchain, no client-invented observable. The trade-off: it is
 <strong>not</strong> the externally-recognizable public Jepsen artifact. That credibility
 claim is explicitly deferred (#329), not made by this leg.</li>
-<li>The repair <strong>trigger</strong> is a sanctioned test stand-in (<code>repair::enqueue_repair</code>)
-because no production path yet enqueues repair for a simply-missing fragment
-(#330); the reconstruction path itself is genuinely traversed. When #330 lands,
-the stand-in can be dropped.</li>
+<li>The repair <strong>trigger</strong> was, when this record was authored, a sanctioned test
+stand-in (<code>repair::enqueue_repair</code>) because no production path yet enqueued
+repair for a simply-missing fragment; the reconstruction path itself is
+genuinely traversed. #330 has <strong>since landed</strong> (scrub now enqueues repair for a
+placed-but-missing fragment), so the stand-in can be dropped in favour of the
+production trigger.</li>
 <li>Reversing or extending this is cheap and additive: the literal-Jepsen artifact
 is a separate follow-on that supersedes nothing here; if it later becomes the
 preferred Tier-1 substrate, a further ADR records that.</li>
