@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0042. Production metadata backend: reaffirmed two-slot design, three finalists — Wyrd</title>
+<meta name="description" content="ADR-0008 defined a narrow">
+<meta property="og:title" content="0042. Production metadata backend: reaffirmed two-slot design, three finalists — Wyrd">
+<meta property="og:description" content="ADR-0008 defined a narrow">
+<meta property="og:type" content="article">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@300;400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/assets/style.css">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#211e1a">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/"><svg class="mark" viewBox="0 0 48 48" aria-hidden="true"><polygon class="lz-outer" points="24,3 45,24 24,45 3,24"/><polygon class="lz-inner" points="24,14 34,24 24,34 14,24"/></svg>Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Proposed · 06.07.2026 12:00</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>0042. Production metadata backend: reaffirmed two-slot design, three finalists</h1>
+<h2>Context</h2>
+<p><a href="/adr/0008-tikv-metadata-and-pluggable-backends.html">ADR-0008</a> defined a narrow
+<code>MetadataStore</code> trait and chose <strong>two</strong> concrete backends from one codebase: an
+<strong>embedded</strong> backend (<code>redb</code>, pure-Rust) for dev / eval / NAS-class, and a
+<strong>distributed</strong> backend (TiKV) for production. That two-slot shape is doctrine,
+and ADR-0010's dependency rule makes selecting a backend a composition change in
+<code>server</code>, never a refactor.</p>
+<p>The choice of <em>distributed</em> backend is under review for one reason: the native
+Rust client for TiKV, <code>client-rust</code> 0.4.0, states verbatim that it is &quot;not
+suitable for production use — APIs are not yet stable and the crate has not been
+thoroughly tested in real-life use&quot; (#435, #260). TiKV the <em>server</em> is
+production-grade; the <em>client</em> Wyrd links is not. That is the pain point, and
+nothing else about ADR-0008 is in question.</p>
+<p><strong>What is NOT reopened:</strong> the two-slot design, <code>redb</code> in the embedded slot
+(effectively uncontested — pure-Rust, single-process ACID, trivial to
+cross-compile to musl/NAS), and the gate below. Only the production distributed
+backend is re-decided here.</p>
+<h3>The gate (unchanged from ADR-0008)</h3>
+<p>The zonal metadata model is hierarchical <strong>inode + dirent</strong>. File creation writes
+an inode <em>and</em> its dirent atomically; rename is a single dirent mutation; the
+commit point is one linearizable, version-conditional mutation. The hard
+requirement is therefore:</p>
+<blockquote>
+<p><strong>native cross-shard multi-key atomic transactions, with a linearizable
+commit</strong> — not single-row atomicity, not single-partition LWT, not
+eventual-by-default.</p>
+</blockquote>
+<p>This one requirement eliminates the entire wide-column family and most NoSQL up
+front (see the appendix). It is the same requirement that selected TiKV.</p>
+<h2>Two concepts this decision turns on</h2>
+<p>The candidates differ along two axes that are easy to wave at and easy to get
+wrong, so both are defined here precisely; the per-candidate reasoning below
+refers back to these.</p>
+<h3>Link-graph purity</h3>
+<p>Wyrd is a Rust codebase (ADR-0004) that ships as a single static binary for the
+NAS/embedded profile (ADR-0014) and must cross-compile cleanly to musl and
+aarch64 targets. <strong>Link-graph purity</strong> is the property that everything <em>linked
+into a Wyrd binary</em> is pure Rust — no C/C++ library in the graph.</p>
+<p>Why it matters, concretely:</p>
+<ul>
+<li><strong>Cross-compilation.</strong> A pure-Rust graph cross-compiles to <code>x86_64-unknown-linux-musl</code>
+/ <code>aarch64</code> with <code>cargo build --target</code> and nothing else. A C/C++ dependency
+drags a C toolchain, a sysroot, and ABI/<code>libc</code> coupling (glibc-vs-musl) into
+every target — the friction the NAS profile exists to avoid.</li>
+<li><strong>Auditability &amp; supply chain.</strong> <code>cargo-deny</code> / <code>cargo-audit</code> see the whole
+graph when it is Rust; a linked C library (its source, its CVEs, its build
+flags) sits <em>outside</em> that wall and must be tracked by hand.</li>
+<li><strong>One build, one language.</strong> No second build system, no <code>bindgen</code>, no vendored
+headers, no &quot;works on my libc&quot; class of bug.</li>
+</ul>
+<p>The critical scoping point: purity is about the <strong>client</strong> side linked into
+Wyrd's binaries, <strong>not</strong> the server. TiKV's storage engine is C++ (RocksDB), but
+that runs in the <em>deployed TiKV process</em>, reached over gRPC — it is never linked
+into Wyrd, so it costs no purity. By contrast FoundationDB's <code>libfdb_c</code> <strong>is</strong>
+linked into every Wyrd gateway that talks to it: that is a purity cost. This
+distinction is the whole reason TiKV and FDB land differently on this axis
+despite both having C/C++ somewhere.</p>
+<h3>SQL impedance</h3>
+<p>The <code>MetadataStore</code> trait is a <strong>key-value + atomic-batch</strong> interface:
+<code>get(key)</code>, <code>scan(prefix)</code>, <code>commit(WriteBatch)</code> where a batch carries
+preconditions plus puts/deletes and returns <code>Committed</code> / <code>Conflict</code>. A SQL
+database speaks tables, rows, and a query language. <strong>SQL impedance</strong> (an
+impedance <em>mismatch</em>) is the translation layer between the two: mapping KV
+operations onto <code>INSERT</code>/<code>UPDATE</code>/<code>SELECT</code>, expressing a precondition as a
+<code>WHERE</code>/<code>SELECT … FOR UPDATE</code>, and paying SQL's parse/plan cost on the hot path.</p>
+<p>The load-bearing observation: this mismatch lives <strong>entirely inside the
+concrete</strong>. A SQL-backed <code>MetadataStore</code> implementation hides all of it behind
+the same trait; no SQL leaks past the seam, and callers (<code>core</code>, <code>custodian</code>,
+the gateways) are unchanged. So SQL impedance is an <em>implementation cost and
+risk to contain</em>, not an architecture violation — the two-slot design absorbs a
+SQL backend exactly as it absorbs a KV one.</p>
+<h2>Decision</h2>
+<ol>
+<li>
+<p><strong>Reaffirm the two-slot <code>MetadataStore</code> design</strong> (ADR-0008): <code>redb</code> embedded,
+one distributed backend behind the same trait, selected as a composition
+change (ADR-0010). This is not in question.</p>
+</li>
+<li>
+<p><strong>Narrow the production distributed field to three finalists</strong> — <strong>TiKV</strong>,
+<strong>FoundationDB</strong>, <strong>YugabyteDB</strong> — all of which clear the gate. The full
+candidate field, with each rejection reasoned so it is never relitigated, is
+the appendix.</p>
+</li>
+<li>
+<p><strong>Each finalist carries exactly one primary liability; it is adopted only
+with the named mitigation below.</strong> The finalists trade along three axes —
+<em>client maturity · governance/continuity · link-graph purity</em> — and no
+candidate wins all three. The honest shape is <strong>pick two</strong>:</p>
+<ul>
+<li>TiKV = governance + link-graph purity (− client maturity)</li>
+<li>YugabyteDB = client maturity + link-graph purity (− governance)</li>
+<li>FoundationDB = client maturity + best-consistency, but − governance <strong>and</strong>
+− link-graph purity (its second win, strict serializability, sits on a
+<em>fourth</em> axis outside the triangle; it is the least-sovereign finalist).</li>
+</ul>
+</li>
+<li>
+<p><strong>The #257 conformance + contention + Jepsen battery is the tiebreaker, and
+TiKV is the incumbent default.</strong> TiKV remains the production backend until a
+challenger <em>passes that battery</em> and its liability mitigation is demonstrated.
+Therefore <strong>this ADR does not itself supersede ADR-0008</strong> — it reaffirms the
+two-slot design and reopens only the distributed slot with TiKV still
+standing. If a challenger wins, <em>that</em> outcome is recorded as a later
+supersession of ADR-0008's TiKV clause (per <a href="/adr/0038-supersession-recorded-in-the-index.html">ADR-0038</a>;
+the on-file <code>Superseded</code> stamp is now available, #444).</p>
+</li>
+</ol>
+<h3>The three finalists — and how we address what each brings</h3>
+<h4>TiKV (incumbent) — liability: an immature, correctness-critical Rust client</h4>
+<p><code>client-rust</code> 0.4.0 is pre-1.0 and self-declared not production-ready. It has
+already shown three sharp edges — a drop-time panic path (<code>CheckLevel::Panic</code>),
+eager pessimistic locks in <code>put</code>/<code>delete</code>, and write-conflict errors wrapped
+several layers deep. How we address it:</p>
+<ul>
+<li><strong>Fence the client as an untrusted boundary.</strong> Every one of those three edges
+was <em>caught by Wyrd's own conformance + contention battery before merge</em> — that
+battery is the compensating control, and it stays the gate the client must pass
+on every pin bump (the nightly TiKV conformance job, #420).</li>
+<li><strong>Pin exactly, and carry a vendored fork if needed.</strong> Pin the precise version
+(#260); upstream is active (the tonic/TLS fix merged 2026-06-26), so a fork is
+a <em>patch-carrier</em>, not a maintenance island — we cherry-pick a fix for the
+specific defect Jepsen finds rather than owning the client.</li>
+<li><strong>Quarantine the advisory surface.</strong> The pinned tonic tree pulls
+RUSTSEC-flagged <code>rustls-webpki</code>; keep it behind the feature-gated ADR-0003
+deferral until a tagged release clears it, tracked so it cannot rot silently
+(#420).</li>
+<li><strong>Escalation path is this ADR's other two finalists.</strong> If the client cannot be
+made trustworthy under the #257 gate, that <em>is</em> the trigger to promote a
+challenger — the mitigation for TiKV's liability failing is FDB/YugabyteDB, not
+a heroic client rewrite.</li>
+</ul>
+<h4>FoundationDB — liabilities: (a) a C library in the link-graph; (b) no-foundation governance</h4>
+<ul>
+<li><strong><code>libfdb_c</code> in the link-graph — confine it to the production tier.</strong> The
+purity cost is real but <em>bounded</em>: the <code>fdb</code> feature is off by default, so the
+embedded/NAS single-static-binary profile stays pure-Rust <code>redb</code>, untouched.
+The C client is linked only into the production gateway build, which is already
+a multi-node, non-NAS deployment where a dynamically-linked, version-matched
+<code>libfdb_c</code> shipped in the OCI image is the norm every FDB product accepts. This
+is reconciled with ADR-0014 (single-binary is explicitly dev-only), and the
+dependency is <em>documented</em>, not hidden: the audit policy records <code>libfdb_c</code>'s
+licence/provenance out-of-cargo, and startup fails closed on a client↔server
+<code>protocol_version</code> mismatch with a guided error rather than the classic
+indefinite &quot;waiting for cluster&quot; hang. The multi-version client bridges lockstep
+upgrades.</li>
+<li><strong>No-foundation governance — the permissive licence is the safety net.</strong>
+FoundationDB is Apache-2.0. Even without a neutral foundation, Apache-2.0 code
+is <strong>forkable</strong>, so a relicense <em>trap</em> is impossible: we mirror the source, and
+the correctness-critical core is simulation-tested upstream (the same DST
+methodology as our own ADR-0009), so the maintenance surface we would inherit
+on a fork is thin. The residual risk is <em>direction</em>, not <em>capture</em> — acceptable
+and named.</li>
+</ul>
+<h4>YugabyteDB — liabilities: (a) SQL impedance; (b) single-vendor governance; (c) a heavy, self-managed server (plus a non-issue to dispatch: global-topology licensing)</h4>
+<ul>
+<li><strong>SQL impedance — contain it behind the trait on a tiny, fixed SQL surface.</strong>
+The <code>metadata-yugabyte</code> concrete maps the trait onto one small schema (an
+inode/dirent pair, or a single <code>kv(key BYTEA PRIMARY KEY, value BYTEA)</code> table)
+driven entirely by <strong>prepared statements</strong> — no dynamic SQL, no ORM, no query
+building on the hot path. <code>commit(batch)</code> is one serializable transaction;
+preconditions become <code>SELECT … FOR UPDATE</code> / conditional <code>UPDATE … WHERE</code>;
+<code>CommitOutcome::Conflict</code> is the serialization-failure / zero-rows-affected
+signal. The client is <code>tokio-postgres</code> — pure Rust and mature — so this is the
+finalist that gets a <em>production-ready client for free while keeping link-graph
+purity</em>. A bonus for correctness doctrine: a SQL-shaped third implementation
+alongside <code>redb</code> and the DST sim <em>strengthens</em> the ADR-0006 trait-pinning story
+(the more differently-shaped the implementations, the better the trait is
+pinned).</li>
+<li><strong>Single-vendor governance (CLA-not-DCO) — pin the Apache-2.0 core, treat
+pgwire as the open standard.</strong> The CLA governs <em>contribution</em>, not the right to
+run or fork the <em>released</em> code, which is Apache-2.0 for the core database
+(<code>YugabyteDB Anywhere</code> is Polyform and is explicitly out of scope). We pin to
+the Apache-2.0 core, mirror the source, and depend on the <strong>PostgreSQL wire
+protocol</strong> — an open, decades-stable standard — so the <em>client</em> is not
+lock-in even if the server's vendor changes course. Continuity is weaker than
+CNCF-TiKV; that is the trade this option makes and the ADR names it.</li>
+<li><strong>Global-topology licensing — a non-issue for Wyrd.</strong> YugabyteDB's commercial
+tiers (the <em>Aeon</em> managed / BYOC product) gate &quot;global deployment topologies&quot;
+behind paid plans, which can read as &quot;can't grow globally without a licence.&quot;
+Two reasons it does not bite. (1) The gate is around the <em>managed product</em>, not
+the engine: the <strong>Apache-2.0 core</strong> self-hosts multi-region clusters,
+row-level geo-partitioning, follower reads, and synchronous + asynchronous
+(xCluster) replication — and since early 2025 the formerly-enterprise features
+(distributed backup, encryption at rest, read replicas) are in the OSS project
+too. (2) <strong>Wyrd never asks the metadata backend to grow globally.</strong>
+<code>MetadataStore</code> is the <em>per-zone</em> store; Wyrd supplies the global layer itself
+— L2's globally-consistent namespace plus cross-zone replication (M9) and the
+global control plane (M10) — <em>above</em> it, and ADR-0015's home-zone authority
+deliberately keeps the commit point zone-local. So Wyrd runs one
+<strong>single-region cluster per zone</strong> (multi-node within the zone for HA), squarely
+inside the free core; a globe-spanning metadata DB would be the <em>wrong</em> shape,
+fighting the zone-local contract. What is genuinely licensed — <em>YugabyteDB
+Anywhere</em> / <em>Aeon</em> — is the management/orchestration convenience, addressed next.</li>
+<li><strong>Heavy Postgres-fork server + self-managed operations — accept it for the prod
+tier, own it with Wyrd's substrate.</strong> Two real costs, neither a wall. (i)
+Per-node footprint: a full Postgres-fork is heavier than TiKV or FDB, but the
+production tier is multi-node regardless of backend, it is self-hostable and
+EU-hostable, and the embedded slot stays <code>redb</code> so &quot;heavy&quot; never reaches
+dev/NAS. (ii) The OSS path forgoes <em>YugabyteDB Anywhere</em> (the Polyform control
+plane), so cluster bring-up, upgrade, backup, and monitoring are self-managed
+with the OSS tooling (<code>yugabyted</code>, <code>yb-admin</code>, the open-source Kubernetes
+operator / Helm) rather than the paid UI — which is exactly the posture ADR-0003's
+control-resilience test <em>wants</em> (self-host, no <em>required</em> managed service). How
+that per-zone operation is owned — for all three finalists — is treated next.</li>
+</ul>
+<h4>Common to all three: the gate does not shrink</h4>
+<p>Whichever backend is trialled, the decision is <strong>provisional until it passes the
+#257 battery</strong> against Wyrd's contract. A mature client (YugabyteDB) or a
+simulation-tested core (FDB) buys confidence but does not exempt the backend:
+with YugabyteDB you are trusting <em>its</em> distributed-transaction correctness
+instead of a client's; with FDB you are trusting <em>your mapping layer</em> onto its
+optimistic model. The battery tests exactly those.</p>
+<h4>Common to all three: operating the per-zone cluster</h4>
+<p>The distributed backend is deployed <strong>once per zone</strong> (multi-node within the zone
+for HA), and that cluster must be brought up, upgraded, backed up, and monitored.
+This is a real ops cost, but a bounded one — and it is not a licensing wall for
+any finalist:</p>
+<ul>
+<li><strong>It is not a new capability.</strong> A Wyrd zone already runs a per-zone stateful
+quorum — <strong>etcd</strong> for L5 coordination (ADR-0006) — alongside the D-server fleet
+and the leader-elected custodians. The metadata cluster is one more stateful
+component in a pattern the zone already operates.</li>
+<li><strong>Wyrd's own substrate owns it, not a vendor SaaS.</strong> ADR-0010 makes the
+deployment substrate pluggable (systemd on storage hosts / docker-compose / k8s
+with a placement-aware operator) and forbids coupling to orchestrator APIs; M8
+(manageability — CLI + portal) and the day-one runbook (#367) own zone
+lifecycle. So operating the cluster depends on <strong>none</strong> of <em>YugabyteDB Anywhere</em>,
+a <em>TiDB Dashboard</em> SaaS, or an FDB vendor console — the metadata cluster is
+deployed and observed the same way D-servers, etcd, and custodians already are.</li>
+<li><strong>Ops weight differs — it is a comparison axis the runbook decides.</strong> TiKV adds
+<strong>PD</strong> (the placement driver) plus <code>tiup</code>/operator and rolling upgrades;
+FoundationDB uses <code>fdbmonitor</code>/<code>fdbcli</code> + the FDB operator and imposes the
+strictest discipline — <strong>lockstep protocol upgrades</strong>, bridged by the
+multi-version client; YugabyteDB has the lightest bring-up (<code>yugabyted</code>,
+one command) but the heaviest per-node footprint. Whichever wins, the #367
+first-deployment gate must stand the per-zone cluster up <strong>end-to-end on OSS
+tooling</strong> — that run <em>is</em> the evidence the management story holds, riding the
+same gate as the #257 correctness battery.</li>
+</ul>
+<h2>Consequences</h2>
+<ul>
+<li>The production backend decision is <strong>framed, not yet made</strong>: three finalists,
+each with a named liability and a concrete mitigation, decided by a battery
+that binds all three. TiKV stands until a challenger earns the swap.</li>
+<li>ADR-0008 is <strong>reaffirmed, not superseded</strong>, by this ADR; a challenger win is a
+future supersession event.</li>
+<li>The downstream <code>metadata-client</code> milestone issues (#437–#443) that currently
+assume FoundationDB are <strong>conditional on this decision</strong> and must be reframed to
+the chosen backend (<code>metadata-&lt;winner&gt;</code>, its packaging/link-graph story, its
+battery) once it lands.</li>
+<li>The two concept definitions (link-graph purity, SQL impedance) become shared
+vocabulary for this and later backend decisions.</li>
+<li>The candidate field is recorded once, with reasons, so the wide-column /
+proprietary / embedded-slot rejections are not relitigated.</li>
+</ul>
+<h2>Appendix — candidates considered</h2>
+<p>Licences verified July 2026. ✅ meets / good · ⚠️ partial / caveat · ❌ fails /
+absent.</p>
+<h3>Matrix A — architectural fit (does it do the job?)</h3>
+<table>
+<thead>
+<tr>
+<th>Candidate</th>
+<th>Cross-shard multi-key txn</th>
+<th>Consistency</th>
+<th>Embedded (dev/NAS)</th>
+<th>Distributed (prod scale)</th>
+<th>Rust client</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>TiKV</strong></td>
+<td>✅ native (Percolator 2PC)</td>
+<td>Snapshot isolation, linearizable Raft</td>
+<td>❌ multi-node minimum</td>
+<td>✅ excellent</td>
+<td>⚠️ native but <strong>pre-1.0, immature</strong> (the pain point)</td>
+</tr>
+<tr>
+<td><strong>FoundationDB</strong></td>
+<td>✅ native</td>
+<td><strong>Strict serializable</strong> (gold standard)</td>
+<td>⚠️ single dev process only</td>
+<td>✅ excellent</td>
+<td>⚠️ binding over C API + BindingTester (mature) — but drags <code>libfdb_c</code></td>
+</tr>
+<tr>
+<td><strong>YugabyteDB</strong></td>
+<td>✅ native (Spanner-arch)</td>
+<td>Serializable / SI, Raft, Jepsen-tested</td>
+<td>❌ <code>yugabyted</code> single-node is heavy</td>
+<td>✅ excellent</td>
+<td>✅ <strong>mature via Postgres wire</strong> (<code>tokio-postgres</code>) — but SQL, not KV</td>
+</tr>
+<tr>
+<td>TiDB</td>
+<td>✅ (SQL over TiKV)</td>
+<td>SI</td>
+<td>❌</td>
+<td>✅</td>
+<td>SQL driver — but adds a SQL layer you don't need over TiKV</td>
+</tr>
+<tr>
+<td>CockroachDB</td>
+<td>✅</td>
+<td>Serializable</td>
+<td>❌</td>
+<td>✅</td>
+<td>pgwire</td>
+</tr>
+<tr>
+<td>Google Spanner</td>
+<td>✅</td>
+<td>External consistency</td>
+<td>❌</td>
+<td>✅ (managed)</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>etcd</td>
+<td>⚠️ mini-txn (limited)</td>
+<td>Linearizable</td>
+<td>✅ (in-mem dev, already used)</td>
+<td>⚠️ <strong>not data-proportional — kB only</strong></td>
+<td>✅</td>
+</tr>
+<tr>
+<td><strong>redb</strong></td>
+<td>✅ (single-process ACID write txn)</td>
+<td>Serializable (single node)</td>
+<td>✅✅ <strong>pure-Rust, the point</strong></td>
+<td>❌ single-process</td>
+<td>✅ native (it <em>is</em> Rust)</td>
+</tr>
+<tr>
+<td>sled</td>
+<td>⚠️ txns exist but beta</td>
+<td>—</td>
+<td>✅ pure-Rust</td>
+<td>❌</td>
+<td>native — but <strong>stalled</strong></td>
+</tr>
+<tr>
+<td>SQLite</td>
+<td>✅ (ACID)</td>
+<td>Serializable, single-writer</td>
+<td>✅ (but C)</td>
+<td>❌</td>
+<td><code>rusqlite</code> (C FFI)</td>
+</tr>
+<tr>
+<td>RocksDB</td>
+<td>✅ (<code>TransactionDB</code>, 1 node)</td>
+<td>—</td>
+<td>✅ (but C++)</td>
+<td>❌ (engine, not a store)</td>
+<td><code>rust-rocksdb</code> (C++ FFI)</td>
+</tr>
+<tr>
+<td>HBase</td>
+<td>❌ row / region-local only</td>
+<td>Strong per-row</td>
+<td>❌ (JVM + HDFS)</td>
+<td>✅</td>
+<td>none real</td>
+</tr>
+<tr>
+<td>Cassandra</td>
+<td>❌ single-partition LWT</td>
+<td>Tunable, <strong>eventual by default</strong></td>
+<td>❌</td>
+<td>✅</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>ScyllaDB</td>
+<td>❌ single-partition LWT</td>
+<td>Tunable</td>
+<td>❌</td>
+<td>✅</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>Google Bigtable</td>
+<td>❌ single-row</td>
+<td>Strong per-row</td>
+<td>❌</td>
+<td>✅ (managed)</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>MongoDB</td>
+<td>✅ multi-doc txn (4.0+)</td>
+<td>Tunable, causal</td>
+<td>❌ (<code>mongod</code> heavy)</td>
+<td>✅ (sharded)</td>
+<td>✅ (official driver)</td>
+</tr>
+<tr>
+<td>PostgreSQL</td>
+<td>✅ (ACID)</td>
+<td>Serializable</td>
+<td>⚠️ server, not embeddable</td>
+<td>❌ <strong>doesn't shard natively</strong></td>
+<td>✅ <code>tokio-postgres</code></td>
+</tr>
+</tbody>
+</table>
+<h3>Matrix B — sovereignty &amp; doctrine fit (can we adopt it under the house posture?)</h3>
+<table>
+<thead>
+<tr>
+<th>Candidate</th>
+<th>Licence</th>
+<th>Governance / continuity</th>
+<th>Language / link-graph</th>
+<th>Ops weight</th>
+<th>Sovereignty</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>TiKV</strong></td>
+<td>Apache-2.0</td>
+<td><strong>CNCF graduated</strong> (neutral foundation) — low relicense risk</td>
+<td>Rust server + <strong>pure-Rust client</strong>; C++ RocksDB confined to the <em>server</em></td>
+<td>Medium (PD + multi-node)</td>
+<td>✅ EU-self-hostable</td>
+</tr>
+<tr>
+<td><strong>FoundationDB</strong></td>
+<td>Apache-2.0</td>
+<td>Community, ex-Apple, <strong>no foundation</strong> — medium</td>
+<td><strong><code>libfdb_c</code> (C) enters the link-graph</strong> — the sovereignty cost</td>
+<td>Medium</td>
+<td>✅ self-host; ⚠️ C in every gateway</td>
+</tr>
+<tr>
+<td><strong>YugabyteDB</strong></td>
+<td>Apache-2.0 (core; Anywhere = Polyform)</td>
+<td><strong>Single-vendor, no foundation</strong>, CLA-not-DCO — medium/high relicense risk</td>
+<td>C++ / Postgres-fork server; Rust via pgwire</td>
+<td><strong>Heavy</strong> (full distributed SQL)</td>
+<td>✅ self-host</td>
+</tr>
+<tr>
+<td>TiDB</td>
+<td>Apache-2.0</td>
+<td>PingCAP (TiKV under it is CNCF-graduated)</td>
+<td>+SQL layer</td>
+<td>Heavier than TiKV</td>
+<td>✅ — but redundant vs TiKV-direct</td>
+</tr>
+<tr>
+<td>CockroachDB</td>
+<td>❌ <strong>CSL, proprietary</strong> (since Nov 2024) + <strong>mandatory telemetry</strong></td>
+<td>Single-vendor, relicensed twice</td>
+<td>pgwire</td>
+<td>Medium</td>
+<td>❌ proprietary <strong>and</strong> phones home</td>
+</tr>
+<tr>
+<td>Google Spanner</td>
+<td>❌ proprietary</td>
+<td>Google</td>
+<td>managed only</td>
+<td>n/a</td>
+<td>❌ US-controlled</td>
+</tr>
+<tr>
+<td>etcd</td>
+<td>Apache-2.0</td>
+<td>CNCF graduated</td>
+<td>Go server, Rust client</td>
+<td>Light</td>
+<td>✅ — but <strong>wrong role</strong> (L5, kB)</td>
+</tr>
+<tr>
+<td><strong>redb</strong></td>
+<td>MIT/Apache-2.0</td>
+<td>Single maintainer, but small forkable codebase</td>
+<td><strong>pure-Rust</strong> ✅✅</td>
+<td>Trivial (embedded)</td>
+<td>✅✅ ideal for the embedded slot</td>
+</tr>
+<tr>
+<td>sled</td>
+<td>MIT/Apache-2.0</td>
+<td><strong>Effectively unmaintained</strong></td>
+<td>pure-Rust</td>
+<td>Trivial</td>
+<td>❌ maturity</td>
+</tr>
+<tr>
+<td>SQLite</td>
+<td>Public domain</td>
+<td>Rock-solid, permanent</td>
+<td><strong>C</strong></td>
+<td>Trivial</td>
+<td>⚠️ licence/gov ✅; link-graph ❌ — redb dominates it</td>
+</tr>
+<tr>
+<td>RocksDB</td>
+<td>Apache-2.0 / GPLv2</td>
+<td>Meta</td>
+<td><strong>C++</strong></td>
+<td>Embedded</td>
+<td>❌ link-graph — ADR fallback only</td>
+</tr>
+<tr>
+<td>HBase</td>
+<td>Apache-2.0</td>
+<td><strong>ASF (best governance here)</strong></td>
+<td><strong>JVM + HDFS</strong></td>
+<td>Very heavy</td>
+<td>❌ on arch + ops, not licence</td>
+</tr>
+<tr>
+<td>Cassandra</td>
+<td>Apache-2.0</td>
+<td>ASF</td>
+<td>JVM</td>
+<td>Heavy</td>
+<td>❌ on arch</td>
+</tr>
+<tr>
+<td>ScyllaDB</td>
+<td>❌ <strong>source-available (2025.1)</strong>; AGPL 6.2 final OSS</td>
+<td>Single-vendor</td>
+<td>C++</td>
+<td>Heavy</td>
+<td>❌ licence + arch</td>
+</tr>
+<tr>
+<td>Google Bigtable</td>
+<td>❌ proprietary</td>
+<td>Google</td>
+<td>managed</td>
+<td>n/a</td>
+<td>❌ US-controlled</td>
+</tr>
+<tr>
+<td>MongoDB</td>
+<td>❌ <strong>SSPL (non-OSI)</strong></td>
+<td>Single-vendor</td>
+<td>C++ server</td>
+<td>Heavy</td>
+<td>❌ licence + wrong shape</td>
+</tr>
+<tr>
+<td>PostgreSQL</td>
+<td>PostgreSQL licence (permissive)</td>
+<td><strong>Community — gold-standard governance</strong></td>
+<td>C</td>
+<td>Medium</td>
+<td>⚠️ gov/licence ✅ — but no native distributed tier; Citus (MS-owned) reintroduces a US vendor</td>
+</tr>
+</tbody>
+</table>
+<h3>What survives</h3>
+<p><strong>Embedded slot — effectively uncontested: <code>redb</code>.</strong> Pure-Rust, single-process
+ACID, multi-key within a write transaction, trivial to cross-compile to
+NAS/musl. sled is unmaintained; SQLite and RocksDB reintroduce a C/C++
+link-graph the embedded profile exists to avoid.</p>
+<p><strong>Distributed slot — the genuine three-way</strong> carried into the Decision above:
+TiKV (governance + pure-Rust client, − client maturity), FoundationDB
+(consistency + conformance, − governance and − link-graph purity), YugabyteDB
+(mature client + link-graph purity, − governance + SQL impedance + ops weight).</p>
+<h3>Rejected, with reason (so it is never relitigated)</h3>
+<ul>
+<li><strong>Wide-column family</strong> (HBase, Cassandra, ScyllaDB, Bigtable, Accumulo) — fail
+the multi-key gate (single-row / single-partition atomicity); most add
+JVM/HDFS weight or non-open licences.</li>
+<li><strong>CockroachDB</strong> — proprietary CSL + mandatory telemetry (both since Nov 2024).</li>
+<li><strong>MongoDB</strong> — SSPL (non-OSI), wrong data shape.</li>
+<li><strong>Google Spanner / Bigtable</strong> — proprietary, US-controlled.</li>
+<li><strong>etcd</strong> — already consumed at L5; not data-proportional, must not become a
+metadata store (&quot;treating etcd as a database&quot; is the classic L5 failure mode).</li>
+<li><strong>PostgreSQL</strong> — permissive and superbly governed, but no native horizontal
+shard for the production tier; the reflexive &quot;just use Postgres&quot; answer routes
+you to Citus (Microsoft-owned) or … YugabyteDB.</li>
+<li><strong>sled / SQLite / RocksDB</strong> — embedded-slot also-rans behind <code>redb</code> on maturity
+(sled) or link-graph purity (SQLite/RocksDB); RocksDB is retained only as the
+ADR-0008 engine fallback behind the trait.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>
