@@ -89,7 +89,7 @@
 <tr>
 <td><a href="/adr/0008-tikv-metadata-and-pluggable-backends.html">0008</a></td>
 <td>TiKV metadata store and pluggable backends</td>
-<td>Accepted</td>
+<td>Superseded by 0042</td>
 </tr>
 <tr>
 <td><a href="/adr/0009-deterministic-simulation-testing.html">0009</a></td>
@@ -258,8 +258,8 @@
 </tr>
 <tr>
 <td><a href="/adr/0042-production-metadata-backend-reevaluation.html">0042</a></td>
-<td>Production metadata backend: reaffirm the two-slot design, narrow to three finalists (TiKV / FoundationDB / YugabyteDB), each with a named liability + mitigation; the #257 battery decides, TiKV incumbent (reopens ADR-0008's distributed slot; does not supersede it)</td>
-<td>Proposed</td>
+<td>Production metadata backend: adopt <strong>FoundationDB</strong> for the distributed slot (two-slot design + <code>redb</code> embedded + durability-scheme decision carried forward), two named liabilities each mitigated, TiKV then YugabyteDB as ranked fallback; the #257 battery gates deployment (supersedes ADR-0008)</td>
+<td>Accepted</td>
 </tr>
 </tbody>
 </table>
