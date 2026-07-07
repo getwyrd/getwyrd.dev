@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0045. Metadata validation boundaries: parse-don&#x27;t-validate at decode, liberal read / strict maintenance — Wyrd</title>
+<meta name="description" content="Several operational paths today trust a metadata record the moment JSON decoding">
+<meta property="og:title" content="0045. Metadata validation boundaries: parse-don&#x27;t-validate at decode, liberal read / strict maintenance — Wyrd">
+<meta property="og:description" content="Several operational paths today trust a metadata record the moment JSON decoding">
+<meta property="og:type" content="article">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@300;400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/assets/style.css">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#211e1a">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/"><svg class="mark" viewBox="0 0 48 48" aria-hidden="true"><polygon class="lz-outer" points="24,3 45,24 24,45 3,24"/><polygon class="lz-inner" points="24,14 34,24 24,34 14,24"/></svg>Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Proposed · 07.07.2026 19:45</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>0045. Metadata validation boundaries: parse-don't-validate at decode, liberal read / strict maintenance</h1>
+<h2>Context</h2>
+<p>Several operational paths today trust a metadata record the moment JSON decoding
+succeeds. That is safe <em>only</em> while every record is produced by current, correct,
+in-process Wyrd code. It stops being safe once we account for old on-disk
+versions, bugs, manual repair, partial corruption, and — imminently — a
+distributed backend: TiKV (ADR-0008) and now FoundationDB (ADR-0042) end the
+store's process-privacy, so records become network-visible and writable by
+non-Wyrd tooling, and proposal 0014's M7.3 restores metadata from backup into a
+custodian verify pass, driving possibly-inconsistent restored records through
+every one of these boundaries. Two concrete failures already surfaced and were
+fixed piecemeal: #285 (invalid EC metadata such as <code>k = 0</code> panics lower layers)
+and #290 (the read path preallocated directly from an untrusted inode size).</p>
+<p>The systematic posture, however, already exists for exactly one field. ADR-0040
+built it for placement: <strong>classify-before-use</strong> (<code>placement_is_valid</code> /
+<code>checked_fragments</code>), a <strong>typed error</strong> (<code>MalformedPlacement</code>), a <strong>liberal-read
+/ strict-maintenance asymmetry</strong> (serve what you safely can; never let a
+maintenance loop act on or rewrite a record it cannot trust), NEEDS-HUMAN
+emission, and GC treating an unparsable reference as <em>referenced</em> (fail-safe).
+The open question is not what posture to invent — it is to <strong>generalize
+ADR-0040's posture across all metadata records</strong>, and to pin the boundary so it
+cannot silently regress.</p>
+<h2>Decision</h2>
+<p>We adopt a single validation posture for all metadata, generalizing ADR-0040
+(which it refines, not supersedes), answering the four questions #291 poses:</p>
+<ol>
+<li><strong>Parse-don't-validate at decode, for structural invariants.</strong> A validated
+<code>metadata::decode</code> path returns a typed <code>MetadataValidationError</code> for any
+record that violates a structural invariant; a value that decodes is
+structurally trustworthy thereafter. <em>Contextual</em> checks that need external
+state (placement-vs-fleet, domain membership) — and, explicitly, <strong>placement
+length, which stays under ADR-0040's liberal-read rule</strong> — remain at the
+operation boundary, never at decode, so a still-readable record is never turned
+into a read fault (ADR-0040 decision 4).</li>
+<li><strong>Post-validation assumptions are documented per type.</strong> After a successful
+validated decode, the erasure math MAY assume the scheme is
+<code>erasure::supported</code> (so <code>k ≥ 1</code> and <code>m ≥ 1</code>); indexing MAY trust
+<code>fragment_count()</code>; each type records which invariants downstream code is
+entitled to assume, so the assumption and its guarantee live together.</li>
+<li><strong>Fail-closed surfacing is the ADR-0040 asymmetry, generalized.</strong> The read
+path MUST surface a typed read fault, never panic (the #285 class). Maintenance
+loops (custodian, repair, GC sweeps) MUST classify, skip, and emit NEEDS-HUMAN —
+never act on or rewrite a malformed record. GC MUST fail safe (treat an
+unparsable reference as referenced), never reclaim on doubt.</li>
+<li><strong>The boundary is pinned by an adversarial decode corpus.</strong> A malformed-record
+table — <code>k = 0</code>, <code>m = 0</code> (and any <code>!erasure::supported(k, m)</code> pair), <code>k + m</code>
+overflow, size↔chunk-map mismatch, wrong-length placement, absurd size,
+<code>u64::MAX</code> version/lease — is run at Tier-0 against
+<code>decode</code> and each boundary, applying the <code>invalid/</code> conformance-vector pattern
+to metadata.</li>
+</ol>
+<p>The structural invariants to pin, by record:</p>
+<table>
+<thead>
+<tr>
+<th>Record</th>
+<th>Invariants</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>EcScheme::ReedSolomon</code></td>
+<td><code>erasure::supported(k, m)</code> — the exact predicate the read path already applies (<code>read.rs</code>), so <code>k ≥ 1</code> <strong>and</strong> <code>m ≥ 1</code> (a stored <code>rs(k, 0)</code> is as invalid as <code>rs(0, m)</code>); <code>k</code>, <code>m</code> additionally bounded to the format header widths (<code>ec_k</code>/<code>ec_m</code> are <code>u8</code>, <code>ec_fragment_index</code> <code>u16</code>) so metadata can never describe a chunk the format cannot encode</td>
+</tr>
+<tr>
+<td><code>ChunkRef</code></td>
+<td>scheme validity; logical length consistent with the scheme. <strong>Placement is not a decode-time invariant</strong> — it stays under ADR-0040 decision 4's liberal-read / strict-maintenance split (reads keep the per-index identity fallback, so a still-readable record is never faulted over a length quirk; only maintenance gates on a malformed placement). Placement length is a boundary check, never a decode failure</td>
+</tr>
+<tr>
+<td><code>InodeRecord</code></td>
+<td><code>size</code> ↔ chunk-map consistency; <code>state</code> validity; <strong>checked arithmetic</strong> on <code>version</code> increments</td>
+</tr>
+<tr>
+<td><code>PendingEntry</code> / repair / desired / orphan</td>
+<td>lease-timestamp checked arithmetic; parseable keys (the #283 strict-parsing sibling)</td>
+</tr>
+<tr>
+<td>read reassembly</td>
+<td>allocation caps before buffering (the #290 pattern, generalized)</td>
+</tr>
+</tbody>
+</table>
+<h2>Consequences</h2>
+<p>Metadata is hardened against every untrusted-input path the distributed backend,
+restore-verify, old versions, and corruption open — the read path degrades to a
+typed fault instead of a panic, and maintenance loops quarantine rather than
+propagate bad records. The posture is one rule, generalized from ADR-0040, so
+there is a single mental model rather than per-field improvisation. The cost is
+validation work on the decode path, kept bounded by validating only <em>structural</em>
+invariants there and leaving contextual checks at operation boundaries.</p>
+<p>This review produces the implementation issues #291's contract calls for; two are
+already visible and filed against this ADR: (i) the validated-decode layer with
+its typed <code>MetadataValidationError</code> and the adversarial decode corpus; (ii)
+checked arithmetic for version increments and lease timestamps. Any further gaps
+the implementation surfaces are filed the same way.</p>
+<p>This should land before records go network-visible on the production path (the
+FoundationDB backend, #438) and before M7.3's restore-verify pass exists, since
+both make the untrusted-input assumption real. It commits the project to a typed
+metadata-validation error surface and the liberal-read / strict-maintenance
+asymmetry as standing rules; reversing toward trust-on-decode would reopen the
+#285 panic class on any non-current record. Refs ADR-0040 (the posture template),
+#285/#290 (closed inputs), #283 (strict-parsing sibling), #438 (FDB consumer).</p>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>
