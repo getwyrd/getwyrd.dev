@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0044. Provisional pins in the shared conformance suite: mark, don&#x27;t gate — Wyrd</title>
+<meta name="description" content="The shared metadata-conformance suite is an executable, multi-backend">
+<meta property="og:title" content="0044. Provisional pins in the shared conformance suite: mark, don&#x27;t gate — Wyrd">
+<meta property="og:description" content="The shared metadata-conformance suite is an executable, multi-backend">
+<meta property="og:type" content="article">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@300;400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/assets/style.css">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#211e1a">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/"><svg class="mark" viewBox="0 0 48 48" aria-hidden="true"><polygon class="lz-outer" points="24,3 45,24 24,45 3,24"/><polygon class="lz-inner" points="24,14 34,24 24,34 14,24"/></svg>Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Proposed · 07.07.2026 19:30</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>0044. Provisional pins in the shared conformance suite: mark, don't gate</h1>
+<h2>Context</h2>
+<p>The shared <code>metadata-conformance</code> suite is an <strong>executable, multi-backend
+contract</strong>: every <code>MetadataStore</code> implementation (redb today; TiKV and
+FoundationDB behind the trait per ADR-0008/0042) must pass the identical suite,
+which is also how the trait is pinned by more than one implementation (ADR-0006).
+Adding a property to that suite therefore does not test one backend — it
+promotes a requirement that <em>every</em> backend, present and future, must satisfy.</p>
+<p>That power created a governance gap. #419 landed <code>contract_read_after_commit</code>
+and <code>contract_scan_is_consistent_cut</code> into the shared suite, encoding the
+read-consistency semantics decided in #261 — but #261 was still open and
+unratified: its decision lived only in a maintainer comment, and the (now frozen)
+M4 plan proposal 0015 still listed it under §Open questions. So a not-yet-governed
+decision became an executable, cross-backend contract that TiKV (#254) and FDB
+(#438) inherit unchanged. The Act review (2026-07-04) surfaced this and asked for
+a standing rule.</p>
+<p>The genuine tension: <strong>ratify-first</strong> protects governance but is too rigid —
+writing the pin is often exactly what clarifies and de-risks the decision, so
+forbidding a pin until its decision is ratified stalls the work that would ratify
+it (and would retroactively cast the reasonable #419 landing as a violation). At
+the other pole, allowing <strong>unmarked</strong> early pins lets ungoverned requirements
+accrete silently into the contract every backend must honour — precisely the
+failure #426 names.</p>
+<h2>Decision</h2>
+<p><strong>We adopt the provisional-marker rule.</strong> A conformance property MAY land in the
+shared suite before the decision it encodes is ratified, provided it is tagged
+with an explicit <code>PROVISIONAL(&lt;decision-id&gt;)</code> marker.</p>
+<ul>
+<li>The pin <strong>MUST</strong> carry a <code>PROVISIONAL(&lt;decision-id&gt;)</code> marker naming the
+governing decision (the issue and/or ADR that will ratify it), adjacent to the
+property in the shared conformance suite — today
+<code>crates/metadata-redb/tests/conformance.rs</code>; the <code>crates/metadata-conformance</code>
+crate once a second backend lifts it there.</li>
+<li>When that decision ratifies, the marker <strong>MUST</strong> be removed in the same change
+that records the ratification — the pin then stands unconditional.</li>
+<li>A provisional pin is <strong>still binding</strong>: every backend must pass it. The marker
+records that its <em>governance</em> is pending, not that the requirement is optional
+or a backend may skip it.</li>
+</ul>
+<p>We <strong>reject &quot;ratify-first&quot;</strong> (option 1 of #426) as too rigid — it blocks the
+pin-leads-decision workflow that the #419/#261 case shows is normal and useful.
+We <strong>reject the mechanical Check/CI gate</strong> (option 3) <em>for now</em> — a greppable
+marker plus the ratify-sweep discipline is the lightweight pole; if provisional
+markers are observed to rot un-swept, escalating to a mechanical gate that
+requires every shared-suite property to reference a ratified decision id is the
+reserved next step, and this ADR is what it would supersede.</p>
+<p><strong>Immediate follow-through (the live instance).</strong> #419's
+<code>contract_read_after_commit</code> / <code>contract_scan_is_consistent_cut</code> are confirmed to
+encode #261's intended fresh-snapshot / one-consistent-cut-per-scan semantics that
+the paged TiKV/FDB scans must preserve. #261 is resolved, but its ratification is
+<strong>not yet recorded in a landed accepted artifact</strong> — proposal 0015 is frozen with
+the item still under §Open questions, and this ADR is itself only <code>Proposed</code>. So,
+by this rule, those pins <strong>carry <code>PROVISIONAL(#261)</code></strong> when the marker convention
+is introduced to the suite, and the marker is cleared in the same landed change
+that records the ratification (this ADR's acceptance). The marker convention lands
+with the M4 backend code, since the shared suite is on the integration branch
+today — there is nothing to sweep on <code>main</code> yet, but the rule binds the moment
+there is.</p>
+<h2>Consequences</h2>
+<p>Momentum is preserved: a pin may lead its decision, which is when a pin is most
+valuable. Governance debt becomes <strong>visible and self-clearing</strong> — a
+<code>grep -r PROVISIONAL</code> over the conformance suite enumerates every requirement
+whose decision is still in flight, and each marker names what must ratify to clear
+it.
+The shared suite stays honest across backends: a new backend (FDB, #438) can read
+the suite and know which contracts are settled and which are provisional.</p>
+<p>The cost is that the sweep is a discipline, not yet an enforced invariant — a
+marker could be forgotten on ratification, leaving a stale <code>PROVISIONAL</code> tag on a
+now-governed pin. That failure is benign (the pin is still binding and correct;
+only its bookkeeping lies) and greppable, and it is exactly the trigger to adopt
+the reserved mechanical gate. This commits the project to a simple standing rule:
+<strong>every property in the shared conformance suite either references a ratified
+decision or carries a <code>PROVISIONAL(&lt;decision-id&gt;)</code> marker</strong> — nothing ungoverned
+enters the contract silently. Reversing toward stricter governance (ratify-first
+or the mechanical gate) is cheap; this is the least-machinery pole by design.
+Refs #426, #419, #261, #254, #438; ADR-0006 (two-implementation trait pinning).</p>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>
