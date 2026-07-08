@@ -116,7 +116,7 @@ Hetzner; the <em>roles</em> do not.</p>
 <tr>
 <td><strong>Gateway</strong></td>
 <td>Stateless S3 front door; embeds the client library (chunk, EC, commit).</td>
-<td><strong>Low</strong> — stateless, horizontally scalable, restartable.</td>
+<td><strong>Low</strong> — no durable state, restartable. Safe for <strong>active/active</strong> (#477): inodes from the shared <code>meta:next_inode</code> CAS allocator, chunk ids coordination-free (random epoch, ADR-0019).</td>
 </tr>
 <tr>
 <td><strong>Custodian</strong></td>
@@ -240,8 +240,24 @@ means <strong>multiple instances behind a load balancer sharing a PostgreSQL/MyS
 and identical root/intermediate signing material</strong>. Co-locating those on the 3
 control nodes adds no machine but does add that shared SQL backend. SPIRE reserved
 for fleet scale; single-binary uses a dev-CA.</li>
-<li><strong>Gateway — 1–2 small cloud servers</strong>, stateless, behind Hetzner's load balancer
-if you want HA on the S3 front door. (One is fine for first deployment.)</li>
+<li><strong>Gateway — 1 small cloud server for first deployment</strong> (add a warm standby behind
+the LB if you want S3-front-door failover). The gateway holds <strong>no durable object
+state</strong> — object metadata lives in TiKV, chunks fan out to the D servers over gRPC,
+and coordination is in etcd (the gateway composes over the cluster backends, #454) —
+so a restarted or replaced gateway migrates nothing: on startup <code>recover()</code> re-seeds the
+shared <code>meta:next_inode</code> allocator floor above the persisted high-water mark, and chunk
+ids need no recovery (a fresh random epoch per process).
+<strong>Active/active is safe (#477).</strong> The gateway allocates inodes from the shared
+<code>meta:next_inode</code> <strong>CAS</strong> allocator (<code>cli::alloc_inode</code>, the same cluster path the CLI
+uses) and mints chunk ids <strong>coordination-free</strong> — a per-process random 63-bit epoch as the
+high bits plus a monotonic sequence as the low bits (ADR-0019) — so two <em>active</em> gateways
+never mint a colliding inode, and collide on a chunk id only if they draw the same epoch
+(~2⁻⁶³ per gateway pair). The <strong>one-shared-front-door / no-affinity / plain-round-robin</strong>
+property (#454) therefore holds: N active gateways behind a round-robin LB is supported.
+(A deterministic upgrade that drops even the ~2⁻⁶³ chunk residual — CAS block-reservation
+for chunk ids — is tracked as #478.) Wyrd still ships <strong>no</strong> load balancer of its own: the
+S3 front door is a standard cloud LB (Hetzner LB / k8s Service / nginx / HAProxy), an
+operator concern, not a Wyrd component.</li>
 <li><strong>Custodian — co-locate with a gateway or a small dedicated server</strong>; stateless,
 leader-elected.</li>
 <li><strong>Network</strong>: Hetzner's <strong>private network (vSwitch)</strong> for the client→D-server,

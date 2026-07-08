@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0043. Testing fixture profiles: one minimal container topology per test class — Wyrd</title>
+<meta name="description" content="Container-backed tests need real external components — a real TiKV to check the">
+<meta property="og:title" content="0043. Testing fixture profiles: one minimal container topology per test class — Wyrd">
+<meta property="og:description" content="Container-backed tests need real external components — a real TiKV to check the">
+<meta property="og:type" content="article">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@300;400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/assets/style.css">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#211e1a">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/"><svg class="mark" viewBox="0 0 48 48" aria-hidden="true"><polygon class="lz-outer" points="24,3 45,24 24,45 3,24"/><polygon class="lz-inner" points="24,14 34,24 24,34 14,24"/></svg>Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Accepted · 06.07.2026 19:45</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>0043. Testing fixture profiles: one minimal container topology per test class</h1>
+<h2>Context</h2>
+<p>Container-backed tests need real external components — a real TiKV to check the
+metadata adapter's contract, a real etcd to check the coordination adapter's, a
+network that can be partitioned to check consistency under faults, and the full
+single-zone topology to check that a deployment stands up. Over milestones 2–4 these
+accreted as separate <code>docker compose</code> fixtures under <code>deploy/</code> plus an integration
+fixture beside the crate that needs it, and — until this ADR — a hand-driven
+four-D-server stack at the repo root (<code>./docker-compose.yml</code>).</p>
+<p>With the consolidated single-zone stack now standing every role up
+(<code>deploy/small-multi-node/</code>: 3-node etcd + 3-node PD + 3-node TiKV + 9 D servers +
+custodians + S3 gateways), a reasonable question is whether that one stack should be
+<em>the</em> target for all container tests, retiring the smaller fixtures. The forces:</p>
+<ul>
+<li><strong>Feedback loop.</strong> The full stack is 24 containers behind a feature-built
+(<code>tikv,etcd</code>) image. A test that needs only a single etcd should not wait for it.</li>
+<li><strong>Attributability.</strong> The Tier-1 metadata-consistency suite (<code>metadata-tier1</code>)
+injects a <em>symmetric partition</em> of the TiKV region leader via an <code>iptables</code> agent
+running in the target's netns, which requires the deterministic static-IP topology
+of <code>deploy/tikv-multi-replica/</code>. On the full stack's bridge network with dynamic IPs
+and 24 containers, a partition is neither deterministic nor cleanly attributable.
+(D-server-level chaos — kill/pause mid-repair — is a <em>different</em> regime, driven
+against the ephemeral integration fixture, not this one.)</li>
+<li><strong>Blast radius.</strong> A conformance run for the etcd adapter should not be able to fail
+because the D-server image is broken. Every extra container a test depends on is
+extra flake surface.</li>
+<li><strong>Contract vs. deployment.</strong> The adapter conformance suites are <em>contract</em> tests
+(does this backend implement the trait?), not <em>deployment</em> tests; they want the
+smallest thing that is a real backend, on the simplest wiring (host networking).</li>
+<li><strong>Duplication.</strong> Separate compose files repeat some service definitions, and the
+root stack's &quot;distributed cluster on one machine&quot; role now fully overlaps the
+small-multi-node profile.</li>
+</ul>
+<p>This ADR extends the testing strategy of ADR-0009 and the pluggable-substrate stance
+of ADR-0010 down to the concrete bring-up fixtures. It does not change what the
+single-binary dev profile is for (ADR-0014).</p>
+<h2>Decision</h2>
+<p>We will treat each <code>deploy/</code> (and integration) fixture as a named <strong>testing profile</strong>
+and require every container-backed test to run against the <strong>smallest profile that
+exercises its subject</strong>. A test MUST NOT be gated behind a heavier profile than it
+needs. A profile MAY back several <code>xtask</code> drivers; each container-backed driver
+targets exactly one profile (a driver with no container fixture at all — see
+<code>disk-faults</code> below — is possible). The profiles, and every driver that runs against
+each:</p>
+<table>
+<thead>
+<tr>
+<th>Profile (fixture)</th>
+<th>Topology</th>
+<th>Driver(s)</th>
+<th>Test class</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>tikv-single-node</strong> — <code>deploy/tikv-single-node/</code></td>
+<td>1 PD + 1 TiKV, host net</td>
+<td><code>tikv-conformance</code>, <code>metadata-tier2</code></td>
+<td><code>metadata-tikv</code> trait contract; single-owned-node metadata scenario (Tier-2)</td>
+</tr>
+<tr>
+<td><strong>etcd-single-node</strong> — <code>deploy/etcd-single-node/</code></td>
+<td>1 etcd, host net</td>
+<td><code>etcd-conformance</code></td>
+<td><code>coordination-etcd</code> trait contract</td>
+</tr>
+<tr>
+<td><strong>integration</strong> — <code>crates/chunkstore-grpc/tests/docker-compose.yml</code></td>
+<td>N D-server replicas, ephemeral ports</td>
+<td><code>integration</code>, <code>jepsen</code>, <code>kill-reconstruct</code></td>
+<td>component/gRPC integration; D-server chaos (<code>docker kill</code>/<code>pause</code> mid-repair)</td>
+</tr>
+<tr>
+<td><strong>tikv-multi-replica</strong> — <code>deploy/tikv-multi-replica/</code></td>
+<td>1 PD + 3 TiKV (Raft), static IPs + <code>iptables</code> agent</td>
+<td><code>metadata-tier1</code></td>
+<td>metadata consistency under a symmetric leader partition (Tier-1)</td>
+</tr>
+<tr>
+<td><strong>single-zone</strong> — <code>deploy/small-multi-node/</code></td>
+<td>3 etcd + 3 PD + 3 TiKV + 9 D servers + 3 custodians + 3 gateways</td>
+<td><code>deploy-small-multi-node</code></td>
+<td>deployment bring-up, day-one runbook (#367), end-to-end (#454 → #455)</td>
+</tr>
+</tbody>
+</table>
+<p>Not every driver has a container profile: <strong><code>disk-faults</code></strong> injects a disk-medium
+fault against a real <code>dm-error</code> block device via <code>dmsetup</code>
+(<code>crates/custodian/tests/tier1_disk_faults.rs</code>, root-required), so it sits <strong>outside</strong>
+this table by design — its &quot;fixture&quot; is a kernel device-mapper target, not a container.</p>
+<p>We will <strong>remove the repo-root <code>./docker-compose.yml</code>.</strong> Its role — stand up a
+distributed cluster on one machine and drive it by hand with <code>wyrd put/get --endpoints</code> — is subsumed by the <strong>single-zone</strong> profile, which is a strict superset
+(9 D servers + real backends). The hand-driving instructions in the top-level README
+now point at <code>deploy/small-multi-node/</code>.</p>
+<p>We will add a new profile only when <strong>no existing profile provides the required
+topology or fault surface</strong> — not for convenience or conceptual separation. The
+driver→profile mapping above is the executable index; container profiles remain
+outside <code>cargo xtask ci</code> (they need a runtime; Docker-available gating stays, per the
+existing convention).</p>
+<p>We will <strong>not</strong>, at this time, refactor the profiles into a shared base compose with
+<code>profiles:</code> / override layering. The duplication across five small, stable files is
+tolerable; a base+override consolidation is recorded here as an available future step,
+not adopted now (it would trade duplication for indirection with no test-behaviour
+change).</p>
+<h2>Consequences</h2>
+<ul>
+<li><strong>Faster, more attributable CI.</strong> Contract suites boot a single-node backend (one
+etcd container; one PD + one TiKV) in ~seconds; a failure implicates one component.
+Fault tests keep the deterministic topology their injection requires. No fast test
+is held hostage to a 24-container bring-up.</li>
+<li><strong>One fewer bring-up artifact to maintain</strong>, and no ambiguity about &quot;the&quot; way to
+stand a cluster up by hand — it is the single-zone profile. The two wyrd images now
+use distinct tags and never contend: the integration profile builds
+<code>wyrd-dserver:test</code> (default features), the single-zone profile builds the
+feature-tagged <code>wyrd-single-zone:local</code> (<code>tikv,etcd</code>). Removing the root compose
+retired the <code>wyrd-dserver:local</code> tag it alone built — no fixture references it now.</li>
+<li><strong>The mapping is a standing rule for new tests:</strong> pick a profile from the table;
+justify (in review) any new profile against the &quot;no existing profile fits&quot; bar.</li>
+<li><strong>Accepted cost:</strong> the five compose files still duplicate some service definitions.
+If that duplication grows painful, the deferred base+override refactor is the exit —
+reversible and behaviour-preserving.</li>
+<li><strong>Structural guard unchanged:</strong> <code>xtask/tests/deploy_no_orchestrator_coupling.rs</code>
+continues to validate the single-zone profile's compose structurally and to enforce
+ADR-0010's no-orchestrator-coupling scan; removing the root compose does not touch
+either signal.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>
