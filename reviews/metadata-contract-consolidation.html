@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Consolidation: the `MetadataStore` contract, as the FoundationDB port left it — Wyrd</title>
+<meta name="description" content="The five contract points now live in trait-level doc comments on MetadataStore,">
+<meta property="og:title" content="Consolidation: the `MetadataStore` contract, as the FoundationDB port left it — Wyrd">
+<meta property="og:description" content="The five contract points now live in trait-level doc comments on MetadataStore,">
+<meta property="og:type" content="article">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@300;400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/assets/style.css">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#211e1a">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/"><svg class="mark" viewBox="0 0 48 48" aria-hidden="true"><polygon class="lz-outer" points="24,3 45,24 24,45 3,24"/><polygon class="lz-inner" points="24,14 34,24 24,34 14,24"/></svg>Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-meta">12.07.2026</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>Consolidation: the <code>MetadataStore</code> contract, as the FoundationDB port left it</h1>
+<blockquote>
+<p>The closing note #437 asks for. #437 was rescoped away from a <em>pre</em>-implementation
+freeze of the contract (spec-first in disguise, against ADR-0002's
+implementation-first posture for component interfaces) to a <strong>post-port
+consolidation</strong>: build the FoundationDB backend against the trait as it stands
+(#438), then write the rules down from what actually got built. This note records
+what was consolidated, the divergences the port exposed, and the &quot;take it from
+there&quot; verdict — whether anything gets pinned harder than it now is.</p>
+</blockquote>
+<h2>What was consolidated</h2>
+<p>The five contract points now live in trait-level doc comments on <code>MetadataStore</code>,
+<code>CommitOutcome</code> and <code>WriteBatch</code> (<code>crates/traits/src/lib.rs</code>), stated
+backend-neutrally — the three shipped backends reach them by three different
+mechanisms (redb serializes write transactions; TiKV takes pessimistic locking
+reads; FoundationDB uses an optimistic read-conflict set), and a fourth backend may
+use a fourth, but it must land in the same place. The clauses of the shared
+<code>wyrd-metadata-conformance</code> suite (<code>run_all</code>) remain the <em>executable</em> record; the
+prose says what they mean.</p>
+<p>The port's real teaching was <strong>clause 3 of the commit partition</strong>, which no
+document and no shared clause had stated: <code>Conflict</code> is the answer to <em>&quot;your
+precondition lost&quot;</em>, so a <strong>blind</strong> batch — one carrying no preconditions — can
+never conflict. It asserted nothing about prior state and has nothing to lose; a
+backend that cannot apply one owes the caller an <code>Err</code>. This is not stylistic.
+Blind writers across the codebase (<code>core::repair::enqueue_repair</code>, the custodian's
+desired-state writes) <code>?</code> the commit and <em>ignore</em> the returned <code>CommitOutcome</code>, so
+a <code>Conflict</code> handed back to them reads as success while the write silently
+vanished. FoundationDB is what surfaced it: an optimistic backend receives <strong>one</strong>
+lost-race error code for both batch shapes (<code>1020 not_committed</code>) and must route it
+by shape, so the obvious implementation is the wrong one.</p>
+<p>Both the FDB and TiKV drivers had worked this out and written it in their own
+module docs; the trait — the thing a <em>future</em> backend reads — said only &quot;when a
+precondition fails&quot;, which is compatible with the wrong reading. That is the gap
+this consolidation closes.</p>
+<p>Alongside it, four properties that were likewise driver-local prose and are now
+trait-level: preconditions are evaluated against committed state <strong>atomically with
+the batch's writes</strong> (so a read-then-commit is safe by in-commit re-check, never by
+read freshness); reads observe the latest committed state and a <code>scan</code> is one
+consistent cut across however many pages a backend internally reads (ADR-0015
+clause 3, #261); a <code>scan</code> is <strong>complete or fails loudly</strong>, never silently truncated
+(#262 — a short <code>inode:</code> listing would shrink GC's never-reclaim safety set); and a
+<code>WriteBatch</code> is <strong>not guaranteed idempotent</strong>, which is precisely what forbids a
+backend from silently retrying an unknown-result commit.</p>
+<h2>What the executable record gained</h2>
+<p>One clause: <code>contract_blind_batch_is_never_conflict</code>. It has a sequential half
+(blind overwrites and deletes of existing keys commit, including on a key a
+conditional writer just lost on) and a <strong>concurrent</strong> half (two blind batches raced
+on one key; neither may come back <code>Conflict</code> — each must be <code>Committed</code> or <code>Err</code>).
+The concurrent half is the load-bearing one: a blind batch can only <em>lose a race</em>
+concurrently, and no other clause in the suite drives two commits at once.</p>
+<p>Demonstrated red per the #419 convention (<code>tests/demonstrated_red.rs</code>): a
+<code>RaceConflatingStore</code> that maps a lost race to <code>Conflict</code> regardless of batch shape
+— the exact mistake an optimistic backend is invited to make — fails the new clause
+and <strong>passes all seven others</strong>, including <code>contract_read_after_commit</code>. Without
+this clause a backend could swallow every raced blind write and stay green.</p>
+<p>Which of the two racers wins, and whether the loser errors, is deliberately <em>not</em>
+asserted: that is backend latitude (an optimistic backend retries both to
+<code>Committed</code>; a pessimistic one may report the loser's lock loss as <code>Err</code>). The
+clause forbids exactly one answer.</p>
+<h2>Divergences the port exposed, left as-built</h2>
+<p>The docs state the contract; these three are places where the <em>implementations</em> do
+not yet meet it uniformly. They are recorded here rather than papered over, and
+none is fixed by this change — each is backend work, not doc consolidation.</p>
+<ol>
+<li><strong>TiKV has no typed unknown-result error.</strong> FDB raises <code>CommitUnknownResult</code>
+(carrying the code, and <code>may_still_commit()</code> to separate &quot;a re-read settles it&quot;
+from &quot;a re-read proves nothing&quot;); TiKV's undetermined-commit case exists only as
+prose in the driver, so a caller cannot distinguish it from a plain fault
+without inspecting a raw <code>tikv_client::Error</code>. The contract says an
+unknown-result commit must be distinguishable; TiKV does not yet make it so.</li>
+<li><strong>redb's <code>scan</code> has no cap.</strong> The two distributed backends share an identical
+<code>SCAN_CAP</code> and <code>Err</code> above it (completeness-or-fail-loud); redb iterates the
+whole table with a <code>starts_with</code> filter and can materialize an unbounded <code>Vec</code>.
+It cannot <em>silently truncate</em>, so it does not violate clause 5 — but it does not
+enforce it either.</li>
+<li><strong>Only FDB bounds operation time.</strong> FDB's C client retries an unreachable
+cluster forever, so the driver sets an explicit per-transaction deadline; TiKV
+inherits tikv-client's defaults and redb is local. &quot;Every operation terminates&quot;
+is stated in the contract and enforced in one backend.</li>
+</ol>
+<h2>The verdict: nothing gets pinned harder</h2>
+<p><strong>No formal pin, no specs document, no new CI gate.</strong> #437 explicitly allows &quot;no
+further ceremony needed&quot; as an answer, and that is the answer, for three reasons.</p>
+<p>The trait docs plus the shared suite already <em>are</em> the pin, and the suite is the
+half with teeth: it is executable, every backend runs the identical <code>run_all</code>, and
+adding a property there promotes a requirement every present and future backend
+must satisfy. A prose spec would be a second, weaker copy of a contract that already
+has an executable one — and ADR-0002 keeps component interfaces implementation-first
+precisely so this does not happen (the chunk format remains the only spec-first
+surface; a <code>docs/design/specs/</code> document was a stated non-goal of #437).</p>
+<p>Governance of <em>early</em> pins is already answered elsewhere: ADR-0044's
+provisional-marker rule (&quot;mark, don't gate&quot;) covers a property that lands before the
+decision it encodes is ratified. Nothing in this consolidation is provisional —
+<code>contract_blind_batch_is_never_conflict</code> encodes a decision the FDB port already
+made and both drivers already implement — so no marker is needed, and no new
+governance machinery is either.</p>
+<p>A CI gate would have nothing to add. The FDB and TiKV conformance runs are already
+jobs (<code>cargo xtask fdb-conformance</code>, <code>cargo xtask tikv-conformance</code>); what they lack
+is not a gate but a <em>cluster</em> in CI, which is a fixture question (ADR-0043), not a
+contract one.</p>
+<p><strong>What is deferred, and to what.</strong> The three divergences above want issues against
+their backends, not a contract change — the contract is right and the backends are
+behind it. And #442's fault + contention battery is still outstanding: this
+consolidation used the port's evidence, not the battery's. If the battery surfaces
+a contract point these docs get wrong — most plausibly around the unknown-result
+class under real partitions, which is the one clause whose consequences are hardest
+to see without faults — the right response is to amend these docs and the suite,
+not to add ceremony around them. That is the standing invitation this note leaves
+open.</p>
+<h2>Evidence</h2>
+<p>All shipped backends pass the shared <code>run_all</code>, including the new clause, at
+consolidation time — the acceptance criterion, and the standing guard #437 sets on
+any suite change (a suite change must keep the existing backends green in the same
+change, which is what stops the tests being reshaped around FDB's quirks):</p>
+<table>
+<thead>
+<tr>
+<th>Backend</th>
+<th>How it was run</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>redb</td>
+<td><code>cargo test -p wyrd-metadata-redb</code></td>
+<td>pass</td>
+</tr>
+<tr>
+<td>TiKV</td>
+<td><code>cargo xtask tikv-conformance</code> (brings up <code>deploy/tikv-single-node</code>)</td>
+<td>pass</td>
+</tr>
+<tr>
+<td>FoundationDB</td>
+<td><code>cargo xtask fdb-conformance</code> (brings up <code>deploy/fdb-single-node</code>)</td>
+<td>pass</td>
+</tr>
+</tbody>
+</table>
+<p>Plus <code>cargo test -p wyrd-metadata-conformance</code>: the new clause goes red against a
+deliberately-violating store and green against every correct one.</p>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>
