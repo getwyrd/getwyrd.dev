@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FDB go/no-go: the M4 metadata fault + contention battery (#442) — Wyrd</title>
+<meta name="description" content="FoundationDB was chosen partly for its simulation pedigree. But that pedigree">
+<meta property="og:title" content="FDB go/no-go: the M4 metadata fault + contention battery (#442) — Wyrd">
+<meta property="og:description" content="FoundationDB was chosen partly for its simulation pedigree. But that pedigree">
+<meta property="og:type" content="article">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@300;400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/assets/style.css">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#211e1a">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/"><svg class="mark" viewBox="0 0 48 48" aria-hidden="true"><polygon class="lz-outer" points="24,3 45,24 24,45 3,24"/><polygon class="lz-inner" points="24,14 34,24 24,34 14,24"/></svg>Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-meta">12.07.2026</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>FDB go/no-go: the M4 metadata fault + contention battery (#442)</h1>
+<blockquote>
+<p>The verdict artifact #442 asks for. It records what was run, what was found, and what it
+licenses. <strong>Verdict: GO on the FoundationDB driver's correctness under fault and
+contention</strong> — with two things it does <em>not</em> license, named explicitly below, because a
+gate that quietly overstates itself is worse than no gate.</p>
+</blockquote>
+<h2>Why this battery exists</h2>
+<p>FoundationDB was chosen (ADR-0042) partly <em>for</em> its simulation pedigree. But that pedigree
+validates <strong>their</strong> code. It says nothing about <strong>our mapping layer</strong> — precondition →
+read-conflict set, <code>1020 not_committed</code> → <code>Conflict</code>, the unknown-result rules, the retry
+policy — which is entirely ours and entirely new. This battery is a black-box check of that
+mapping against a real cluster being genuinely abused.</p>
+<h2>What was built, and the one decision that shaped it</h2>
+<p>#442 says to reuse #257's harness. <strong>It could not be reused</strong>: #257's Tier-1 scenario was
+written against the concrete <code>TikvMetadataStore</code>, and its fault-effect oracle asks <strong>PD</strong> for
+a store heartbeat — a concept FoundationDB does not have. Pointing it at FDB was new code, not
+a flag.</p>
+<p>So the scenario was <strong>lifted into a shared crate</strong> (<code>wyrd-metadata-fault-conformance</code>), generic
+over <code>MetadataStore</code>, with the two backend-shaped parts behind one seam (<code>ClusterFault</code>): <em>how
+you cut a node</em>, and <em>how you ask its peers whether the cut bit</em>. Everything that decides PASS
+or FAIL — the workload, the invariants, the signal arithmetic — is now <strong>the same code for both
+backends</strong>. That is the only basis on which their verdicts can be compared; a private FDB notion
+of &quot;pass&quot; would decide nothing. It is the discipline of the shared <code>metadata-conformance</code> suite
+(ADR-0016), applied to the fault battery.</p>
+<p>Runner: <code>WYRD_TIER1=1 cargo xtask fdb-metadata-tier1</code> — repeatable, self-contained (brings up
+<code>deploy/fdb-multi-replica</code>, configures <code>double ssd</code>, writes the cluster file, tears down
+unconditionally), and <strong>opt-in but never silently skipped</strong>: opted-in-with-Docker-missing is a
+hard error, because a battery that quietly did not run would be recorded as a &quot;go&quot; nobody
+earned.</p>
+<h2>The three legs, and what each found</h2>
+<h3>1. Contention — PASS</h3>
+<p>Three workloads, N=4 clients each, against the live 3-process cluster.</p>
+<table>
+<thead>
+<tr>
+<th>Workload</th>
+<th>The invariant</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Rename races</td>
+<td>Exactly one of N concurrent renames of the same binding may win; losers are <code>Conflict</code>; the binding ends up in exactly one place — never duplicated, never lost</td>
+<td>pass</td>
+</tr>
+<tr>
+<td>Inode-allocator hot path</td>
+<td>N clients × 8 allocations through a CAS loop: <strong>every id unique</strong>, and the cell advances by exactly the number handed out</td>
+<td>pass</td>
+</tr>
+<tr>
+<td>Blind-batch storm</td>
+<td>A precondition-free batch is <strong>never</strong> <code>Conflict</code> (it has nothing to lose); no write vanishes while its caller was told it committed</td>
+<td>pass</td>
+</tr>
+</tbody>
+</table>
+<p>The allocator leg is the one with the sharpest teeth: a misclassified <code>Conflict</code> there — a lost
+race reported as success — hands <strong>two files the same inode</strong>, the worst outcome the metadata
+layer can produce. It did not happen.</p>
+<h3>2. Consistency under a symmetric cluster fault — PASS</h3>
+<p>The shared Tier-1 scenario, with the process holding FDB's <strong><code>master</code> role</strong> symmetrically
+isolated (bidirectional <code>iptables</code> DROP inside its own network namespace) while ≥2 contenders
+race the same compare-and-swap.</p>
+<p>Cutting an arbitrary node would have been <strong>outcome-neutral</strong> — FDB keeps quorum on the majority
+side, so a bystander cut proves nothing and every assertion goes green for free. That is the
+hollow flip #257's review caught in the TiKV leg. The target is therefore resolved at runtime
+from <code>status json</code> (the <code>master</code>), and the fault is confirmed <strong>from the peers' side</strong> (a
+<em>survivor's</em> <code>coordinators[].reachable</code> view of the cut node) — never by probing the dropped port
+ourselves, which would only prove our own packets are dropped.</p>
+<p>All four independent signals held: <code>read_after_commit</code>, <code>converged_once</code> (the contended CAS round
+advanced the version by exactly one), <code>fault_materialized</code> (the cluster provably lost the node),
+<code>no_lost_update</code> (exactly one contended winner; the stale-CAS probe rejected).</p>
+<h3>3. Mid-commit kill — PASS, and it induced real 1021s</h3>
+<p><code>SIGKILL</code> on the process holding the <strong><code>commit_proxy</code></strong> role — the process a commit RPC is
+actually sent to — fired from a background thread <strong>while commits were in flight</strong>.</p>
+<p><strong>The first draft of this leg was a hollow green, and its own honesty check said so</strong>: it killed
+the <em>master</em> at a round boundary and reported <em>&quot;the kill perturbed no commit — 40 committed, 0
+unknown results&quot;</em>. Killing between commits interrupts nothing, and the master is not the process
+holding the RPC. Both corrections were load-bearing.</p>
+<p>The corrected leg, over 400 rounds of a single-writer CAS chain:</p>
+<pre><code>398 committed, 1 settled by re-read, 2 unknown-result commit(s), 0 plain fault(s),
+0 phantom conflict(s); final version 399
+</code></pre>
+<p>Both unknown results were <strong>real <code>1021 commit_unknown_result</code></strong> from the live cluster, surfaced
+as the seam's <code>CommitUnknownResult</code> — never as <code>Conflict</code>, never silently retried. And <strong>every
+1021 was accounted for</strong> (#442's acceptance criterion): the writer did the one thing the contract
+permits — re-read — and settled each one. Of the two, <strong>one had landed and one had not</strong>, which
+is precisely why the contract forbids guessing.</p>
+<p>A second run, after the leg was hardened (below), reproduced it independently: <code>399 committed, 0 settled by re-read, 1 unknown-result commit(s), 0 phantom conflict(s); final version 399</code> — that
+1021's batch had <em>not</em> landed, and the accounting closes on the other side of the same rule.</p>
+<p><strong>An unperturbed run now FAILS.</strong> The leg originally <em>printed a note</em> when the kill perturbed no
+commit and passed anyway. That was the round-boundary hollow green one level up: honest in the
+log, wrong in the exit code — <code>xtask fdb-metadata-tier1</code> would have reported that FoundationDB
+&quot;passed the battery&quot; for a run in which the hard path never executed, and a gate that can record
+a GO on that is worth nothing. It now asserts <code>unknown_results + faults + settled_by_reread &gt; 0</code>
+and fails as <strong>inconclusive</strong> otherwise, telling the operator to re-run (the kill window is
+timing-dependent). Caught by a <code>codex review</code> of #535 — a note is not a gate.</p>
+<p>Three properties this leg pins that nothing else could:</p>
+<ul>
+<li><strong>No phantom <code>Conflict</code>.</strong> With a single writer, nothing can legitimately lose a race, so an
+<code>Ok(Conflict)</code> would be a fault or an unknown result wearing the wrong hat — telling the caller
+<em>nothing was written</em> when something may have been. Zero occurred.</li>
+<li><strong>Atomicity across the kill.</strong> Markers present were exactly <code>{0..final_version}</code> — no half-landed
+batch.</li>
+<li><strong>No double-apply.</strong> 398 + 1 = 399 = the final version. Nothing landed that no caller was told
+about, and nothing was applied twice — which is the failure a silently-retried non-idempotent
+batch would produce.</li>
+</ul>
+<h2>What this verdict does NOT license</h2>
+<p><strong>1. It is not a TiKV-vs-FDB comparison, because the TiKV leg is currently red — and not because
+of this work.</strong> The shared scenario's standing guard (TiKV must stay green in the same change)
+could not be discharged: <code>WYRD_TIER1=1 cargo xtask metadata-tier1</code> fails at the rename, with
+tikv-client's own 2 s per-RPC timeout surfacing during the forced leader election
+(<code>PessimisticLockError { GrpcAPI(Cancelled, &quot;Timeout expired&quot;) }</code>). This was <strong>reproduced on
+unmodified <code>main</code>, and again at <code>a4abb69</code> — before any of the #437/#515/#516/#517 work</strong> — so it
+is pre-existing and independent of the lift. It wants its own issue. Until it is green, the two
+backends have been held to the same <em>code</em>, but only FDB has actually passed it here.</p>
+<p><strong>2. It does not flip the production default.</strong> That is a separate, deliberate step: the CLI
+default is <code>redb</code> (<code>crates/server/src/cli.rs</code>), not TiKV, and <code>fdb</code> is an off-by-default cargo
+feature because it links <code>libfdb_c</code> — which ADR-0042 explicitly relies on. Flipping it is a
+build-system change plus a docs/canonical-stack change (<code>deploy/README.md</code>'s &quot;currently
+canonical&quot;), not a match arm, and it should be its own reviewable change.</p>
+<h2>Verdict</h2>
+<p><strong>GO</strong> on the question this battery actually asked: <em>does our FoundationDB mapping layer hold up
+under real faults and real contention?</em> It does. The commit classification is correct under a
+lost race, under a symmetric isolation of the master, and under a commit proxy dying with the RPC
+in flight; the unknown-result class is surfaced, distinguishable, never retried, and never
+mistaken for a <code>Conflict</code>; and no batch was ever lost, torn, duplicated, or double-applied.</p>
+<p>The two carve-outs above are not hedges — they are the parts a reader would otherwise assume were
+covered. The evidence for everything claimed here is reproducible with one command:</p>
+<pre><code>WYRD_TIER1=1 cargo xtask fdb-metadata-tier1
+</code></pre>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>
