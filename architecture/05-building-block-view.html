@@ -105,7 +105,7 @@ one mutation there</strong>; the other four components collaborate around it.</p
 <tr>
 <td><strong>Metadata store</strong> <em>(the commit point)</em></td>
 <td>Holds the map and hosts the single atomic mutation that makes a write visible.</td>
-<td>The linchpin. Inodes, dirents, chunk maps, the pending-chunk ledger, version counters. The atomicity guarantee — the project's reason to exist — lives in <em>one mutation here</em>, not in any other component. <code>redb</code> embedded / TiKV production, behind <code>MetadataStore</code>.</td>
+<td>The linchpin. Inodes, dirents, chunk maps, the pending-chunk ledger, version counters. The atomicity guarantee — the project's reason to exist — lives in <em>one mutation here</em>, not in any other component. <code>redb</code> embedded (dev) / <strong>FoundationDB</strong> production (ADR-0042), behind <code>MetadataStore</code>; TiKV is a retained fallback with development stood down (#443).</td>
 </tr>
 <tr>
 <td><strong>Client</strong> <em>(the thick brain)</em></td>
@@ -283,7 +283,7 @@ The actors are unchanged — this view re-cuts them by scope.</p>
 <tbody>
 <tr>
 <td>Metadata store</td>
-<td><code>redb</code> (embedded) / TiKV (prod), behind <code>MetadataStore</code> trait</td>
+<td><code>redb</code> (embedded, dev) / <strong>FoundationDB</strong> (prod, ADR-0042), behind <code>MetadataStore</code> trait; TiKV retained as a stood-down fallback (#443)</td>
 <td>Inodes, dirents, chunk maps, the pending-chunk GC ledger, version counters. Hosts the single atomic mutation that <em>is</em> the commit point.</td>
 </tr>
 <tr>
@@ -310,7 +310,7 @@ The actors are unchanged — this view re-cuts them by scope.</p>
 <li><code>inode:&lt;id&gt;</code> → attributes, chunk map (or inline data for small files), state, version.</li>
 <li><code>dirent:&lt;parent_id&gt;/&lt;name&gt;</code> → child inode id.</li>
 </ul>
-<p>This makes rename a single dirent mutation (atomic under the same mechanism as a write) instead of a mass key rewrite, and makes cross-zone sharing expressible (a dirent pointing at an inode owned elsewhere). It is the strongest concrete driver of the TiKV-over-HBase choice, because file creation must atomically write both the inode and its dirent — a multi-key transaction. See section 6 and ADR-0008.</p>
+<p>This makes rename a single dirent mutation (atomic under the same mechanism as a write) instead of a mass key rewrite, and makes cross-zone sharing expressible (a dirent pointing at an inode owned elsewhere). It is the strongest concrete driver of the requirement that the metadata store offer an <strong>atomic multi-key transaction</strong>, because file creation must atomically write both the inode and its dirent. That requirement is what disqualified HBase-class stores and what every backend choice since has had to satisfy; the backend satisfying it in production is now FoundationDB (ADR-0042, superseding ADR-0008's TiKV). See section 6.</p>
 <h4>The write protocol (the commit point)</h4>
 <p>The same collaboration described in §5.1 as actor interaction, here in terms of
 the L4 mechanics it touches:</p>
@@ -390,7 +390,7 @@ the L4 mechanics it touches:</p>
 </tr>
 </tbody>
 </table>
-<p>The dependency rule (ADR-0010): implementations and consumers depend on <code>traits</code>, never on each other's concretes. Only <code>server</code> knows the concrete backends, which is what makes &quot;swap redb for TiKV&quot; or &quot;in-memory for etcd&quot; a composition change rather than a refactor.</p>
+<p>The dependency rule (ADR-0010): implementations and consumers depend on <code>traits</code>, never on each other's concretes. Only <code>server</code> knows the concrete backends, which is what makes &quot;swap redb for FoundationDB&quot; or &quot;in-memory for etcd&quot; a composition change rather than a refactor. The seam earned its keep in M4: swapping the production backend from TiKV to FoundationDB (ADR-0042) touched the <code>server</code> wiring and added a crate, and changed no consumer.</p>
 
     </article>
   </main>

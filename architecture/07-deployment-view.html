@@ -78,7 +78,7 @@
 <td>Small multi-node</td>
 <td>3-node etcd</td>
 <td>step-ca (SPIRE reserved)</td>
-<td>TiKV (small) / redb</td>
+<td><strong>FoundationDB</strong> / redb</td>
 <td>none — single-zone</td>
 <td>local-disk D servers</td>
 <td>replication(n) or rs(k,m)</td>
@@ -88,7 +88,7 @@
 <td>Provider fleet</td>
 <td>dedicated etcd per zone</td>
 <td>step-ca, HA (SPIRE reserved)</td>
-<td>TiKV</td>
+<td><strong>FoundationDB</strong></td>
 <td>TiDB + L3 replication (multi-region)</td>
 <td>local-disk D servers</td>
 <td>rs(k,m)</td>
@@ -96,6 +96,8 @@
 </tr>
 </tbody>
 </table>
+<p><strong>The production metadata backend is FoundationDB</strong> (ADR-0042, which supersedes ADR-0008's TiKV choice). It cleared the M4 fault + contention battery — the go/no-go gate on our mapping layer, not on FDB itself (<code>docs/design/reviews/m4-fdb-go-no-go.md</code>, #442). The canonical single-zone stack is <code>deploy/small-multi-node-fdb/</code>.</p>
+<p><strong>TiKV is a retained fallback, and active development on it is stood down</strong> (#443). The <code>metadata-tikv</code> crate, the <code>tikv</code> feature, the CLI backend variant and the TiKV deploy stacks all remain in the tree, buildable and community-continuable — nothing was removed, and the continuation backlog stays open under the <em>Metadata Store TiKV</em> milestone. But it is not a production path: <code>tikv-client</code> 0.4.0 is abandoned upstream and carries unpatched advisories in its TLS stack, including a live DoS in CRL parsing (RUSTSEC-2026-0104, high); the exposure boundary is recorded in <code>deny-all-features.toml</code> (#543). Choose it only if you are continuing that backlog, never for a new deployment.</p>
 <p>The single-binary profile collapses all components into one process: gateway, embedded metadata, one logical D server, custodians, in-memory coordination, and a built-in <strong>dev-CA</strong> in place of the production CA (ADR-0025, ADR-0036) so a one-process system is not gated on a full PKI. It exists for development and evaluation and carries <strong>no production durability promise</strong> — a single chassis cannot deliver independent failure domains.</p>
 <p>The <strong>Identity / PKI</strong> column tracks the trust plane behind the mTLS fabric (§8.5, ADR-0005/0025): a built-in dev-CA in the single binary, and a <strong>self-hosted provider CA — <code>step-ca</code> now, with SPIRE reserved</strong> — for the production profiles (ADR-0036). It follows the same dev→fleet gradient as coordination, and — because internal mTLS is fail-closed (ADR-0025) — it is a first-class control-plane dependency, not an afterthought (see §7.3 and the §6.5 restore order). SPIRE (secret-less workload attestation) is the <em>reserved</em> upgrade, adopted at the fleet scale where its benefit outweighs its operational cost — a SPIRE Server plus a per-node Agent and attestation config; until then <code>step-ca</code> issues the short-lived, auto-rotated certs behind a <code>CertificateAuthority</code> seam, so the eventual switch is a composition change. The full rationale (why step-ca now, why SPIRE deferred, why not Vault) lives in ADR-0036.</p>
 <p><strong>There is no separate L2/L3 below the multi-zone tier.</strong> The single-binary and small-multi-node profiles are <em>single-zone</em>: there is one home zone, so file→home-zone is trivial and the global namespace folds into the zonal store — <code>NamespaceStore</code> is backed by the same redb instance as <code>MetadataStore</code>, and cross-zone replication (L3) does not exist. A distinct, geo-distributed <strong>L2</strong> (TiDB behind <code>NamespaceStore</code>, ADR-0020) and the <strong>L3</strong> replication layer appear only at the <strong>provider-fleet</strong> profile — the first genuinely multi-region tier. This is why the build order (section 9) puts L2/L3 last.</p>
@@ -186,11 +188,11 @@
 <td>direct <strong>bulk fragment</strong> I/O; ADR-0025; <code>crates/server/src/cli.rs:32</code></td>
 </tr>
 <tr>
-<td>Gateway / client lib → metadata (TiKV)</td>
-<td>gRPC</td>
-<td>PD <code>2379</code>, TiKV <code>20160</code></td>
-<td>mTLS</td>
-<td>atomic multi-key commit; ADR-0008. <em>redb backend is embedded — in-process, no port</em></td>
+<td>Gateway / client lib → metadata (<strong>FoundationDB</strong>)</td>
+<td>FDB client protocol (<code>libfdb_c</code>)</td>
+<td><code>4500</code> (coordinators)</td>
+<td>TLS</td>
+<td>atomic multi-key commit; ADR-0042, §7.6. <em>redb backend is embedded — in-process, no port</em></td>
 </tr>
 <tr>
 <td>Custodian → D servers</td>
@@ -200,11 +202,18 @@
 <td>scrub / repair / reconstruct</td>
 </tr>
 <tr>
-<td>Custodian → metadata (TiKV)</td>
+<td>Custodian → metadata (<strong>FoundationDB</strong>)</td>
+<td>FDB client protocol (<code>libfdb_c</code>)</td>
+<td><code>4500</code></td>
+<td>TLS</td>
+<td>under-replication scan, chunk-maps</td>
+</tr>
+<tr>
+<td><em>(fallback)</em> → metadata (TiKV)</td>
 <td>gRPC</td>
 <td>PD <code>2379</code>, TiKV <code>20160</code></td>
 <td>mTLS</td>
-<td>under-replication scan, chunk-maps</td>
+<td>the retained-fallback path only (#443); ADR-0008, superseded by ADR-0042</td>
 </tr>
 <tr>
 <td>All components → Coordination (etcd)</td>
@@ -236,8 +245,8 @@
 </tr>
 </tbody>
 </table>
-<p><strong>Port honesty.</strong> Only <code>50051</code> (the D-server gRPC bind) is fixed in Wyrd's own code today (<code>crates/server/src/cli.rs:32</code>). The metadata, coordination, and telemetry ports — PD <code>2379</code> / TiKV <code>20160</code>, etcd <code>2379</code>/<code>2380</code>, OTLP <code>4317</code>/<code>4318</code> — are the <strong>upstream projects' conventional defaults</strong>, not Wyrd's to assign. The S3, SDK, management, and Prometheus-scrape <em>listen</em> addresses are <strong>operator-configured</strong>; M4 fixes the exact flag names (see the blueprint's <code>[wyrd-config]</code> markers). All internal service-to-service dials are <strong>mTLS under the provider CA with no plaintext fallback</strong> (ADR-0005, ADR-0025); a plaintext internal dial is refused (M2).</p>
-<p><strong>Two planes.</strong> Bulk <strong>fragment</strong> data flows directly client/gateway → D servers (the gRPC chunk path that scales with the fleet); the <strong>metadata commit</strong> is a separate, smaller gRPC path to TiKV. Keeping them distinct is the Colossus-class separation that lets throughput scale with D servers rather than through a metadata bottleneck. On a private-network deployment (e.g. Hetzner vSwitch) only the gateway's S3 port is exposed publicly; every other path stays on the internal network.</p>
+<p><strong>Port honesty.</strong> Only <code>50051</code> (the D-server gRPC bind) is fixed in Wyrd's own code today (<code>crates/server/src/cli.rs:32</code>). The metadata, coordination, and telemetry ports — FDB <code>4500</code>, PD <code>2379</code> / TiKV <code>20160</code>, etcd <code>2379</code>/<code>2380</code>, OTLP <code>4317</code>/<code>4318</code> — are the <strong>upstream projects' conventional defaults</strong>, not Wyrd's to assign. The S3, SDK, management, and Prometheus-scrape <em>listen</em> addresses are <strong>operator-configured</strong>; M4 fixes the exact flag names (see the blueprint's <code>[wyrd-config]</code> markers). All internal service-to-service dials are <strong>mTLS under the provider CA with no plaintext fallback</strong> (ADR-0005, ADR-0025); a plaintext internal dial is refused (M2).</p>
+<p><strong>Two planes.</strong> Bulk <strong>fragment</strong> data flows directly client/gateway → D servers (the gRPC chunk path that scales with the fleet); the <strong>metadata commit</strong> is a separate, smaller path to the metadata store (FoundationDB in production). Keeping them distinct is the Colossus-class separation that lets throughput scale with D servers rather than through a metadata bottleneck. On a private-network deployment (e.g. Hetzner vSwitch) only the gateway's S3 port is exposed publicly; every other path stays on the internal network.</p>
 <p><strong>Out of single-zone scope.</strong> Cross-zone replication (L3) uses <strong>NATS JetStream</strong> (client <code>4222</code>) and appears only at the <strong>provider-fleet</strong> profile (M9+); it is not part of a single-zone deployment (ADR-0027).</p>
 <h2>7.6 FoundationDB metadata backend: packaging and version coupling</h2>
 <p>ADR-0042 chose FoundationDB (<code>fdb</code>, behind the off-by-default <code>--features fdb</code>) as the production <code>MetadataStore</code> for the Small multi-node and Provider fleet profiles (§7.1). Unlike the pure-Rust TiKV client, the <code>foundationdb</code> crate binds a <strong>shared C library</strong> (<code>libfdb_c</code>) whose wire protocol is <strong>exactly</strong> coupled to the cluster's — a client built against one FDB version cannot talk to a cluster running another, at all, ever. This section is the packaging contract that follows from that fact: how the client library reaches a Wyrd process, and what happens when it disagrees with the cluster (#441).</p>

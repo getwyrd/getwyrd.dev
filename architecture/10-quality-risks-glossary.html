@@ -271,7 +271,7 @@
 <li><strong>Real performance</strong> — actual latency, real EC encode/decode throughput on real CPUs, real disk and network throughput, tail latencies, and the linear-throughput-scaling claim (scenario Q6).</li>
 <li><strong>Real I/O and OS behaviour</strong> — honest fsync semantics, real filesystem quirks, io_uring, page cache, the real network stack under load.</li>
 <li><strong>Unmodeled faults</strong> — the failures we did <em>not</em> think to inject: a disk failing slowly rather than cleanly, a NIC corrupting rather than dropping, an OOM-killer intervening, clock skew weirder than the model.</li>
-<li><strong>Real integration</strong> — actual etcd, actual TiKV, actual gRPC over a real network, behaving as they really do rather than as their in-memory fakes do.</li>
+<li><strong>Real integration</strong> — actual etcd, actual FoundationDB, actual gRPC over a real network, behaving as they really do rather than as their in-memory fakes do.</li>
 </ul>
 <p>A real environment is therefore never used to test correctness the simulation already covers. If validating the commit protocol's atomicity seems to need a real cluster, that is a signal something is wrong — that is DST's job.</p>
 <p><strong>The compounding loop.</strong> Every real-world discovery is promoted back into DST: a fault or workload shape found on real hardware is encoded as a new seed-driven DST scenario, becoming a permanent, free, reproducible regression test. The real tiers are <em>fault-discovery</em> tools; their findings become cheap simulation tests. This is the highest-leverage idea in the strategy — it turns expensive, one-off real-world findings into permanent CI coverage.</p>
@@ -372,7 +372,7 @@
 </tr>
 <tr>
 <td>M4 — production metadata backend</td>
-<td>Tier 0–2 against real TiKV</td>
+<td>Tier 0–2 against real FoundationDB, incl. the fault + contention battery that gated the &quot;go&quot; (#442). TiKV keeps the same suites as the retained fallback, but its Tier-1 leg is currently red (#537) and its nightly conformance is unbuilt (#420) — under the stand-down (#443) the standing bar is build-only</td>
 </tr>
 <tr>
 <td>M5 — internal CA (step-ca)</td>

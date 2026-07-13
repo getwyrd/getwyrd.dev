@@ -50,13 +50,37 @@
 first <em>real</em> single-zone Wyrd deployment at the first-deployment point (the
 M4 data plane plus the M5 trust fabric; the ★ Step-2 release is M8 —
 proposal 0013) — the
-&quot;Small multi-node Production&quot; profile (TiKV + PD metadata, a separate 3-node
-etcd coordination ensemble, local-disk D servers, gateway, and custodian) — in
-two concrete shapes: a homelab and a Hetzner rental.
+&quot;Small multi-node Production&quot; profile (a distributed metadata store, a separate
+3-node etcd coordination ensemble, local-disk D servers, gateway, and custodian) —
+in two concrete shapes: a homelab and a Hetzner rental.
 The governing constraint throughout is making the <strong>RS(6,3) durability math
 actually true</strong>, which is a <em>topology</em> property, not a process-count property.
 The conceptual framing lives in the <a href="/architecture/07-deployment-view.html">deployment view</a>
 (§7.3–§7.4); this note is the operational detail behind it.</p>
+</blockquote>
+<blockquote>
+<p>[!IMPORTANT]
+<strong>The metadata tier in this blueprint is written against TiKV + PD, and that is no
+longer the production backend.</strong> ADR-0042 supersedes ADR-0008 and chooses
+<strong>FoundationDB</strong>, which passed the M4 fault + contention battery (#442); the
+canonical single-zone stack is <code>deploy/small-multi-node-fdb/</code>. TiKV is a <strong>retained
+fallback with active development stood down</strong> (#443) — kept and buildable, but
+carrying unpatched <code>tikv-client</code> advisories (#543) and a red Tier-1 fault leg
+(#537).</p>
+<p>Everything in this note that is <strong>topology</strong> — the RS(6,3) failure-domain math, the
+D-server spread, the control-tier/data-tier asymmetry, the &quot;back up the map, not the
+fragments&quot; model, the restore <em>ordering</em> — is backend-independent and stands
+unchanged. Read &quot;the metadata tier&quot; wherever it says &quot;TiKV + PD&quot;: FoundationDB
+occupies the same slot, with the same criticality and the same blast radius.</p>
+<p>What does <strong>not</strong> yet exist is the FoundationDB <em>operational</em> detail that would
+replace the TiKV-specific commands and analysis below: the <code>fdbbackup</code>/<code>fdbrestore</code>
+equivalents of the BR snapshot model, FDB's process classes and their placement, its
+PITR/RPO story, and re-sized control-plane nodes. Those are deliberately <strong>not
+invented here</strong> — writing unverified backup and restore instructions into a
+first-deployment runbook is worse than admitting the gap. They are a named follow-up
+(see <em>Backup model</em> below), and until that lands the TiKV-shaped operational
+sections are <strong>historical</strong>: accurate for the fallback, not instructions for a new
+FoundationDB deployment.</p>
 </blockquote>
 <h2>The one number that drives everything: RS(6,3)</h2>
 <p>The default scheme is <strong>RS(6,3)</strong> — 6 data + 3 parity = <strong>9 fragments per chunk</strong>,
@@ -94,14 +118,9 @@ Hetzner; the <em>roles</em> do not.</p>
 <td><strong>Critical</strong> — these define the failure domains. Spread them.</td>
 </tr>
 <tr>
-<td><strong>TiKV</strong></td>
-<td>Distributed metadata store (the commit point). Holds inodes/dirents/chunk-maps. Small but precious — losing it orphans all chunks.</td>
-<td><strong>High</strong> — replicated (Raft, 3×); wants its own independent nodes, not co-located with D servers ideally.</td>
-</tr>
-<tr>
-<td><strong>PD</strong></td>
-<td>TiKV's <em>own</em> placement driver / coordinator (embeds an internal etcd). Distinct from the L5 coordination etcd below.</td>
-<td><strong>High</strong> — 3 nodes for quorum; lose 2 and metadata stalls.</td>
+<td><strong>Metadata store</strong></td>
+<td>The distributed metadata store (the commit point). Holds inodes/dirents/chunk-maps. Small but precious — losing it orphans all chunks. <strong>FoundationDB</strong> in production (ADR-0042): a ≥3-process cluster, <code>double ssd</code> redundancy. On the retained TiKV fallback (#443) this role is <strong>TiKV</strong> (Raft, 3×) <em>plus</em> <strong>PD</strong>, TiKV's own placement driver/coordinator, which embeds an internal etcd and is distinct from the L5 coordination etcd below.</td>
+<td><strong>High</strong> — quorum-replicated; wants its own independent nodes, not co-located with D servers ideally. Lose quorum and metadata stalls.</td>
 </tr>
 <tr>
 <td><strong>etcd (L5 coordination)</strong></td>
@@ -120,18 +139,19 @@ Hetzner; the <em>roles</em> do not.</p>
 </tr>
 <tr>
 <td><strong>Custodian</strong></td>
-<td>One active (leader-elected <em>via etcd</em>); runs GC/scrub/reconstruct/rebalance; emits durability telemetry.</td>
-<td><strong>Low</strong> — stateless logic; a restart re-elects.</td>
+<td>Runs GC/scrub/reconstruct/rebalance; emits durability telemetry. <strong>Run exactly one</strong> against a distributed store: leadership today is granted by the <em>process-local</em> <code>MemCoordination</code>, so two custodians on a shared FDB/TiKV store both self-grant and reconcile concurrently (no corruption — the repoint is a CAS commit — but duplicated repair work). Cross-host fencing via the etcd <code>Coordination</code> seam is #365.</td>
+<td><strong>Low</strong> — stateless logic; a restart resumes.</td>
 </tr>
 </tbody>
 </table>
-<p>The asymmetry to internalize: <strong>D servers carry the durability</strong>, <strong>TiKV+PD carry
-the metadata</strong>, <strong>etcd carries the coordination plane</strong>, and <strong>step-ca carries the
+<p>The asymmetry to internalize: <strong>D servers carry the durability</strong>, <strong>the metadata store
+carries the map</strong>, <strong>etcd carries the coordination plane</strong>, and <strong>step-ca carries the
 trust plane</strong> (all three control tiers are precious, small, and HA/quorum-replicated),
 and <strong>gateway+custodian are stateless</strong> (cheap to restart/move). A good topology spends
-its failure-domain budget on the D servers first, gives the metadata (TiKV+PD),
-coordination (etcd), and trust (step-ca) tiers their own HA/quorum spread, and treats
-gateway+custodian as movable. The same asymmetry drives
+its failure-domain budget on the D servers first, gives the metadata, coordination
+(etcd), and trust (step-ca) tiers their own HA/quorum spread, and treats
+gateway+custodian as movable. This asymmetry is backend-independent: it holds
+identically whether the metadata tier is FoundationDB or the TiKV+PD fallback. The same asymmetry drives
 <strong>backup</strong> (see <em>Backup model</em> below): only the metadata (and the small L5 config)
 is backed up out-of-band — D-server fragments are <strong>not</strong>, because EC + custodian
 reconstruction already protects them.</p>
@@ -159,19 +179,19 @@ the custodian rebuilds. Losing two nodes <em>might</em> exceed tolerance dependi
 placement — so 6 domains gives you <strong>single-node-fault tolerance</strong>, honestly
 stated. (To survive <em>two</em> arbitrary node losses you need ≥ 9 domains so no node
 holds more than one fragment of a chunk — see A.2.)</li>
-<li><strong>TiKV + PD + etcd</strong>: 3 small nodes forming the <strong>control quorum</strong> — TiKV and PD
+<li><strong>metadata store + etcd</strong>: 3 small nodes forming the <strong>control quorum</strong> — TiKV and PD
 (metadata) plus the L5 <strong>etcd</strong> coordination ensemble, co-located (all three are
 light). These should be <strong>3 <em>different</em> machines</strong> from each other for Raft/etcd
 quorum, but in a small homelab they can share machines with D servers if you must
 — accepting that such a machine is now a domain whose loss hits storage <em>and</em>
-control. Cleaner: 3 dedicated small nodes for TiKV+PD+etcd. (etcd can have its own
+control. Cleaner: 3 dedicated small nodes for the metadata store + etcd. (etcd can have its own
 3 nodes if you want metadata and coordination to fail independently; for M4 small,
 co-locating it with PD is the standard, honest simplification — note both default
 to client port <code>2379</code>, so remap one when co-located.)</li>
 <li><strong>Gateway + custodian</strong>: run on any node (or a spare), stateless. One of each is
 fine; the custodian leader-elects (via etcd) so a second is optional.</li>
 </ul>
-<p><strong>Machine count, minimum honest:</strong> ~6 D-server boxes + 3 TiKV/PD/etcd control boxes
+<p><strong>Machine count, minimum honest:</strong> ~6 D-server boxes + 3 metadata+etcd control boxes
 = <strong>9 machines</strong>, or fold the control tier onto 3 of the D-server boxes for <strong>6
 machines</strong> with the stated coupling caveat. Gateway/custodian ride along.</p>
 <h3>A.2 The &quot;real failure-domain&quot; homelab (better)</h3>
@@ -186,9 +206,9 @@ these labels). Then a whole <em>strip</em> failing (3 nodes) is still exactly th
 3-fault tolerance boundary — the data survives a power-strip loss. This is the
 homelab approximation of &quot;rack/power/switch&quot; domains from
 <a href="/architecture/07-deployment-view.html">§7.3</a>.</li>
-<li><strong>TiKV + PD + etcd on 3 dedicated control nodes</strong>, ideally on a different power
+<li><strong>metadata store + etcd on 3 dedicated control nodes</strong>, ideally on a different power
 strip again — the metadata <em>and</em> L5 coordination quorum.</li>
-<li>Total: <strong>~12 machines</strong> (9 D + 3 TiKV/PD/etcd control nodes). This is a <em>serious</em>
+<li>Total: <strong>~12 machines</strong> (9 D + 3 metadata+etcd control nodes). This is a <em>serious</em>
 homelab but it makes the durability story genuinely true rather than aspirational.</li>
 </ul>
 <h3>A.3 Homelab honesty box</h3>
@@ -221,7 +241,7 @@ separate hardware, separate failure. For RS(6,3) at full strength, <strong>9 D-s
 instances</strong> (one fragment each — 3-fault tolerance). For a cheaper first cut,
 <strong>6</strong> (single-fault tolerance, as in A.1). Bare-metal gives honest fsync/NVMe
 performance numbers; cloud servers are easier to spin up/down for a test campaign.</li>
-<li><strong>TiKV + PD + etcd — 3 dedicated cloud servers</strong>, separate from the D servers,
+<li><strong>metadata store + etcd — 3 dedicated cloud servers</strong>, separate from the D servers,
 forming the <strong>control quorum</strong>: TiKV + PD for metadata <strong>and</strong> the L5 <strong>etcd</strong>
 coordination ensemble (<a href="/adr/0006-etcd-for-coordination.html">ADR-0006</a>) that the
 <code>--coordination &lt;L5-endpoint&gt;</code> of every role dials. All three are light at this
@@ -258,8 +278,9 @@ property (#454) therefore holds: N active gateways behind a round-robin LB is su
 for chunk ids — is tracked as #478.) Wyrd still ships <strong>no</strong> load balancer of its own: the
 S3 front door is a standard cloud LB (Hetzner LB / k8s Service / nginx / HAProxy), an
 operator concern, not a Wyrd component.</li>
-<li><strong>Custodian — co-locate with a gateway or a small dedicated server</strong>; stateless,
-leader-elected.</li>
+<li><strong>Custodian — co-locate with a gateway or a small dedicated server</strong>; stateless. Run
+<strong>one</strong> against a distributed metadata store — cross-host single-active fencing is not
+enforced yet (#365; see B.5).</li>
 <li><strong>Network</strong>: Hetzner's <strong>private network (vSwitch)</strong> for the client→D-server,
 gateway→TiKV, and all-roles→etcd coordination traffic, so bulk fragment data and
 the control plane flow on the internal network, not the public interface. etcd in
@@ -267,9 +288,9 @@ particular <strong>must be network-isolated</strong> (ADR-0006 / <a href="/archi
 with its auth only defense-in-depth behind the mTLS fabric. The S3 endpoint is the
 only thing that needs public exposure (behind the LB).</li>
 </ul>
-<p><strong>Instance count, Hetzner full-strength:</strong> 9 D + 3 TiKV/PD/etcd/step-ca control + 1–2
+<p><strong>Instance count, Hetzner full-strength:</strong> 9 D + 3 metadata+etcd/step-ca control + 1–2
 gateway/custodian = <strong>~13–14 servers</strong> (the CA co-locates on the control nodes, so it
-adds none). Cheaper first cut: 6 D + 3 TiKV/PD/etcd/step-ca control + 1 gateway = <strong>10</strong>.
+adds none). Cheaper first cut: 6 D + 3 metadata+etcd/step-ca control + 1 gateway = <strong>10</strong>.
 All in one location, on a private network, rentable for the duration of a test
 campaign and torn down after — so the <em>cost</em> is hours-of-rental, not owned
 hardware.</p>
@@ -430,9 +451,9 @@ state:</p>
 <td>RS(6,3) + custodian reconstruction <em>is</em> the durability; a per-server backup is redundant with the EC (§8.2 row 1).</td>
 </tr>
 <tr>
-<td><strong>TiKV metadata (L4)</strong></td>
+<td><strong>Metadata (L4)</strong></td>
 <td><strong>Yes — mandatory</strong></td>
-<td>Tiny but total blast radius: lose it and every chunk is orphaned even with all fragments intact. Take <strong>online, consistent MVCC snapshots</strong> (no downtime) to <strong>independent</strong> storage; for M4 assume <em>periodic</em> snapshots, not continuous PITR — see the realtime note below (§8.2 row 3).</td>
+<td>Tiny but total blast radius: lose it and every chunk is orphaned even with all fragments intact. Take <strong>online, consistent snapshots</strong> (no downtime — both candidate backends are MVCC) to <strong>independent</strong> storage; for M4 assume <em>periodic</em> snapshots, not continuous PITR — see the realtime note below (§8.2 row 3). <strong>The concrete FoundationDB procedure is not yet written</strong> — see the note below.</td>
 </tr>
 <tr>
 <td><strong>etcd (L5 coordination)</strong></td>
@@ -440,17 +461,31 @@ state:</p>
 <td>Most L5 state reconstructs from the running fleet (re-registration, leases, re-election), so DR <em>stands etcd up</em> rather than restoring it (<a href="/architecture/06-runtime-view.html">§6.5</a>). See the etcd note below.</td>
 </tr>
 <tr>
-<td><strong>PD</strong></td>
+<td><strong>PD</strong> <em>(TiKV fallback only)</em></td>
 <td>Via the TiKV cluster backup</td>
-<td>Placement metadata, captured by BR with the cluster; not a separate job.</td>
+<td>Placement metadata, captured by BR with the cluster; not a separate job. FoundationDB has no PD-equivalent role to back up.</td>
 </tr>
 <tr>
 <td><strong>Gateway / custodian</strong></td>
 <td><strong>No (config only)</strong></td>
-<td>Stateless; their state lives in TiKV + etcd. Capture config in version control / IaC.</td>
+<td>Stateless; their state lives in the metadata store + etcd. Capture config in version control / IaC.</td>
 </tr>
 </tbody>
 </table>
+<blockquote>
+<p>[!WARNING]
+<strong>The FoundationDB backup/restore procedure is an open item, not a solved one.</strong> The
+analysis below is TiKV's (BR, <code>txnkv</code> vs RawKV, log-backup PITR). FoundationDB's
+equivalents — <code>fdbbackup</code>/<code>fdbrestore</code>, its continuous-backup and PITR semantics, its
+achievable RPO, and how a restore interacts with the custodian's reconstruction pass —
+have <strong>not</strong> been established or drilled for this deployment, and are deliberately not
+guessed at here. Until that work lands, a FoundationDB operator must treat backup as
+<strong>unspecified</strong> and derive it from upstream FDB documentation rather than from this
+note. What <em>is</em> settled and backend-independent: <strong>the map is backed up, the fragments
+are not</strong>, and the <strong>restore order</strong> is (1) etcd/L5, (2) the L4 metadata from the
+independent backup, (3) let the custodian reconstruct. Restoring bytes before the map
+is useless either way.</p>
+</blockquote>
 <p><strong>Restore order is the inverse of &quot;what's reconstructible&quot;</strong>, per the documented DR
 ordering (<a href="/architecture/06-runtime-view.html">§6.5</a>; <a href="/proposals/draft/0008-management-and-administration.html">proposal 0008</a>):
 <strong>(1) etcd/L5 coordination, (2) TiKV/L4 metadata from the independent backup,
@@ -531,7 +566,7 @@ the operator-partner the project needs.</p>
 <td>any 3 servers</td>
 </tr>
 <tr>
-<td>Control nodes (TiKV/PD/etcd)</td>
+<td>Control nodes (metadata+etcd)</td>
 <td>3 (may share)</td>
 <td>3 dedicated</td>
 <td>3 dedicated</td>
@@ -562,8 +597,8 @@ the operator-partner the project needs.</p>
 <td>Hetzner product</td>
 <td>—</td>
 <td>—</td>
-<td>Cloud <code>CX23</code> (D) / <code>CX33</code> (TiKV·PD)</td>
-<td>Cloud <code>CX23</code> (D) / <code>CX33</code> (TiKV·PD)</td>
+<td>Cloud <code>CX23</code> (D) / <code>CX33</code> (metadata)</td>
+<td>Cloud <code>CX23</code> (D) / <code>CX33</code> (metadata)</td>
 </tr>
 <tr>
 <td>Disaster-recoverable?</td>
@@ -599,8 +634,9 @@ phase, not the first fault deployment.</p>
 <em>boundaries</em>: the <strong>infrastructure</strong> steps (provisioning, networking,
 failure-domain layout, verification) are well-specified and given concretely.
 The <strong>Wyrd-process</strong> steps depend on the <code>deploy/</code> artifacts, config keys, and
-CLI flags that M4 is building (the M4 proposal ships a docker-compose TiKV+PD
-stack; the Helm/operator path is later). Where a step depends on a Wyrd
+CLI flags that M4 is building (<code>deploy/</code> ships a docker-compose
+stack per metadata backend — <code>small-multi-node-fdb/</code> is canonical, <code>small-multi-node/</code>
+is the TiKV fallback; the Helm/operator path is later). Where a step depends on a Wyrd
 config/flag whose exact name is set by the M4 implementation, it is marked
 <strong>[wyrd-config]</strong> — fill it from <code>deploy/</code> and the <code>server</code>/<code>d-server</code>/
 <code>custodian</code> <code>--help</code> once M4 lands. The shape is correct; the exact flag
@@ -610,10 +646,17 @@ strings are M4's to fix.</p>
 <ul>
 <li>The Wyrd binary (single binary with <code>d-server</code>, <code>custodian</code>, gateway, and
 metadata-backend-selector subcommands/roles) built for the target arch
-(x86_64, or aarch64 for ARM nodes/NAS).</li>
-<li>The <code>deploy/</code> directory from the repo (docker-compose TiKV+PD <strong>and etcd</strong> stack
+(x86_64, or aarch64 for ARM nodes/NAS), <strong>built with the features this topology needs</strong>.
+<code>crates/server/Cargo.toml</code> has <code>default = []</code>: the distributed metadata backends <em>and</em> the
+etcd coordination backend are all off by default, so a default build can select <strong>none</strong> of
+them. For production that is <strong><code>--features fdb,etcd</code></strong> — <code>fdb</code> links the system <code>libfdb_c</code>,
+whose version must match the cluster's exactly (§7.6), and <code>etcd</code> is what makes
+<code>--coordination-backend etcd</code> selectable at all. This is exactly the feature set the
+canonical <code>wyrd:fdb</code> image bakes in (#470).</li>
+<li>The <code>deploy/</code> directory from the repo (the docker-compose metadata <strong>and etcd</strong> stack
 and any systemd unit templates).</li>
-<li>A TiKV + PD release <strong>and an etcd release</strong> (the M4 <code>deploy/</code> stack pins versions;
+<li>A FoundationDB release (or, on the retained fallback, a TiKV + PD release) <strong>and an
+etcd release</strong> (the <code>deploy/</code> stacks pin versions;
 don't mix). etcd backs the L5 <code>Coordination</code> seam
 (<a href="/adr/0006-etcd-for-coordination.html">ADR-0006</a>); it is an external dependency,
 not a Wyrd subcommand.</li>
@@ -643,7 +686,7 @@ x86 SIMD EC path. Dedicated <code>CCX</code> or bare-metal is only for the separ
 honest-performance benchmark, not this functional run.</p>
 <pre><code># Roles — instance sizing (test scale; adjust up for real load)
 #  D servers       : CX23  (2 vCPU, 4 GB, 40 GB NVMe)  × 6  (or 9 for full RS(6,3))
-#  CA+TiKV+PD+etcd  : CX33  (4 vCPU, 8 GB, 80 GB NVMe)  × 3  (control plane: step-ca + metadata + L5 coordination)
+#  CA+metadata+etcd : CX33  (4 vCPU, 8 GB, 80 GB NVMe)  × 3  (control plane: step-ca + metadata + L5 coordination)
 #  gateway+custod  : CX23                              × 1  (or 2 + LB for HA)
 </code></pre>
 <p>Provision via the Hetzner Cloud console, the <code>hcloud</code> CLI, or Terraform. The
@@ -718,64 +761,169 @@ a step-ca provisioner and record it in the runbook. After first issuance certs
 cert for the process lifetime (ADR-0036 req 4). Verify before continuing: the CA is
 reachable, a test cert issues and verifies against the trust bundle, renewal works, and
 a <strong>plaintext dial is refused</strong>.</p>
-<h3>B.3 Bring up the control tier (TiKV + PD + etcd)</h3>
-<p>From the M4 <code>deploy/</code> stack, on the three control nodes (named <code>tikv*</code> here; they
-also run step-ca from B.2 and the L5 etcd ensemble). The M4 proposal ships a
-<strong>docker-compose TiKV+PD</strong> for CI/eval; the <strong>etcd</strong> coordination ensemble
-(<a href="/adr/0006-etcd-for-coordination.html">ADR-0006</a>) comes up alongside it. For a
-real deployment use the same images with PD and etcd each pointed at all three nodes,
-<strong>each configured with its step-ca-issued cert + the trust bundle from B.2</strong> so every
-dial is mTLS (ADR-0025), no plaintext. <strong>[wyrd-config]</strong> the exact compose files /
-systemd units come from <code>deploy/</code>.</p>
-<pre><code class="language-sh"># on each control node: install docker, pull the deploy/ stack
-# 1) etcd ensemble (3-node quorum) — the L5 Coordination backend (client 2379, peer 2380, mTLS)
+<h3>B.3 Bring up the control tier (metadata store + etcd)</h3>
+<p>On the three control nodes, which also run step-ca from B.2 and the L5 <strong>etcd</strong> ensemble
+(<a href="/adr/0006-etcd-for-coordination.html">ADR-0006</a>). In a real deployment every dial here is
+mTLS under the step-ca certs from B.2 (ADR-0025) — no plaintext. <strong>[wyrd-config]</strong> the exact
+compose files / systemd units come from <code>deploy/</code>.</p>
+<blockquote>
+<p>[!CAUTION]
+<strong>The <code>deploy/</code> compose stacks are single-host eval/CI fixtures, not this topology.</strong>
+<code>deploy/small-multi-node-fdb/</code> brings up <em>every</em> role — the metadata cluster <strong>and</strong> the 9
+D servers, custodians and gateways — on <strong>one</strong> Docker host, and it runs <strong>plaintext</strong>
+(<code>http://</code> etcd, no FDB TLS). It is how you evaluate Wyrd on a laptop, and it is what CI
+drives. It is <strong>not</strong> a three-control-node production control tier, it does not give you
+failure-domain independence, and it does not satisfy the mTLS requirement above. Do not
+paste it into this procedure; B.4/B.5 would then start those roles a second time.</p>
+</blockquote>
+<p>The etcd ensemble is the same either way:</p>
+<pre><code class="language-sh"># etcd ensemble (3-node quorum) — the L5 Coordination backend (client 2379, peer 2380, mTLS)
 docker compose -f deploy/etcd.yml up -d        # [wyrd-config] exact filename from deploy/
-# 2) PD ensemble (3-node quorum) must come up before TiKV; TiKV registers with PD.
-#    PD also defaults to 2379 — if co-located with etcd, remap one (e.g. etcd → 2381).
+</code></pre>
+<p><strong>The metadata tier depends on the backend, and the two paths differ.</strong></p>
+<h4>FoundationDB — the canonical backend (ADR-0042)</h4>
+<p>The <strong>shape</strong> is settled, and it is backend-specific in one important way: FoundationDB has
+<strong>no PD-equivalent role</strong>. The coordinators <em>are</em> the quorum. Across the three control nodes
+you want a ≥3-process cluster with <code>double</code> redundancy (tolerating the loss of one process);
+a fresh cluster is <strong>inert until configured exactly once</strong> (<code>fdbcli --exec &quot;configure new double ssd&quot;</code>) — the step most easily missed, after which the cluster is up but serves nothing;
+and every role that opens metadata needs the <strong>cluster file</strong> (<code>WYRD_FDB_CLUSTER_FILE</code>), which
+is how the client finds the coordinators. Verify with <code>fdbcli --exec status</code>: the database
+reports <strong>available</strong>, the configured redundancy is <strong>satisfied</strong>, and the coordinators are
+reachable.</p>
+<blockquote>
+<p>[!IMPORTANT]
+<strong>The multi-node FoundationDB control tier is NOT yet an established procedure, and is
+deliberately not invented here.</strong> What is missing: the process-class layout (<code>storage</code>,
+<code>log</code>, <code>stateless</code>, coordinators) and its placement across the three nodes; TLS
+configuration for the FDB cluster; <code>fdb.cluster</code> distribution and rotation; systemd units;
+and the backup/restore path (see the <em>Backup model</em> warning). None of it has been run or
+drilled for this deployment, and writing plausible-looking <code>fdbcli</code> incantations into a
+first-deployment runbook would be worse than admitting the gap. It is tracked as <strong>#546</strong>.
+Until that lands, derive the control tier from upstream FoundationDB documentation — and
+treat everything above as the <em>requirements it must meet</em>, not as the procedure.</p>
+</blockquote>
+<h4>TiKV — the retained-fallback path (#443)</h4>
+<p>Only for the stood-down TiKV backend (<code>deploy/small-multi-node/</code>); not for a new deployment.
+PD must come up <strong>before</strong> TiKV, because TiKV registers with PD:</p>
+<pre><code class="language-sh"># PD ensemble (3-node quorum). PD also defaults to 2379 — if co-located with etcd,
+# remap one (e.g. etcd → 2381).
 docker compose -f deploy/tikv-pd.yml up -d     # [wyrd-config] exact filename from deploy/
 </code></pre>
-<p>Verify the control tier before adding storage: <strong>etcd has quorum</strong> (3 nodes, lose
-at most 1 — <code>etcdctl endpoint health</code>), <strong>PD has quorum</strong> (3 nodes, lose at most
-1), TiKV stores show healthy (<code>pd-ctl</code>/<code>tikv-ctl</code>, or the deploy stack's health
-check). The <code>&lt;L5-endpoint&gt;</code> every other role dials is this etcd ensemble, e.g.
+<p>Verify: <strong>PD has quorum</strong> (3 nodes, lose at most 1) and TiKV stores show healthy
+(<code>pd-ctl</code> / <code>tikv-ctl</code>, or the deploy stack's health check).</p>
+<h4>Either way</h4>
+<p>Verify <strong>etcd has quorum</strong> (3 nodes, lose at most 1 — <code>etcdctl endpoint health</code>) before adding
+storage. The <code>&lt;L5-endpoint&gt;</code> every other role dials is this etcd ensemble, e.g.
 <code>10.0.1.&lt;e0&gt;:2379,10.0.1.&lt;e1&gt;:2379,10.0.1.&lt;e2&gt;:2379</code>.</p>
 <h3>B.4 Bring up the D servers (with failure-domain labels)</h3>
 <p>On each <code>d*</code> node, run the Wyrd <code>d-server</code> role, pointed at its local disk and
 <strong>labeled with its failure domain</strong>. This label is the single most important
 config in the whole deployment — it is what makes RS(6,3) real.</p>
-<pre><code class="language-sh"># on each d-server node — [wyrd-config] exact flags from `wyrd d-server --help`
+<pre><code class="language-sh"># on each d-server node. --bind is the gRPC listen addr (50051 is Wyrd's own default);
+# --advertise-addr is what peers dial, so it must be the node's routable address;
+# --failure-domain MUST be set and MUST be honest — it is what makes RS(6,3) real;
+# --coordination-backend etcd registers id·endpoint·fd and renews the lease (needs the
+# `etcd` cargo feature, and WYRD_ETCD_ENDPOINTS points at the B.3 ensemble).
+export WYRD_ETCD_ENDPOINTS=10.0.1.&lt;e0&gt;:2379,10.0.1.&lt;e1&gt;:2379,10.0.1.&lt;e2&gt;:2379
 wyrd d-server \
   --data-dir /var/lib/wyrd/fragments \
-  --listen 10.0.1.&lt;n&gt;:50051 \         # Wyrd D-server gRPC default (crates/server/src/cli.rs)
-  --failure-domain $FD_LABEL \          # e.g. fd0/fd1/fd2 — MUST be set, MUST be honest
-  --coordination &lt;L5-endpoint&gt; \        # the 3-node etcd ensemble — registers id·endpoint·fd, renews lease
-  --tls-cert /etc/wyrd/tls/dserver.crt --tls-key /etc/wyrd/tls/dserver.key \  # [wyrd-config] step-ca-issued, auto-renewed (B.2)
-  --tls-ca   /etc/wyrd/tls/ca-bundle.crt   # trust bundle — mTLS required, no plaintext fallback (ADR-0025)
+  --bind 0.0.0.0:50051 \
+  --advertise-addr 10.0.1.&lt;n&gt;:50051 \
+  --id &lt;n&gt; \
+  --failure-domain $FD_LABEL \
+  --coordination-backend etcd \
+  --group &lt;zone-name&gt;
 </code></pre>
+<blockquote>
+<p>[!NOTE]
+<strong>[wyrd-config]</strong> The mTLS flags this step ought to carry (<code>--tls-cert</code> / <code>--tls-key</code> /
+<code>--tls-ca</code>, step-ca-issued per B.2, ADR-0025) <strong>do not exist in the CLI yet</strong>
+(<code>cli.rs::usage</code>). Until they do, this traffic is not mTLS-protected by following the
+command above — keep it on the private network (M5).</p>
+</blockquote>
 <p>The D server registers itself (id + endpoint + failure-domain label) through the
 L5 coordination seam; the gateway discovers it. <strong>Never</strong> point two D servers
 that share real hardware at different <code>fd</code> labels — the label must reflect actual
 independence or the durability math lies.</p>
 <h3>B.5 Bring up the gateway + custodian</h3>
-<p>On <code>gw0</code>, select the <strong>TiKV</strong> metadata backend (the M4 composition switch) and
-start the gateway and the custodian.</p>
-<pre><code class="language-sh"># gateway — TiKV backend selected by config (the M4 composition switch)
-wyrd gateway \
-  --metadata-backend tikv \             # [wyrd-config] the M4 redb|tikv selector
-  --tikv-pd 10.0.1.&lt;pd0&gt;:2379,10.0.1.&lt;pd1&gt;:2379,10.0.1.&lt;pd2&gt;:2379 \
-  --s3-listen 0.0.0.0:8080 \
-  --coordination &lt;L5-endpoint&gt; \
-  --tls-cert /etc/wyrd/tls/gateway.crt --tls-key /etc/wyrd/tls/gateway.key \  # [wyrd-config] step-ca-issued (B.2) — INTERNAL mTLS
-  --tls-ca   /etc/wyrd/tls/ca-bundle.crt    # the PUBLIC S3 cert is separate (public ACME, not step-ca) — ADR-0036 req 5
+<p>On <code>gw0</code>, select the metadata backend (the M4 composition switch — the <em>whole</em> point of the
+<code>MetadataStore</code> seam) and start the gateway and the custodian. <strong>FoundationDB is the
+production backend</strong> (ADR-0042); the binary must be built <code>--features fdb,etcd</code> (both are
+off by default — see Prerequisites), and <code>fdb</code> links <code>libfdb_c</code> (§7.6). Unlike TiKV, FDB
+takes no endpoint flag: the client reads a <strong>cluster file</strong>, whose path comes from
+<code>WYRD_FDB_CLUSTER_FILE</code>.</p>
+<p>Both roles take their backends by flag and their endpoints by environment — the shape the
+compose fixtures use, so these commands mirror something that actually runs (the S3 gateway
+role is <code>wyrd s3</code>; there is no <code>wyrd gateway</code> subcommand):</p>
+<pre><code class="language-sh"># Shared by every role that opens metadata or coordination.
+# WYRD_FDB_CLUSTER_FILE is the file fdbcli wrote in B.3 — distribute it to each host.
+export WYRD_FDB_CLUSTER_FILE=/etc/foundationdb/fdb.cluster
+export WYRD_ETCD_ENDPOINTS=10.0.1.&lt;e0&gt;:2379,10.0.1.&lt;e1&gt;:2379,10.0.1.&lt;e2&gt;:2379
+# Or pass --access-key / --secret-key instead of these:
+export WYRD_S3_ACCESS_KEY=... WYRD_S3_SECRET_KEY=...
 
-# custodian — one active, leader-elected; emits durability telemetry
+# S3 gateway — stateless front door. --metadata-backend is the redb|tikv|fdb selector;
+# --coordination-backend etcd needs the `etcd` cargo feature (see Prerequisites);
+# --endpoints are the D servers from B.4.
+wyrd s3 \
+  --metadata-backend fdb \
+  --coordination-backend etcd \
+  --s3-listen 0.0.0.0:8080 \
+  --region &lt;your-region&gt; \
+  --endpoints http://10.0.1.&lt;d0&gt;:50051,...
+
+# custodian — reconstruction/repair; emits durability telemetry.
+# --otlp-endpoint is how that telemetry LEAVES the process: set it (see the note below).
 wyrd custodian \
-  --metadata-backend tikv --tikv-pd &lt;...&gt; \
-  --coordination &lt;L5-endpoint&gt; \
-  --tls-cert /etc/wyrd/tls/custodian.crt --tls-key /etc/wyrd/tls/custodian.key \  # [wyrd-config] step-ca-issued (B.2)
-  --tls-ca   /etc/wyrd/tls/ca-bundle.crt \
-  --otlp-endpoint &lt;your-collector&gt;      # or scrape its Prometheus endpoint
+  --zone &lt;zone-name&gt; \
+  --metadata-backend fdb \
+  --endpoints http://10.0.1.&lt;d0&gt;:50051,... \
+  --ids 0,1,... \
+  --failure-domains fd0,fd1,... \
+  --otlp-endpoint &lt;your-collector&gt;
 </code></pre>
+<blockquote>
+<p>[!WARNING]
+<strong>Run exactly ONE custodian against a distributed metadata store — &quot;single-active&quot; is not
+enforced for you.</strong> The custodian campaigns for leadership through the <em>process-local</em>
+<code>MemCoordination</code> (<code>cli.rs</code>), which always grants the lone process leadership. On embedded
+<code>redb</code> that is genuinely single-active, because the store's exclusive file lock keeps a
+second custodian off the same <code>--data-dir</code>. A <strong>shared networked store (FoundationDB or
+TiKV) has no such lock</strong>: start two custodians and <em>both</em> self-grant and reconcile
+concurrently — the role logs a WARNING saying exactly this rather than advertise a safety
+property it does not have.</p>
+<p>Nothing corrupts — the reconstruction repoint is a version-conditional (CAS) commit, so two
+racing custodians never both win — but you get duplicated repair work and wasted bandwidth,
+which is precisely what you do not want during a real incident. Real cross-host fencing
+arrives when the etcd-backed <code>Coordination</code> replaces <code>MemCoordination</code> behind the same seam
+(ADR-0006, <strong>#365</strong>). Note the <code>deploy/</code> compose profiles start <strong>three</strong> custodians: that
+is a throughput/eval fixture, not a pattern to copy into production.</p>
+</blockquote>
+<blockquote>
+<p>[!IMPORTANT]
+<strong>Set <code>--otlp-endpoint</code>, or you get no durability telemetry at all.</strong> There is no
+Prometheus scrape endpoint to fall back on: with <code>ExporterConfig::Prometheus</code> the process
+builds an <strong>in-process</strong> registry (<code>DurabilityTelemetry::gather_prometheus</code>) and <strong>binds no
+HTTP listener</strong> — nothing external can reach it. That path exists for tests and the
+zero-dependency dev profile (ADR-0012), not for a deployment. So the OTLP push is the only
+way repair/scrub/under-replication signal leaves the custodian, and durability telemetry is
+the one thing you cannot afford to discover you were not collecting. Stand up the collector
+first (#446).</p>
+</blockquote>
+<blockquote>
+<p>[!NOTE]
+<strong>[wyrd-config] The mTLS flags this procedure assumes do not exist yet.</strong> B.2 requires every
+internal dial to present a step-ca cert (ADR-0025), but the CLI exposes no <code>--tls-cert</code> /
+<code>--tls-key</code> / <code>--tls-ca</code> surface today (<code>cli.rs::usage</code>), and the compose fixtures run
+plaintext. Until that lands, this tier is <strong>not</strong> mTLS-protected merely by following the
+commands above — keep it on the private network and treat the trust plane as the open item
+it is (M5).</p>
+</blockquote>
+<p>On the retained TiKV fallback (#443) the only difference is the selector and the fact that
+TiKV <em>does</em> take endpoints — <code>--metadata-backend tikv</code> with <code>WYRD_TIKV_PD_ENDPOINTS</code> pointed at
+the PD ensemble instead of <code>WYRD_FDB_CLUSTER_FILE</code>; everything else above is unchanged. That is
+the seam earning its keep: swapping the metadata tier changes a flag and an env var, not a
+topology.</p>
 <p>Expose <strong>only</strong> the gateway's S3 port publicly (behind the Hetzner LB if you want
 HA); everything else stays on the <code>10.0.1.0/24</code> private network.</p>
 <h3>B.6 Tear down (the cost-control step)</h3>
@@ -809,7 +957,7 @@ homelab equivalent of rack/power labels.</li>
 <h3>A.2 Bring up the stack</h3>
 <p>Identical to Hetzner B.2–B.5, with LAN IPs instead of the Hetzner private
 network. step-ca on the 3 control nodes <strong>first</strong> (mTLS is fail-closed), then
-TiKV+PD+etcd on those nodes (or folded onto 3 D-server nodes for the 6-machine
+the metadata store + etcd on those nodes (or folded onto 3 D-server nodes for the 6-machine
 minimum, accepting the coupling), D servers on the <code>d*</code> nodes with their <code>fd</code> labels,
 gateway+custodian on <code>gw0</code> or a spare.</p>
 <h3>A.3 The homelab-specific value</h3>
@@ -854,11 +1002,11 @@ processes are running&quot; and &quot;it is actually production-durable.&quot;</
 7. Promote:       anything surprising in steps 1–6 → a seeded DST regression.
 </code></pre>
 <h2>What you'll spend (Hetzner, verified post-15-June-2026 pricing)</h2>
-<p><strong>Cloud, B.1-cheap topology</strong> (6× <code>CX23</code> D + 3× <code>CX33</code> TiKV/PD + 1× <code>CX23</code>
+<p><strong>Cloud, B.1-cheap topology</strong> (6× <code>CX23</code> D + 3× <code>CX33</code> metadata + 1× <code>CX23</code>
 gateway): at €0.0064/h (<code>CX23</code>) and €0.0104/h (<code>CX33</code>) that is <strong>≈€0.076/hour for
 the whole cluster</strong> — <strong>~€3–4 a weekend</strong>, <strong>~€11 a week</strong>, <strong>under €1 for a
 focused day</strong>. The 15 June 2026 price adjustment did not move this materially, so
-the figure still holds. Full-strength (9 D + 3 TiKV/PD + 2 gateway) ≈
+the figure still holds. Full-strength (9 D + 3 metadata + 2 gateway) ≈
 <strong>€0.10/hour</strong>. New accounts get ~€20 credit (several campaigns).</p>
 <p><strong>Bare-metal, the benchmark run</strong> (§B.3): Server Auction boxes run
 ≈<strong>€35–49/month</strong> each with no setup fee and no minimum contract — <em>month</em>
