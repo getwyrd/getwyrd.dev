@@ -72,15 +72,16 @@ D-server spread, the control-tier/data-tier asymmetry, the &quot;back up the map
 fragments&quot; model, the restore <em>ordering</em> — is backend-independent and stands
 unchanged. Read &quot;the metadata tier&quot; wherever it says &quot;TiKV + PD&quot;: FoundationDB
 occupies the same slot, with the same criticality and the same blast radius.</p>
-<p>What does <strong>not</strong> yet exist is the FoundationDB <em>operational</em> detail that would
-replace the TiKV-specific commands and analysis below: the <code>fdbbackup</code>/<code>fdbrestore</code>
-equivalents of the BR snapshot model, FDB's process classes and their placement, its
-PITR/RPO story, and re-sized control-plane nodes. Those are deliberately <strong>not
-invented here</strong> — writing unverified backup and restore instructions into a
-first-deployment runbook is worse than admitting the gap. They are a named follow-up
-(see <em>Backup model</em> below), and until that lands the TiKV-shaped operational
-sections are <strong>historical</strong>: accurate for the fallback, not instructions for a new
-FoundationDB deployment.</p>
+<p><strong>FoundationDB backup and restore is now written and drilled</strong> (<em>The FoundationDB backup
+runbook</em>, below, #546): the continuous-backup command and its one-shot trap, the measured
+RPO, a restore drill, a point-in-time restore, and what a restore does to the fragments
+and to the custodian. Every command there was run against the pinned FDB 7.3.77.</p>
+<p>What is still <strong>not</strong> established for FoundationDB, and is deliberately not guessed at:
+a <strong>bare-metal / systemd</strong> control tier (process-class placement, <code>fdb.cluster</code>
+distribution and rotation, TLS configuration for the cluster). Those remain derived from
+upstream FoundationDB documentation, not from this note. TiKV-shaped operational text that
+survives below is <strong>historical</strong>: accurate for the retained fallback, not instructions for
+a new FoundationDB deployment.</p>
 </blockquote>
 <h2>The one number that drives everything: RS(6,3)</h2>
 <p>The default scheme is <strong>RS(6,3)</strong> — 6 data + 3 parity = <strong>9 fragments per chunk</strong>,
@@ -419,13 +420,16 @@ Watch: reads keep working (reconstruct from
 survivors), under-replicated count rises, the custodian rebuilds, count returns
 to zero. <em>If that loop doesn't work, you are not production-durable yet</em> — and
 it's far better to learn it on day one with test data than later with real data.</li>
-<li><strong>Set up the backups — but only where they're needed</strong> (see <em>Backup model</em>
-below). Back up the <strong>TiKV metadata</strong> out-of-band to independent storage — this
-is the mandatory one; losing it orphans all chunks. Snapshot <strong>etcd</strong> for fast
-config recovery. <strong>Do not</strong> back up D-server fragments — EC + custodian
-reconstruction is their mechanism. Per <a href="/architecture/08-crosscutting-concepts.html">§8.2</a>,
-backups must not depend on this cluster. M4 is single-zone; this is your
-disaster-recovery story until M9.</li>
+<li><strong>Set up the backups — but only where they're needed</strong> (see <em>The FoundationDB
+backup runbook</em> below, and <em>Backup model</em>). Back up the <strong>metadata</strong> out-of-band to
+independent storage — this is the mandatory one; losing it orphans all chunks. On
+FoundationDB that means starting a <strong>continuous</strong> backup — <code>fdbbackup start -d &lt;URL&gt; -z</code> — with a <strong>supervised</strong> <code>backup_agent</code>: without <code>-z</code> the backup is a one-shot that
+stops the moment it is restorable, and your RPO silently becomes &quot;whenever I last ran
+it&quot;. Alert on the restorable-version <strong>lag</strong>, because a dead agent still reports a
+healthy backup. Snapshot <strong>etcd</strong> for fast config recovery. <strong>Do not</strong> back up D-server
+fragments — EC + custodian reconstruction is their mechanism. Per
+<a href="/architecture/08-crosscutting-concepts.html">§8.2</a>, backups must not depend on this cluster. M4 is
+single-zone; this is your disaster-recovery story until M9.</li>
 <li><strong>Promote any surprise into DST.</strong> Anything the real deployment does that the
 simulator didn't model — a seeded DST regression. This is how the first
 deployment <em>earns trust</em> rather than just running.</li>
@@ -453,7 +457,7 @@ state:</p>
 <tr>
 <td><strong>Metadata (L4)</strong></td>
 <td><strong>Yes — mandatory</strong></td>
-<td>Tiny but total blast radius: lose it and every chunk is orphaned even with all fragments intact. Take <strong>online, consistent snapshots</strong> (no downtime — both candidate backends are MVCC) to <strong>independent</strong> storage; for M4 assume <em>periodic</em> snapshots, not continuous PITR — see the realtime note below (§8.2 row 3). <strong>The concrete FoundationDB procedure is not yet written</strong> — see the note below.</td>
+<td>Tiny but total blast radius: lose it and every chunk is orphaned even with all fragments intact. On FoundationDB: an <strong>online, continuous</strong> backup (snapshot + mutation log) to <strong>independent</strong> storage, restorable to <strong>any version in the retained window</strong> — see <em>The FoundationDB backup runbook</em> below (§8.2 row 3).</td>
 </tr>
 <tr>
 <td><strong>etcd (L5 coordination)</strong></td>
@@ -472,42 +476,283 @@ state:</p>
 </tr>
 </tbody>
 </table>
-<blockquote>
-<p>[!WARNING]
-<strong>The FoundationDB backup/restore procedure is an open item, not a solved one.</strong> The
-analysis below is TiKV's (BR, <code>txnkv</code> vs RawKV, log-backup PITR). FoundationDB's
-equivalents — <code>fdbbackup</code>/<code>fdbrestore</code>, its continuous-backup and PITR semantics, its
-achievable RPO, and how a restore interacts with the custodian's reconstruction pass —
-have <strong>not</strong> been established or drilled for this deployment, and are deliberately not
-guessed at here. Until that work lands, a FoundationDB operator must treat backup as
-<strong>unspecified</strong> and derive it from upstream FDB documentation rather than from this
-note. What <em>is</em> settled and backend-independent: <strong>the map is backed up, the fragments
-are not</strong>, and the <strong>restore order</strong> is (1) etcd/L5, (2) the L4 metadata from the
-independent backup, (3) let the custodian reconstruct. Restoring bytes before the map
-is useless either way.</p>
-</blockquote>
 <p><strong>Restore order is the inverse of &quot;what's reconstructible&quot;</strong>, per the documented DR
 ordering (<a href="/architecture/06-runtime-view.html">§6.5</a>; <a href="/proposals/draft/0008-management-and-administration.html">proposal 0008</a>):
-<strong>(1) etcd/L5 coordination, (2) TiKV/L4 metadata from the independent backup,
+<strong>(1) etcd/L5 coordination, (2) the L4 metadata from the independent backup,
 (3) let the custodian verify and re-replicate/reconstruct fragments from
 survivors.</strong> Restoring bytes before the map is useless — fragments are
-unaddressable without the chunk-map. The full single-zone DR sequence is a
-<strong>runbook that must be written and drilled before it is needed</strong>, not improvised
-during an incident — and that runbook, plus backup cadence/format/retention, is
-still an open item in proposal 0008, not yet specified.</p>
-<p><strong>Can the metadata backup be taken in realtime?</strong> Two senses. <em>Online /
-non-blocking</em> — <strong>yes</strong>: TiKV is MVCC, so a consistent snapshot is read at a
-timestamp while the cluster keeps serving, no downtime. <em>Continuous near-realtime
-(low RPO)</em> — <strong>only partially, and unverified for this deployment</strong>: TiKV/TiDB
-log-backup PITR streams change logs with an RPO floor of ~5 minutes (never zero),
-<strong>but that is a TiDB-<em>cluster</em> feature</strong>, while Wyrd runs <strong>standalone transactional
-TiKV</strong> (<code>txnkv</code>, no TiDB — <a href="/proposals/accepted/0007-milestone-4-production-metadata-backend.html">proposal 0007</a>)
-and the standalone TiKV-BR continuous path is documented for <em>RawKV</em>, not <code>txnkv</code>.
-So for M4 the safe assumption is <strong>periodic online snapshots</strong> (RPO = the snapshot
-interval); whether log-backup PITR works against bare <code>txnkv</code> must be <strong>verified
-against the pinned <code>tikv-client</code> / TiKV-BR version</strong> (an open item in 0007) before
-it is relied on. Treat restore as fallible and <strong>drill it</strong> (cf. TiKV issue #13281,
-PITR restore inconsistency), don't just configure the backup.</p>
+unaddressable without the chunk-map. This ordering is backend-independent.</p>
+<h2>The FoundationDB backup runbook</h2>
+<blockquote>
+<p>Every command below was <strong>run</strong> against the pinned FoundationDB (7.3.77,
+<code>deploy/fdb-single-node/</code>), including a restore drill and a point-in-time restore
+(#546). The output quoted is what it actually printed. Nothing here is inferred from
+upstream prose — that was the whole reason this section did not exist until now.</p>
+</blockquote>
+<h3>The shape: snapshot + mutation log = a restorable <em>window</em></h3>
+<p>An FDB backup is <strong>not</strong> a point snapshot. It is a snapshot <strong>plus a contiguous mutation
+log</strong>, and it is restorable to <strong>any version inside a window</strong>:</p>
+<pre><code>$ fdbbackup describe -d file:///backups/drill/backup-2026-07-13-21-50-10.154484
+Restorable: true
+Snapshot:  startVersion=41661354  endVersion=41667877  totalBytes=271  restorable=true
+MinRestorableVersion:    41667877
+MaxRestorableVersion:    61629351
+</code></pre>
+<p>That window is the whole point: <strong>replication is not backup</strong>, and a window is what lets
+you land <em>before</em> an errant delete rather than faithfully restoring it.</p>
+<h3>The trap: <code>fdbbackup start</code> is a ONE-SHOT by default</h3>
+<p><code>fdbbackup start</code> <strong>stops as soon as the backup becomes restorable</strong>. The flag that keeps
+it running is <code>-z, --no-stop-when-done</code>. Miss it and you have a backup that quietly
+stopped, and an RPO of &quot;whenever I last remembered to run it&quot;.</p>
+<p>This is not theoretical — it is what the drill showed. With a default (stopped) backup, a
+key written afterwards was <strong>permanently lost</strong> across the restore:</p>
+<pre><code>$ fdbcli --exec 'writemode on; set wyrd/inode/3 gamma-written-after-backup'   # after the backup stopped
+$ fdbcli --exec 'writemode on; clearrange wyrd/ wyrd0'                        # the disaster
+$ fdbrestore start -r &lt;URL&gt; -w --dest-cluster-file /var/fdb/fdb.cluster
+Restored to version 61629351
+$ fdbcli --exec 'getrange wyrd/ wyrd0 10'
+`wyrd/dirent/root/f1' is `1'
+`wyrd/inode/1' is `alpha'
+`wyrd/inode/2' is `beta'
+# wyrd/inode/3 is GONE — it was written after the one-shot backup completed.
+</code></pre>
+<p>(The drill seeded synthetic <code>wyrd/…</code> keys, so clearing that prefix cleared the whole
+keyspace. <strong>Do not copy that <code>clearrange</code> into a real restore</strong> — Wyrd's physical keys carry
+a configurable store prefix; see the production sequence below, which clears the entire user
+keyspace instead.)</p>
+<p><strong>So the production setup is:</strong></p>
+<p><strong>1. The backup agent must be running — and SUPERVISED.</strong> <code>fdbbackup start</code> only submits
+work; the <code>backup_agent</code> processes perform it. No agent, no backup — and, worse, an agent
+that <em>stops</em> means mutation-log shipping silently stops while <code>fdbbackup start</code> still
+reports a backup exists. Do <strong>not</strong> background it from a shell (<code>backup_agent … &amp;</code> dies on
+logout and never comes back — that is the drill form, not the production form). Run it under
+a supervisor that restarts it:</p>
+<pre><code class="language-ini"># /etc/systemd/system/fdb-backup-agent.service
+[Unit]
+Description=FoundationDB backup agent
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/backup_agent -C /etc/foundationdb/fdb.cluster --log --logdir /var/log/foundationdb
+Restart=always
+RestartSec=5s
+User=foundationdb
+
+[Install]
+WantedBy=multi-user.target
+</code></pre>
+<p>(In the container world, the same thing is a compose service with <code>restart: unless-stopped</code>
+on the control nodes.) Run <strong>more than one</strong> agent for throughput and so a single dead agent
+does not stall the log; they coordinate through the database.</p>
+<blockquote>
+<p>[!CAUTION]
+<strong>Multiple agents require the destination to be genuinely shared storage.</strong> The agents
+divide the work between them and each writes its share <em>directly to the destination
+container</em>. With a <code>file://</code> URL pointing at a <strong>node-local</strong> path, agents on different
+control nodes write different pieces into unrelated local directories, and <strong>no node ends
+up holding a complete, restorable container</strong> — a backup that looks healthy and cannot be
+restored. Either point <code>file://</code> at the same shared filesystem mounted identically on every
+agent host, or (better) use a <code>blobstore://</code> S3-compatible container, which is shared by
+construction. If you only have node-local disk, run <strong>exactly one</strong> agent.</p>
+</blockquote>
+<p><strong>2. Start the backup — continuously.</strong></p>
+<pre><code class="language-sh"># -z keeps it CONTINUOUS. -s is the snapshot interval in seconds (default 864000 = 10 days).
+fdbbackup start -d &lt;independent-storage-URL&gt; -z -s 3600
+</code></pre>
+<p>The destination must be <strong>independent storage</strong> — a backup on the disks the cluster runs on
+is not a backup. FDB supports <code>file://</code> and <code>blobstore://</code> (S3-compatible) container URLs.</p>
+<h3>The measured RPO: tens of seconds, not zero, not five minutes</h3>
+<p>With a continuous backup running, the restorable point trails the live database by the
+log-shipping lag. Measured on an idle single-node cluster:</p>
+<pre><code>live read version:   262,306,171
+max restorable:      237,909,455
+lag = 24,396,716 versions ≈ 24s     (FDB versions advance ~1e6/sec)
+</code></pre>
+<p>So: <strong>RPO on the order of tens of seconds</strong>, set by agent throughput and load — not zero,
+and not the ~5-minute floor the TiKV/TiDB log-backup path carries. Measure it on <em>your</em>
+cluster (the arithmetic above is the whole method: <code>getversion</code> minus <code>MaxRestorableVersion</code>,
+÷ 1e6) and <strong>alert on the lag</strong>.</p>
+<p><strong>That lag alert is the load-bearing one, and this is why.</strong> The failure mode is <em>silent</em> —
+verified by killing every agent under a running continuous backup:</p>
+<pre><code>restorable=true  MaxRestorableVersion=90197125   (agent ALIVE)
+--- all agents killed; a new key is then committed ---
+restorable=true  MaxRestorableVersion=90197125   (agents DEAD, 60s later)
+
+$ fdbbackup status
+The backup on tag `default' is restorable but continuing to file:///backups/...
+</code></pre>
+<p>With no agent alive, FDB still reports the backup as <strong><code>Restorable: true</code></strong> and <em>&quot;restorable
+but continuing&quot;</em> — it claims health — while <code>MaxRestorableVersion</code> <strong>does not move</strong>. Your
+backup is frozen at the moment the last agent died, and nothing tells you. You would discover
+it at the only moment it matters. So: page on <strong>the lag exceeding your RPO budget</strong>, which
+catches this; do not rely on the backup's own status, which does not.</p>
+<h3>Point-in-time restore: landing <em>before</em> the bad write</h3>
+<p>The reason a window matters. Drilled: capture a good version, commit a catastrophic write,
+then restore to the good version — the bad write is excluded and everything before it
+survives.</p>
+<blockquote>
+<p>[!CAUTION]
+<strong>Never clear the database until <code>describe</code> has confirmed your target version is inside
+the restorable window.</strong> This is the ordering that turns a recoverable incident into
+total loss, and the backup's own lag is what sets the trap: <code>getversion</code> returns a
+<strong>live</strong> version, while <code>MaxRestorableVersion</code> trails it by the log-shipping lag (~24s
+above). So the obvious <code>GOOD=$(fdbcli --exec 'getversion')</code> is very often <strong>greater than
+anything the backup can restore</strong>. Clear first and you have destroyed the database and
+<em>then</em> discover the restore refuses the version. Verify, then clear. Never the reverse.</p>
+</blockquote>
+<pre><code class="language-sh"># `getversion` prints a bare number on 7.3.77 (verified), but this is a destructive path:
+# never bet it on an upstream CLI's output format. Assert it before you rely on it.
+GOOD=$(fdbcli --exec 'getversion' | tr -dc '0-9')       # e.g. 282344071 — a LIVE version
+[ -n &quot;$GOOD&quot; ] || { echo &quot;could not read a version; STOP&quot;; exit 1; }
+# ... a bad delete/migration lands, and is faithfully replicated everywhere ...
+
+# 1. STOP EVERY WRITER (gateways, custodians). A restore into a live cluster is not a
+#    scenario anyone has drilled, and an incident is the wrong place to find out.
+
+# 2. Stop the backup cleanly, so the mutation log has a definite end and the window
+#    advances as far as it can.
+fdbbackup discontinue -w
+
+# 3. VERIFY THE TARGET VERSION IS RESTORABLE — BEFORE touching any data.
+fdbbackup describe -d &lt;URL&gt; -C /etc/foundationdb/fdb.cluster
+#    Read MinRestorableVersion and MaxRestorableVersion, and require:
+#        MinRestorableVersion &lt;= $GOOD &lt;= MaxRestorableVersion
+#    If $GOOD is ABOVE MaxRestorableVersion the backup never captured it — the log had not
+#    caught up. Do NOT clear anything: either re-check (the window may still be settling),
+#    or consciously choose a version inside the window and accept losing what came after it.
+#    If Restorable is false, you have no usable backup at all: STOP. Clearing now would
+#    destroy the only copy of the data you still have.
+
+# 4. Only now: empty the destination. The backup covers the WHOLE database, and the restore
+#    expects its target ranges to be empty — so clear the entire user keyspace, NOT some
+#    prefix. (Wyrd's physical keys carry a configurable store prefix, so there is no literal
+#    prefix to clear; and anything you leave behind is a key the backup did not put there.)
+#    Cleaner still, when you have the hardware: restore into a FRESH, empty cluster — which
+#    also keeps the damaged one intact for a second attempt.
+fdbcli --exec 'writemode on; clearrange &quot;&quot; \xff'
+
+# 5. Restore to the verified version. Omit -v to land on MaxRestorableVersion instead.
+fdbrestore start -r &lt;URL&gt; -v &quot;$GOOD&quot; -w --dest-cluster-file /etc/foundationdb/fdb.cluster
+
+# 6. START A NEW CONTINUOUS BACKUP — to a FRESH destination, before resuming writers.
+#    Step 2 discontinued the old one: the restored cluster is running UNPROTECTED until
+#    this exists, and its RPO grows without bound. This is the step a DR drill forgets.
+fdbbackup start -d &lt;new-independent-storage-URL&gt; -z -s 3600
+#    Verify it actually became restorable before you call the incident closed:
+fdbbackup describe -d &lt;new-URL&gt; -C /etc/foundationdb/fdb.cluster   # expect Restorable: true
+
+# 7. Resume writers, then run a scrub pass (see below — the restore leaves the fragment
+#    tier at a different point in time, and that needs reconciling).
+</code></pre>
+<pre><code>Restored to version 282344071
+$ fdbcli --exec 'getrange wyrd/ wyrd0 20'
+`wyrd/dirent/root/f1' is `1'
+`wyrd/inode/1' is `alpha'
+`wyrd/inode/10' is `written-during-continuous'
+`wyrd/inode/11' is `later-still'
+`wyrd/inode/2' is `beta'
+# wyrd/inode/99 (`CATASTROPHIC-BAD-DELETE') is absent — restored to BEFORE it.
+</code></pre>
+<p>Omit <code>-v</code> and you restore to <code>MaxRestorableVersion</code> (the latest point the log covers).</p>
+<p><strong>Stop the writers first.</strong> Restore overwrites the target key ranges; gateways and
+custodians still committing into them during a restore is not a scenario anyone has
+drilled, and it is not one to discover during an incident.</p>
+<h3>What a restore does to the fragments, and to the custodian</h3>
+<p>The metadata is restored to version <em>V</em>; the D servers are <strong>not</strong> restored (they never were
+backed up — EC + reconstruction <em>is</em> their durability). <strong>The two tiers therefore land at
+different points in time, and that mismatch is the sharpest edge in this whole procedure.</strong>
+&quot;Restore the map and let the custodian sort it out&quot; is <strong>not</strong> true. What actually happens:</p>
+<ul>
+<li>
+<p><strong>Files that existed at <em>V</em> and still exist</strong> — chunk-maps back, fragments untouched:
+readable, and the custodian re-replicates anything under-replicated, as after any node loss.</p>
+</li>
+<li>
+<p><strong>Files that existed at <em>V</em> but were DELETED after it</strong> — the restore <em>resurrects the chunk
+map</em>, and whether that file is readable depends on <strong>how far the GC got</strong>. Deletion marks
+the fragments as orphans and reclaims them only after the grace window, one at a time:</p>
+<ul>
+<li>GC has <strong>not yet</strong> reclaimed them (still inside the grace window) → all fragments present:
+the file is <strong>readable</strong>, and the resurrection is clean.</li>
+<li>GC has reclaimed <strong>some</strong> — fewer than <em>m</em> of the <em>n</em> fragments gone (≤3 of 9 under
+RS(6,3)) → still readable, and the custodian reconstructs the rest. <strong>Survivable.</strong></li>
+<li>GC has reclaimed <strong>enough</strong> that fewer than <em>k</em> fragments remain (&gt;3 gone) → a <strong>dangling
+map</strong>: the file is back in the namespace, <strong>unreadable</strong>, and reconstruction cannot save
+it — there is nothing left to rebuild from. <strong>Unrecoverable.</strong></li>
+</ul>
+<p>So the loss is not categorical, it is a <strong>race against the grace window</strong> — and the further
+back you restore, the more files fall into the last bucket. <strong>Run a scrub/verify pass
+immediately after a restore</strong> to find out which: that pass is how you learn what you
+actually got back. This is why &quot;restore to the latest restorable version&quot; is the default,
+and why going further back is a deliberate, costed decision rather than a free one.</p>
+</li>
+<li>
+<p><strong>Files created after <em>V</em></strong> — their metadata is gone, so the files are gone. Their
+fragments remain on the D servers, and <strong>they are NOT collected automatically.</strong> The GC
+reclaims a fragment only on <em>evidence</em> that a grace deadline has passed — an <code>orphan:</code>
+record or an expired <code>pending:</code> lease (<code>crates/custodian/src/gc.rs</code>). Those records live
+<strong>in the metadata</strong>, so the restore erased them along with the chunk maps. An unreferenced
+fragment with no surviving record hits the reconciler's final branch — <em>&quot;no evidence the
+grace window elapsed — conservatively keep it&quot;</em> — and is <strong>retained indefinitely</strong>. That
+is fail-safe (it never deletes live data) but it means <strong>the space leaks until someone
+reclaims it.</strong> There is no post-restore reconciliation pass today; it needs one (<strong>#551</strong>),
+and until it exists the cleanup is manual.</p>
+</li>
+<li>
+<p><strong>The inode allocator rewinds with everything else</strong> (<code>meta:next_inode</code> lives <em>in</em> the
+metadata), so post-restore writes hand out inode numbers that post-<em>V</em> files used. That is
+safe, and specifically because <strong>chunk ids are random / coordination-free and are not
+derived from the inode</strong> (<a href="/adr/0019-chunk-format-layout.html">ADR-0019</a>): a reused inode
+cannot collide with a stranded chunk, so a new file can never accidentally address a dead
+file's fragments.</p>
+</li>
+</ul>
+<h3>Retention — configure it, or the destination fills</h3>
+<p>A continuous backup accumulates snapshots and mutation logs <strong>forever</strong>. Nothing expires by
+default, so a production backup without a retention policy eventually fills its destination
+and stops being a backup. Set one.</p>
+<pre><code class="language-sh"># Expire what a newer snapshot has made redundant, keeping 30 days — and state the
+# restorability you REQUIRE to survive the operation (the guard, belt and braces):
+fdbbackup expire -d &lt;URL&gt; -C /etc/foundationdb/fdb.cluster \
+    --delete_before_days 30 \
+    --restorable-after-timestamp 2026/07/01.00:00:00+0000
+</code></pre>
+<blockquote>
+<p>[!WARNING]
+<strong><code>--delete_before_days</code> takes UNDERSCORES, and the hyphenated spelling <code>--help</code> prints
+does not work.</strong> On 7.3.77, <code>--delete-before-days 30</code> fails with <code>ERROR: Option set with an invalid value</code> while <code>--delete_before_days 30</code> succeeds — an upstream CLI wart, and a
+nasty one: it fails <em>loudly</em> here, but a retention cron that silently never ran is how a
+destination fills up. <strong>Run your expire command once by hand and read the output</strong> (a
+working one prints <code>All data before … (30 days) prior to latest backup log has been deleted.</code>). Do not trust the spelling in <code>--help</code>, and do not trust this note either —
+check it against the version you actually deploy. (<code>--expire-before-timestamp</code> /
+<code>--expire_before_version</code> accept either spelling; only the days option is broken this way.)</p>
+</blockquote>
+<p><strong>Expire refuses, by default, to destroy your ability to restore.</strong> Verified — asking it to
+expire up to the restorable point is rejected outright:</p>
+<pre><code>ERROR: Requested expiration would be unsafe.  Backup would not meet minimum restorability.
+       Use --force to delete data anyway.
+Fatal Error: Cannot expire requested data from backup without violating minimum restorability
+</code></pre>
+<p>That is what makes retention safe to automate: a cron that over-reaches <strong>fails loudly
+instead of quietly deleting your last restore point</strong>. (It also means <code>--force</code> is a loaded
+gun: it will do exactly what the error just refused to.)</p>
+<p>The corollary is the capacity planning fact: <strong>expire can only reclaim what a NEWER SNAPSHOT
+has made redundant.</strong> With a single snapshot nothing is expirable — the drill above could not
+expire <em>anything</em>, at any cutoff, for exactly that reason. So the snapshot interval <code>-s</code> is
+what bounds your storage: until the next snapshot completes, you carry every mutation log
+since the last one. The default <code>-s</code> is <strong>864000 seconds (10 days)</strong> — an interval that will
+surprise anyone who assumed a daily snapshot. Set it deliberately, size the destination for
+one snapshot plus one interval of logs, and monitor the destination's free space.</p>
+<h3>What is still NOT drilled</h3>
+<ul>
+<li><strong>Restore into a fresh cluster</strong> — the drill restored <em>in place</em>. That is also the safer
+production move (it keeps the damaged cluster intact for a second attempt), so it is the
+first thing to drill next.</li>
+<li><strong>A full single-zone restore</strong> — the drill restored the metadata tier alone, not the stack.</li>
+<li><strong>The post-restore fragment reconciliation</strong> (#551) — it does not exist yet.</li>
+</ul>
+<p>Treat restore as fallible and <strong>re-drill it on the real topology</strong> before relying on it: a
+backup you have never restored is a hypothesis, not a backup.</p>
 <p><strong>Why etcd needs little backup — and why a <em>stale restore</em> is the wrong instinct.</strong>
 The reason isn't that its config is static; it's that nearly all L5 state is
 <strong>reconstructable from the running fleet</strong> — D servers re-register, leases renew,
@@ -790,17 +1035,25 @@ and every role that opens metadata needs the <strong>cluster file</strong> (<cod
 is how the client finds the coordinators. Verify with <code>fdbcli --exec status</code>: the database
 reports <strong>available</strong>, the configured redundancy is <strong>satisfied</strong>, and the coordinators are
 reachable.</p>
+<p><strong>Process classes.</strong> Every <code>fdbserver</code> in the <code>deploy/</code> profiles runs with
+<code>FDB_PROCESS_CLASS: unset</code>, which lets FoundationDB assign the roles (coordinator, storage,
+log, stateless) itself; at a 3-process control tier each process ends up its own coordinator,
+storage and log. That is the shape these profiles were built and drilled on. Pinning explicit
+classes — dedicating log or stateless processes — is a larger-cluster optimization that has
+<strong>not</strong> been exercised here; take it from upstream FoundationDB documentation, not from this
+note.</p>
+<p><strong>Backup and restore is a solved, drilled procedure</strong> — see <em>The FoundationDB backup
+runbook</em> (#546), which covers the continuous-backup command (and the one-shot trap that
+silently ruins your RPO), the measured RPO, a restore drill, a point-in-time restore, and
+what a restore does to fragments and to the custodian.</p>
 <blockquote>
 <p>[!IMPORTANT]
-<strong>The multi-node FoundationDB control tier is NOT yet an established procedure, and is
-deliberately not invented here.</strong> What is missing: the process-class layout (<code>storage</code>,
-<code>log</code>, <code>stateless</code>, coordinators) and its placement across the three nodes; TLS
-configuration for the FDB cluster; <code>fdb.cluster</code> distribution and rotation; systemd units;
-and the backup/restore path (see the <em>Backup model</em> warning). None of it has been run or
-drilled for this deployment, and writing plausible-looking <code>fdbcli</code> incantations into a
-first-deployment runbook would be worse than admitting the gap. It is tracked as <strong>#546</strong>.
-Until that lands, derive the control tier from upstream FoundationDB documentation — and
-treat everything above as the <em>requirements it must meet</em>, not as the procedure.</p>
+<strong>A bare-metal / systemd FoundationDB control tier is still NOT an established procedure
+here, and is deliberately not invented.</strong> Missing: process-class placement across the
+three nodes as systemd units, <code>fdb.cluster</code> distribution and rotation, and TLS
+configuration for the FDB cluster. Derive those from upstream FoundationDB documentation
+— and treat the requirements above as what any such procedure must satisfy, not as the
+procedure itself.</p>
 </blockquote>
 <h4>TiKV — the retained-fallback path (#443)</h4>
 <p>Only for the stood-down TiKV backend (<code>deploy/small-multi-node/</code>); not for a new deployment.
@@ -994,11 +1247,16 @@ processes are running&quot; and &quot;it is actually production-durable.&quot;</
                   IF this loop completes → you are production-durable against
                   single-node loss. IF it does not → you are NOT; stop and fix
                   before putting any real (even non-sole-copy) data on it.
-6. Backup:        back up TiKV metadata out-of-band to independent storage (the
+6. Backup:        back up the metadata out-of-band to independent storage (the
                   mandatory one) + snapshot etcd; do NOT back up D-server fragments
-                  (EC + reconstruction covers them). Know the restore order:
-                  etcd → metadata → re-replicate from survivors. See &quot;Backup model
-                  (per tier)&quot;. M4 is single-zone, so this is your only DR until M9.
+                  (EC + reconstruction covers them). On FoundationDB: a CONTINUOUS
+                  backup — `fdbbackup start -d &lt;URL&gt; -z` — with a SUPERVISED
+                  backup_agent, and an alert on the restorable-version lag (without
+                  -z it is a one-shot; a dead agent still reports a healthy backup).
+                  Know the restore order: etcd → metadata → re-replicate from
+                  survivors — and that a restore leaves the fragment tier at a
+                  different point in time (#551). See &quot;The FoundationDB backup
+                  runbook&quot;. M4 is single-zone, so this is your only DR until M9.
 7. Promote:       anything surprising in steps 1–6 → a seeded DST regression.
 </code></pre>
 <h2>What you'll spend (Hetzner, verified post-15-June-2026 pricing)</h2>
