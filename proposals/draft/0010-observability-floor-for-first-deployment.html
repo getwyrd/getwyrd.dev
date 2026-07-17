@@ -290,6 +290,30 @@ definitions.</strong> If they do, sequence deliberately — land the enum first 
 targets the final shape, or land it after M4's backend and adapt. Cheap to decide now,
 expensive to discover at merge. PRs 1–2 and 4–7 are disjoint from M4's metadata
 surface and parallelize freely.</p>
+<p><strong>Decision (ratified 2026-07-04, #366 keystone sign-off — PDCA bundle §10 / iteration-7
+ratification; recorded here per the graduation criterion below).</strong> They do churn the same
+seam, and the collision was resolved the second way: <strong>#255 (the TiKV backend) merged
+first, and the typed-error enum lands <em>after</em> M4, adapting the TiKV backend to the new
+variants</strong> rather than M4 targeting an enum that did not yet exist. Do not re-litigate.</p>
+<p>What that meant in practice, when PR 3 landed as issue #577 with M4 complete (PR #489
+merged):</p>
+<ul>
+<li>The seam addition is <strong>additive</strong> — a <code>TransientFault</code> seam type plus an <code>ErrorClass</code>
+value and one <code>classify</code> chain-walker (<code>crates/traits/src/lib.rs</code>), extending the
+<code>IntegrityFault</code> precedent. No trait signature changed, so the backends M4 landed kept
+compiling; adapting them was <em>producing</em> the new class, not being rewritten by it.</li>
+<li>Each backend was adapted <strong>at the error type it already had</strong>, not at the trait: TiKV's
+<code>deadline::OperationTimedOut</code> and FoundationDB's <code>store::RetryBudgetExhausted</code> each gained
+a synthetic <code>TransientFault</code> in their source chain (the <code>BlockReadFault</code> pattern). Landing
+the enum first would not have avoided this work — it is per-backend either way — which is
+the retrospective evidence that the &quot;adapt after&quot; branch cost nothing the &quot;enum first&quot;
+branch would have saved.</li>
+<li>The direction of the ripple was the deciding factor and is worth recording for the next
+such collision: an <em>additive</em> seam change ripples into backends as <strong>new production
+sites</strong>, which a backend can grow at any time; a backend swap ripples into the seam as
+<strong>contract change</strong>, which every other backend must then match. The additive side is the
+one that can safely go second.</li>
+</ul>
 <h2>Alternatives considered</h2>
 <ul>
 <li><strong>Fold this into <a href="/proposals/draft/0008-management-and-administration.html">proposal 0008</a> and build it all together.</strong> Rejected for
@@ -359,8 +383,9 @@ The custodian role is new and opt-in.</li>
 <ul>
 <li><strong>Shared <code>telemetry</code> crate vs keep in <code>custodian</code></strong> — lean: extract (the
 second/third consumer now exists, <a href="/adr/0016-monorepo-and-crate-structure.html">ADR-0016</a>); confirm at PR 1.</li>
-<li><strong>Typed-error/M4 sequencing</strong> — the gating decision above; resolve before
-parallelizing PR 3 with M4.</li>
+<li><s><strong>Typed-error/M4 sequencing</strong> — the gating decision above; resolve before
+parallelizing PR 3 with M4.</s> <strong>Resolved</strong> (2026-07-04): TiKV merged first, the enum
+lands after M4 and adapts the backends. Recorded in §&quot;Sequencing note&quot; above.</li>
 <li><strong>Cross-plane request↔durability correlation</strong> — the genuinely novel design
 question this floor <em>defers</em>: joining a request to the repair its fragment triggers
 later, in a different process, with no live span to carry — requires durability
