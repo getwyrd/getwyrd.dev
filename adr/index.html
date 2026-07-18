@@ -281,6 +281,11 @@
 <td>Bucket model: real bucket records in the <code>MetadataStore</code> behind a protocol-neutral container seam; synthesized prefixes rejected (decides #502; shapes #507, #511)</td>
 <td>Accepted</td>
 </tr>
+<tr>
+<td><a href="/adr/0047-object-metadata-model.html">0047</a></td>
+<td>Object metadata model: <code>ETag</code> (opaque SHA-256 change-token), <code>Content-Type</code>, and <code>Last-Modified</code> as flat optional fields on <code>InodeRecord</code>, committed atomically with the chunk map and preserved across repair (decides #503; foundation for #504, #506, multipart)</td>
+<td>Accepted</td>
+</tr>
 </tbody>
 </table>
 <h2>Why not ... ?</h2>

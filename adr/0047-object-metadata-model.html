@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0047. Object metadata model: ETag, Content-Type, Last-Modified on the inode record — Wyrd</title>
+<meta name="description" content="The S3 gateway stores an object&#x27;s byte size and nothing else. A PutObject answers an">
+<meta property="og:title" content="0047. Object metadata model: ETag, Content-Type, Last-Modified on the inode record — Wyrd">
+<meta property="og:description" content="The S3 gateway stores an object&#x27;s byte size and nothing else. A PutObject answers an">
+<meta property="og:type" content="article">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@300;400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/assets/style.css">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#211e1a">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/"><svg class="mark" viewBox="0 0 48 48" aria-hidden="true"><polygon class="lz-outer" points="24,3 45,24 24,45 3,24"/><polygon class="lz-inner" points="24,14 34,24 24,34 14,24"/></svg>Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Accepted · 18.07.2026 16:20</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>0047. Object metadata model: ETag, Content-Type, Last-Modified on the inode record</h1>
+<h2>Context</h2>
+<p>The S3 gateway stores an object's byte size and nothing else. A <code>PutObject</code> answers an
+empty <code>200</code> with no <code>ETag</code> (<code>crates/gateway-s3/src/lib.rs</code>, the PUT arm); a <code>GetObject</code>
+hardcodes <code>content-type: application/octet-stream</code> and sets only <code>content-length</code>; the
+<code>InodeRecord</code> carries only <code>size</code>/<code>chunk_map</code>/<code>state</code>/<code>version</code>
+(<code>crates/core/src/metadata.rs</code>) and the protocol-neutral gateway seam (<code>ObjectRead</code>,
+<code>crates/gateway-core/src/lib.rs</code>) returns only <code>size</code> + the body stream.</p>
+<p>Many SDKs validate the <code>ETag</code> and round-trip <code>Content-Type</code>; their absence breaks
+integrity checks and content typing. It also blocks the rest of the 0.1-Alpha S3 epic:
+HeadObject (#506) has nothing to return, server-side copy (#504 step 2) has no <code>ETag</code> to
+echo, and multipart needs the <code>ETag</code>-of-parts convention. This ADR decides the object
+metadata <strong>model</strong> once, so those slices build on a settled foundation (#503).</p>
+<h2>Decision</h2>
+<p>Extend <code>InodeRecord</code> with three <strong>top-level, optional</strong> fields — flat on the record,
+matching its existing flat <code>size</code>/<code>state</code>/<code>version</code> shape:</p>
+<ul>
+<li><code>etag: Option&lt;String&gt;</code> — the content digest, treated as an opaque change-token;</li>
+<li><code>content_type: Option&lt;String&gt;</code> — the writing client's <code>Content-Type</code>, verbatim;</li>
+<li><code>modified: Option&lt;u64&gt;</code> — content-publication time in epoch milliseconds.</li>
+</ul>
+<p>Each field is <code>Option</code> + <code>#[serde(default)]</code> <strong>and</strong> <code>skip_serializing_if = &quot;Option::is_none&quot;</code>. <code>InodeRecord</code> is serialized once, centrally, as JSON over the
+byte-oriented <code>MetadataStore</code> KV seam (<code>crates/core/src/metadata.rs</code>, <code>encode</code>/<code>decode</code>),
+so every backend (redb/tikv/fdb) stores the same JSON and one compatibility rule covers
+them all: a record written before this change still deserializes (missing fields decode
+as <code>None</code>), and a record missing metadata degrades on the wire to today's behaviour (no
+<code>ETag</code> header, <code>application/octet-stream</code>), never to an error. The <code>skip_serializing_if</code>
+half of the rule is load-bearing for the <em>writes</em>: every commit in <code>metadata.rs</code> is a
+full-value CAS — <code>require(key, encode(prior))</code> compares the re-encoded prior record
+byte-for-byte against the stored bytes — so decode→encode must be the <strong>identity</strong> on a
+legacy record. Serializing the absent fields as <code>&quot;etag&quot;:null,...</code> would never equal the
+legacy JSON, turning every overwrite and every repair re-commit of a pre-upgrade object
+into a permanent <code>Conflict</code>. The CAS counter <code>version</code> is <strong>not</strong> a schema version and is
+neither bumped nor gated on for this change.</p>
+<p><strong>Which commits set metadata (load-bearing).</strong> The metadata fields are set only at
+<strong>content publication</strong> — object create (<code>metadata::create</code> via <code>write::commit_create</code>)
+and overwrite (<code>metadata::commit_chunk_map_superseding{,_leased}</code> via
+<code>write::commit_overwrite</code>). They are committed <strong>atomically with the chunk map</strong>, in the
+same CAS. The plain <code>metadata::commit_chunk_map</code> and the custodian
+reconstruction/backfill/rebalance commits are <strong>reconstruction/repair</strong> paths that
+re-commit the SAME content: they <strong>preserve</strong> the existing <code>etag</code>/<code>content_type</code>/<code>modified</code>
+unchanged, so a placement-maintenance commit never moves <code>Last-Modified</code> or drops the
+content type.</p>
+<p><strong>Seam changes.</strong> <code>ObjectGateway::put_object_streaming</code> takes the declared content type
+(<code>Option&lt;String&gt;</code>, no HTTP types leak into <code>gateway-core</code>) and returns the committed
+<code>ETag</code> instead of <code>()</code>; <code>ObjectRead</code> gains <code>etag</code>/<code>content_type</code>/<code>modified</code> alongside
+<code>size</code>. All methods stay streaming; nothing buffers.</p>
+<p><strong>Wire changes.</strong> PUT: pass the request's <code>Content-Type</code> down; answer with the <code>ETag</code>
+header (S3 quotes the value). GET: replace the hardcoded content type with the stored one
+(falling back to <code>application/octet-stream</code>), add <code>ETag</code> and a RFC-7231 IMF-fixdate
+<code>Last-Modified</code> (formatted in-tree, no new dependency).</p>
+<p><strong>ETag basis.</strong> The <code>ETag</code> is the <strong>lowercase-hex SHA-256</strong> of the content (quoted on the
+wire) — the digest the write path already streams through <code>HashingSource</code>, so no second
+read of the object. It is treated as an <strong>opaque change-token</strong>, <strong>not</strong> MD5. S3's
+convention for simple PUTs is the MD5, and some tooling assumes <code>ETag == MD5</code>; but S3
+itself documents the <code>ETag</code> as <strong>not</strong> guaranteed to be MD5 (SSE-KMS / multipart objects),
+well-behaved clients treat it as opaque, and Wyrd already carries a vetted SHA-256 on this
+path. Adding an MD5 dependency for a legacy equality would need the ADR-0003 dependency
+audit and buys compatibility only with clients that violate the opacity rule.</p>
+<p><code>x-amz-meta-*</code> user metadata is deliberately <strong>not</strong> modelled here; the flat-record shape
+leaves room to add it later without a schema decision.</p>
+<h2>Alternatives considered</h2>
+<ul>
+<li><strong>MD5 ETag (S3-classic):</strong> maximal legacy compatibility, but requires a new MD5
+dependency (ADR-0003 audit + <code>deny.toml</code>) and a second digest over every streamed byte;
+rejected — SHA-256-as-opaque-token is spec-legal and already streamed.</li>
+<li><strong>A separate metadata record keyed off the inode:</strong> avoids touching the record shape,
+but doubles the metadata round-trips and breaks the one-commit atomicity the write path
+has (<code>commit_chunk_map_superseding*</code> commits attributes + chunk map in one CAS);
+rejected.</li>
+<li><strong>Compute the ETag lazily on GET:</strong> re-reads the whole object per request; violates the
+stream-don't-buffer economics (<code>0015:789</code>) and gives PUT no ETag to return; rejected.</li>
+<li><strong>A nested <code>metadata:</code> sub-struct on <code>InodeRecord</code>:</strong> rejected in favour of flat
+top-level fields — the simplest serde-default compatibility story and one fewer schema
+decision downstream.</li>
+</ul>
+<h2>Consequences</h2>
+<ul>
+<li><strong>Public seam change.</strong> <code>ObjectGateway</code> changes, so every implementer and in-tree test
+double updates in this slice (compiler-driven); <code>crates/server</code>'s <code>Gateway</code> is the
+production implementer.</li>
+<li><strong>Persisted records</strong> are forward-compatible via <code>#[serde(default)]</code>: old records read
+fine; new records written by old code would drop the fields (acceptable pre-Alpha, no
+migration tool).</li>
+<li><strong>Wire behaviour</strong> change is additive (new <code>ETag</code>/<code>Last-Modified</code> headers); GET's
+content type changes from always-<code>octet-stream</code> to stored-or-<code>octet-stream</code>.</li>
+<li><strong>DST determinism</strong> holds: the publication timestamp is taken from <code>SystemTime::now()</code>
+at the commit call site, which madsim virtualises — no new clock dependency.</li>
+<li><strong>Multipart</strong> <code>ETag</code>-of-parts is explicitly <strong>deferred</strong> to the multipart slice;
+conditional requests, server-side copy (#504 step 2), and HeadObject (#506) build on
+this model.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>
