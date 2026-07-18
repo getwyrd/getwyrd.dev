@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0046. Bucket model: real bucket records, not synthesized prefixes — Wyrd</title>
+<meta name="description" content="The S3 gateway fakes buckets: the wire layer concatenates {bucket}/{key} into">
+<meta property="og:title" content="0046. Bucket model: real bucket records, not synthesized prefixes — Wyrd">
+<meta property="og:description" content="The S3 gateway fakes buckets: the wire layer concatenates {bucket}/{key} into">
+<meta property="og:type" content="article">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@300;400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/assets/style.css">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#211e1a">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/"><svg class="mark" viewBox="0 0 48 48" aria-hidden="true"><polygon class="lz-outer" points="24,3 45,24 24,45 3,24"/><polygon class="lz-inner" points="24,14 34,24 24,34 14,24"/></svg>Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Accepted · 18.07.2026 15:14</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>0046. Bucket model: real bucket records, not synthesized prefixes</h1>
+<h2>Context</h2>
+<p>The S3 gateway fakes buckets: the wire layer concatenates <code>{bucket}/{key}</code> into
+one flat string and stores it as a single dirent name under the root inode
+(<code>crates/gateway-s3/src/lib.rs</code>, <code>crates/server/src/lib.rs</code>). No bucket record,
+existence check, or lifecycle exists, so every bucket-level request — CreateBucket,
+HeadBucket, ListBuckets, DeleteBucket, and the bucket-scoped listing GET — fails the
+object-path shape and returns 400. Issue #502 requires deciding the bucket model
+before the listing (#507) and bucket-operations (#511) work under the 0.1-Alpha S3
+epic (#513) can proceed, because the model shapes ListObjectsV2 delimiter semantics,
+ListBuckets, and any future per-bucket state.</p>
+<p>Two candidate models were on the table. <strong>Option A</strong> keeps buckets as pure prefixes
+and synthesizes bucket operations: ListBuckets derived from the distinct first path
+segments of all keys, CreateBucket/HeadBucket as no-ops. <strong>Option B</strong> introduces a
+real bucket record in the <code>MetadataStore</code>.</p>
+<p>Forces that are true regardless of the choice:</p>
+<ul>
+<li>The Alpha client bar (#512, #513) is stock aws-cli and boto3 for everyday object
+workflows; #511 additionally names SDK setup flows, <code>aws s3 mb</code>, and Terraform —
+clients that create and verify buckets before use and expect existence semantics:
+an empty bucket that lists as empty rather than not existing, HeadBucket
+distinguishing 404 from 200, PUT into an absent bucket failing with <code>NoSuchBucket</code>.</li>
+<li>Downstream designs already assume buckets carry per-bucket state: versioning,
+lifecycle, and retention are per-bucket/per-prefix opt-ins (proposal 0006), the
+v1 authorization model is ACLs plus bucket/prefix policy (proposal 0008,
+architecture section 8), and the key hierarchy reserves a per-bucket intermediate
+level (proposal 0012).</li>
+<li>The <code>MetadataStore</code> commit primitive already carries multi-key preconditions:
+<code>WriteBatch::require</code> (exact-value CAS) and <code>require_absent</code>
+(<code>crates/traits/src/lib.rs</code>), with <code>CommitOutcome::Conflict</code> distinguishing a lost
+precondition from a fault. Note the limits: a <code>Conflict</code> does not distinguish
+&quot;already existed&quot; from a concurrent race, and S3's CreateBucket conflict
+vocabulary (<code>BucketAlreadyExists</code> vs <code>BucketAlreadyOwnedByYou</code>) needs ownership
+context the primitive does not carry.</li>
+<li>The trait's only read-side bulk primitive is a whole-prefix, order-unspecified,
+<code>SCAN_CAP</code>-bounded <code>scan</code>. ListObjectsV2's pagination and ordering therefore lack
+a supporting primitive <strong>under either option</strong>; that gap belongs to #507 (with
+#262) and is not moved by this decision.</li>
+<li>The protocol-neutral gateway seam (<code>crates/gateway-core</code>) deliberately admits no
+S3 vocabulary — buckets included — so a second front-door (NFS or another verb)
+can implement the same seam without depending on the S3 crate (ADR-0010 wiring
+rule; issue #364 carry-forward).</li>
+<li>The custodian's GC reference-set and scrub scans read exactly the <code>inode:</code>,
+<code>pending:</code>, and <code>orphan:</code> prefixes, and allocator recovery reseeds from records
+carrying inode/chunk ids. A record under a new, disjoint prefix that carries no
+inode or chunk id is invisible to all of them.</li>
+</ul>
+<h2>Decision</h2>
+<p>We adopt <strong>Option B: a real bucket record in the <code>MetadataStore</code></strong>. We reject
+Option A.</p>
+<ol>
+<li>
+<p><strong>We will introduce a bucket record</strong> under the key prefix <code>bucket:{name}</code>,
+disjoint from <code>inode:</code>/<code>dirent:</code>/<code>pending:</code>/<code>orphan:</code>, JSON-encoded following
+the existing record pattern in <code>crates/core/src/metadata.rs</code>. The record is the
+authority on bucket existence.</p>
+</li>
+<li>
+<p><strong>The Alpha bucket record is immutable</strong> — bucket name and creation time,
+nothing else. This keeps the existence fence sound: object writes precondition
+on the exact marker bytes via <code>WriteBatch::require</code>, which is exact-value CAS,
+and an immutable record cannot change under an in-flight write. Future mutable
+per-bucket state (policy, versioning flags, lifecycle configuration) MUST live
+under separate keys so that mutating bucket state never conflicts with the
+existence fence.</p>
+</li>
+<li>
+<p><strong>Object keys stay flat <code>{bucket}/{key}</code> dirents under the root inode at
+Alpha.</strong> The bucket record adds existence and state; it does not introduce a
+namespace tree. Both options share this flat encoding, and promoting buckets to
+first-class containers of the global namespace (the ADR-0020 / ADR-0022 subtree
+direction) remains a future migration either way — the record anchors that
+migration, it does not avoid it.</p>
+</li>
+<li>
+<p><strong>Per-operation semantics</strong> (normative for #511 and #507):</p>
+<ul>
+<li>CreateBucket commits the record gated on <code>require_absent</code>; a <code>Conflict</code> maps
+to S3's already-exists response (the <code>BucketAlreadyExists</code> vs
+<code>BucketAlreadyOwnedByYou</code> distinction is #511's concern, noting the single-
+owner Alpha deployment).</li>
+<li>Object PUT and DeleteObject MUST carry the bucket-existence precondition —
+<code>require</code> on the marker bytes plus <code>require_absent</code> on the deletion fence of
+decision 5 — and map an absent (or deleting) bucket to <code>NoSuchBucket</code>.</li>
+<li>Object GET and HEAD MUST consult the bucket record (a plain read) so an
+absent bucket answers <code>NoSuchBucket</code> rather than <code>NoSuchKey</code>.</li>
+<li>HeadBucket answers 404 on an absent record; ListBuckets is one
+<code>scan(&quot;bucket:&quot;)</code> plus a deterministic sort (bounded by <code>SCAN_CAP</code>, an
+acceptable Alpha bound on bucket count); GetBucketLocation returns the
+configured region.</li>
+<li>DeleteBucket MUST succeed only on an empty bucket.</li>
+</ul>
+</li>
+<li>
+<p><strong>DeleteBucket's emptiness check is race-prone under scan-then-commit</strong>: a
+concurrent PUT can land between the emptiness scan and the marker delete,
+stranding an object in a deleted bucket. Because the marker itself is immutable
+(decision 2), the deleting state lives in a <strong>separate deletion-fence key</strong>
+(e.g. <code>bucket-deleting:{name}</code>), never in the marker, and it is <strong>exclusively
+owned</strong>: DeleteBucket acquires the fence in one commit gated on the marker
+being present <em>and</em> the fence being absent, writing a unique attempt token as
+the fence value, so overlapping attempts cannot share it (the loser's
+acquisition conflicts; #511 maps that outcome). An installed fence makes every
+object write refuse with <code>NoSuchBucket</code> (their <code>require_absent</code> on the fence
+now fails). Every subsequent step MUST precondition on the exact fence token —
+removing fence and marker in one batch on a verified-empty bucket, or
+atomically removing the fence alone (retaining the marker, re-opening writes)
+to answer <code>BucketNotEmpty</code> or on any recoverable failure — so no attempt can
+clear a fence it does not hold. A fence orphaned by a crash is taken over by a
+later attempt via CAS on its exact stale bytes, which atomically invalidates
+the previous owner's remaining steps. Whether #511 implements this sketch or
+an equivalent with the same write-fence interaction is left open below.</p>
+</li>
+<li>
+<p><strong>The bucket surface crosses the gateway seam as a protocol-neutral container
+concept.</strong> <code>ObjectGateway</code> stays object-only and bucket-free. Bucket operations
+arrive as a narrow companion trait in <code>gateway-core</code> speaking container
+vocabulary (create/head/list/delete a named container), implemented by
+<code>wyrd-server</code> at the composition root per ADR-0010; the S3 crate alone projects
+containers as buckets. This is a new seam decision, consistent with the seam's
+existing no-S3-vocabulary rule.</p>
+</li>
+<li>
+<p><strong>We reject Option A</strong> because empty buckets, creation time, HeadBucket 404,
+and per-bucket state are unrepresentable in it; ListBuckets degrades to a
+full-namespace dirent scan synthesizing distinct first segments; and every
+downstream per-bucket feature (proposals 0006, 0008, 0012) would then force the
+migration Option B starts now.</p>
+</li>
+</ol>
+<h2>Consequences</h2>
+<ul>
+<li>#511 becomes concrete: the marker record, the container companion seam, the
+per-operation table above, and the existence fence threaded through the object
+write paths. #507 gains its delimiter baseline: listing scans the per-bucket
+dirent prefix of the flat encoding, and ListObjectsV2 against an absent bucket
+answers <code>NoSuchBucket</code>.</li>
+<li>Every object PUT/DeleteObject carries one extra precondition and every GET/HEAD
+one extra record read — the price of correct S3 error semantics.</li>
+<li>The ListObjectsV2 pagination/ordering primitive gap is unchanged by this
+decision; it remains #507's scope (with #262). ListBuckets inherits <code>scan</code>'s
+unordered, capped contract and sorts client-side.</li>
+<li>Per-bucket policy, versioning, lifecycle, retention, and per-bucket keys gain a
+record to anchor on, under separate keys per decision 2.</li>
+<li>Objects written before this decision have no bucket record; Alpha's stance is
+that development clusters backfill markers for existing prefixes or reset. No
+production data predates the record.</li>
+<li>Foreclosed: synthesized-only bucket semantics (prefix-derived ListBuckets,
+no-op Create/Head). Not foreclosed: promoting buckets to first-class namespace
+containers (ADR-0020/0022 direction) — decision 3 keeps the flat encoding an
+implementation detail behind the container seam.</li>
+<li><strong>[OPEN]</strong> the concrete DeleteBucket mechanism — the two-phase,
+separate-fence-key sketch of decision 5 or an equivalent #511 selects, provided
+the marker stays immutable and the write-fence interaction holds.</li>
+<li><strong>[OPEN]</strong> whether the container seam's list operation grows a paging contract
+when a trait-level ranged scan lands (#507/#262), so ListBuckets and
+ListObjectsV2 share one shape.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>
