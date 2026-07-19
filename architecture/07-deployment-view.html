@@ -189,6 +189,13 @@
 <td>direct <strong>bulk fragment</strong> I/O; ADR-0025; <code>crates/server/src/cli.rs:32</code></td>
 </tr>
 <tr>
+<td>Supervisor / LB → D server health probe</td>
+<td>gRPC (<code>grpc.health.v1.Health</code>)</td>
+<td><strong><code>50052</code></strong> (Wyrd default; derives from <code>--bind</code>'s interface, <code>--health-bind</code> overrides)</td>
+<td>unauthenticated; keep on the internal/host network</td>
+<td><strong>readiness</strong> (empty service + <code>ChunkStore</code> name) reflects <code>ChunkStore::health()</code>; <strong>liveness</strong> (<code>-service liveness</code>) is store-independent, SERVING while the process is up — gate traffic with readiness, restart with liveness; #576, <code>crates/server/src/dserver.rs</code></td>
+</tr>
+<tr>
 <td>Gateway / client lib → metadata (<strong>FoundationDB</strong>)</td>
 <td>FDB client protocol (<code>libfdb_c</code>)</td>
 <td><code>4500</code> (coordinators)</td>
@@ -246,7 +253,7 @@
 </tr>
 </tbody>
 </table>
-<p><strong>Port honesty.</strong> Only <code>50051</code> (the D-server gRPC bind) is fixed in Wyrd's own code today (<code>crates/server/src/cli.rs:32</code>). The metadata, coordination, and telemetry ports — FDB <code>4500</code>, PD <code>2379</code> / TiKV <code>20160</code>, etcd <code>2379</code>/<code>2380</code>, OTLP <code>4317</code>/<code>4318</code> — are the <strong>upstream projects' conventional defaults</strong>, not Wyrd's to assign. The S3, SDK, management, and Prometheus-scrape <em>listen</em> addresses are <strong>operator-configured</strong>; M4 fixes the exact flag names (see the blueprint's <code>[wyrd-config]</code> markers). All internal service-to-service dials are <strong>mTLS under the provider CA with no plaintext fallback</strong> (ADR-0005, ADR-0025); a plaintext internal dial is refused (M2).</p>
+<p><strong>Port honesty.</strong> Two ports are fixed in Wyrd's own code today: <code>50051</code> (the D-server gRPC data bind, <code>crates/server/src/cli.rs:32</code>) and <code>50052</code> (its <code>grpc.health.v1.Health</code> readiness/liveness probe, #576) — a separate, unauthenticated socket a supervisor or load balancer dials, defaulting to <code>--bind</code>'s interface (so a <code>0.0.0.0</code> data bind exposes the probe on the pod/host IP, not container loopback), overridable with <code>--health-bind</code>. Keep the probe on the internal/host network. The metadata, coordination, and telemetry ports — FDB <code>4500</code>, PD <code>2379</code> / TiKV <code>20160</code>, etcd <code>2379</code>/<code>2380</code>, OTLP <code>4317</code>/<code>4318</code> — are the <strong>upstream projects' conventional defaults</strong>, not Wyrd's to assign. The S3, SDK, management, and Prometheus-scrape <em>listen</em> addresses are <strong>operator-configured</strong>; M4 fixes the exact flag names (see the blueprint's <code>[wyrd-config]</code> markers). All internal service-to-service dials are <strong>mTLS under the provider CA with no plaintext fallback</strong> (ADR-0005, ADR-0025); a plaintext internal dial is refused (M2).</p>
 <p><strong>Two planes.</strong> Bulk <strong>fragment</strong> data flows directly client/gateway → D servers (the gRPC chunk path that scales with the fleet); the <strong>metadata commit</strong> is a separate, smaller path to the metadata store (FoundationDB in production). Keeping them distinct is the Colossus-class separation that lets throughput scale with D servers rather than through a metadata bottleneck. On a private-network deployment (e.g. Hetzner vSwitch) only the gateway's S3 port is exposed publicly; every other path stays on the internal network.</p>
 <p><strong>Out of single-zone scope.</strong> Cross-zone replication (L3) uses <strong>NATS JetStream</strong> (client <code>4222</code>) and appears only at the <strong>provider-fleet</strong> profile (M9+); it is not part of a single-zone deployment (ADR-0027).</p>
 <h2>7.6 FoundationDB metadata backend: packaging and version coupling</h2>
