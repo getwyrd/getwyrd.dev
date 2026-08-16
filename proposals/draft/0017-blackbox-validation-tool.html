@@ -1,0 +1,1250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proposal: `wyrd-validate` — blackbox protocol, workflow, and endurance validation — Wyrd</title>
+<meta name="description" content="Wyrd claims to speak S3. Today that claim is checked by tests living inside the Wyrd">
+<meta property="og:title" content="Proposal: `wyrd-validate` — blackbox protocol, workflow, and endurance validation — Wyrd">
+<meta property="og:description" content="Wyrd claims to speak S3. Today that claim is checked by tests living inside the Wyrd">
+<meta property="og:type" content="article">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@300;400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/assets/style.css">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#211e1a">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/"><svg class="mark" viewBox="0 0 48 48" aria-hidden="true"><polygon class="lz-outer" points="24,3 45,24 24,45 3,24"/><polygon class="lz-inner" points="24,14 34,24 24,34 14,24"/></svg>Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Enhancement Proposal</p>
+    <p class="doc-meta">Status: draft · 16.08.2026 10:42</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>Proposal: <code>wyrd-validate</code> — blackbox protocol, workflow, and endurance validation</h1>
+<blockquote>
+<p><strong>What this settles.</strong> One out-of-process tool that exercises Wyrd through its S3 front door
+the way a client does — with no <code>wyrd-*</code> crate in its dependency closure, mechanically
+enforced — across three substrates and five named scenarios, from a two-minute correctness
+sweep to a months-long endurance run. It settles the <strong>capability matrix</strong> (which operations
+are required, which are expected-unsupported and against which issue), the <strong>oracle</strong> (what
+&quot;correct&quot; means for a byte), the <strong>failure taxonomy</strong> (what stops a run and what is merely
+counted), the <strong>vacuity gate</strong> (what makes a PASS meaningless), and the <strong>two outputs</strong> (a
+live event stream, and a durable verdict).</p>
+<p><strong>What this settles by exclusion.</strong> The verdict covers <strong>correctness only</strong>. Throughput and
+latency are reported as evidence and never judged — there is no performance pass bar, because
+the right bar depends on hardware the tool cannot know. An operator reads the numbers and
+decides for themselves.</p>
+<p><strong>What this does not settle.</strong> The Hetzner substrate — provisioning the
+<a href="/architecture/m4-first-deployment-blueprint.html">blueprint</a> §B.1 topology is a deployment
+concern that outlives this tool and is shared with the M7.6 graduation drill (<a href="https://github.com/getwyrd/wyrd/issues/485">#485</a>),
+tracked as <a href="https://github.com/getwyrd/wyrd/issues/737">#737</a>.
+Nor any gateway behaviour: where the tool finds a gap, the gap is filed, not fixed here —
+including the three product changes its coverage wants (<em>Dependencies</em>). The <code>aws-cli</code> /
+<code>boto3</code> client-matrix leg (<a href="https://github.com/getwyrd/wyrd/issues/512">#512</a>) stays as scoped — see <em>Alternatives considered</em>.</p>
+<p><strong>Reading the citations.</strong> <code>path:line</code> pairs are pinned to <code>origin/main</code> at commit <code>c824243</code>.
+Lines move; treat the path plus the quoted contract as authoritative.</p>
+</blockquote>
+<h2>In plain language</h2>
+<p>Wyrd claims to speak S3. Today that claim is checked by tests living inside the Wyrd
+workspace, compiled against Wyrd's own types, running for a few seconds. This adds a separate
+program that knows nothing about Wyrd except its address. It uploads files, downloads them,
+checks every byte came back, deletes whole directories, lists them, and keeps a private ledger
+of what should be there. Point it at a laptop and it finishes in two minutes. Point it at
+rented servers and it runs for months.</p>
+<p>It has two audiences asking two questions with the same tool. <strong>We</strong> ask &quot;is Wyrd correct.&quot;
+An <strong>operator</strong> asks &quot;is my hardware and configuration sound.&quot; Same method — drive the front
+door, check what comes back — so the tool ships in the operator distribution alongside the
+roles.</p>
+<p>What it is really built to catch is not a wrong status code. It is the bug that only appears
+at hour 40: the leak, the reclamation that falls behind, the listing that gets slower every
+day. Those need wall-clock, and nothing in the tree currently supplies it.</p>
+<h2>Motivation</h2>
+<p><strong>There is no endurance testing.</strong> <code>grep -rn &quot;soak\|endurance\|longevity&quot;</code> across the tree
+returns two hits, both about on-disk format longevity (ADR-0032, ADR-0042) and neither a test.
+Every existing gate is short: <code>cargo xtask ci</code> is seconds-to-minutes, the DST tier is
+deterministic and in-process, the Tier-2 integration tier brings a cluster up and tears it down
+inside one job. ADR-0009's two tiers are both <em>short</em>. Time is an untested axis.</p>
+<p>That axis has known bugs on it already:</p>
+<ul>
+<li><strong><a href="https://github.com/getwyrd/wyrd/issues/560">#560</a></strong> — a buffered <code>put_object</code> never renews its lease, so a PUT slower than the
+30-second TTL fails with <code>Conflict</code>. The S3 gateway does not take that path — it streams, and
+the streaming path renews (<code>crates/server/src/lib.rs:322</code>) — but that is the point: the
+lease-lapse class is live in this codebase, and the renewal loop the S3 path <em>relies on</em> has
+never been exercised by a write long enough to need it. A multi-GB object over a real network
+is that write.</li>
+<li><strong><a href="https://github.com/getwyrd/wyrd/issues/625">#625</a></strong> — abandoned multipart uploads are never reaped. Staged bytes accumulate.
+Invisible to any run that ends before anything is abandoned.</li>
+<li><strong><a href="https://github.com/getwyrd/wyrd/issues/674">#674</a></strong> — a read's byte footprint at the <code>MetadataStore</code> seam is unbounded. A
+growth-shaped problem, and one that needs a large keyspace before it bites.</li>
+</ul>
+<p><strong>How many of those the gating run actually reaches, stated plainly.</strong> #560's path is disclaimed
+two bullets up — the S3 gateway streams and does not take it. #625 needs multipart, which is
+<code>unsupported(#508)</code> for the whole matrix, so an abandoned upload cannot be created at all. #674
+lives in the <code>listing</code> scenario, not the gating <code>endurance</code> one. So of three bugs cited, the
+<strong>7-day gating run reaches none directly</strong>; what it reaches is the <em>class</em> — leaks, growth and
+reclamation over wall-clock — of which these three are the currently-known instances.</p>
+<p>That is a weaker claim than the list implies on first reading, and it is the honest one. The
+argument for building this is not &quot;these three bugs will be caught by the gate&quot;; it is that <strong>no
+mechanism exists to find the next one</strong>, and every instance so far was found by reading code
+rather than by running anything. A gate that reaches the class is worth having even when today's
+known instances sit outside it — but the motivation should not borrow their credibility.</p>
+<p><strong>There is no measured client bar.</strong> <a href="https://github.com/getwyrd/wyrd/issues/512">#512</a> says it plainly: &quot;usable S3&quot; is asserted, not
+tested. The existing interop tests (<code>crates/server/tests/s3_http_wire.rs</code>) cover the
+PUT/GET/DELETE floor through <code>aws-sdk-s3</code>, already a dev-dependency
+(<code>crates/server/Cargo.toml:126</code>).</p>
+<p><strong>Unimplemented is not the same as safe.</strong> <a href="https://github.com/getwyrd/wyrd/issues/504">#504</a> is the proof: <code>CopyObject</code> silently
+overwrote the destination with an empty body because <code>x-amz-copy-source</code> was ignored. Live data
+loss, from an operation nobody had implemented. The fix was to reject it
+(<code>crates/gateway-s3/src/lib.rs:1730</code>) — but nothing continuously checks that it <em>stays</em>
+rejected, or that the next unimplemented operation fails loudly rather than quietly. A
+declared, asserted capability matrix is the general form of that fix.</p>
+<p><strong>A container fleet cannot prove what Alpha claims.</strong> <a href="https://github.com/getwyrd/wyrd/issues/485">#485</a> states it directly:
+failure-domain independence &quot;is a topology property, not a process count — the one thing no
+single-host container cluster can prove.&quot;</p>
+<h2>Design</h2>
+<h3>1. Three substrates, one binary</h3>
+<p>Not interchangeable. Each proves something the others cannot, so the tool runs unmodified
+against all three and the verdict records which one it faced.</p>
+<table>
+<thead>
+<tr>
+<th>Substrate</th>
+<th>Shape</th>
+<th>Proves</th>
+<th>Cannot prove</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>loopback</strong></td>
+<td>one <code>wyrd s3</code> process, redb + local FS</td>
+<td>protocol semantics, gateway-level leaks</td>
+<td>anything distributed</td>
+</tr>
+<tr>
+<td><strong>fleet</strong></td>
+<td><code>deploy/small-multi-node-fdb</code>, 21 containers, 3 gateways on host ports 8081–8083</td>
+<td>topology, wiring, integration</td>
+<td>independent failure, honest throughput</td>
+</tr>
+<tr>
+<td><strong>hetzner</strong></td>
+<td><a href="/architecture/m4-first-deployment-blueprint.html">blueprint</a> §B.1: ~13–15 servers, private vSwitch</td>
+<td>honest failure domains, honest performance, real endurance</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p>Substrate selection is not a tool concern. <code>wyrd-validate</code> takes <code>--endpoint</code> and credentials.
+Everything else is the launcher's problem, and on Hetzner there is no launcher.</p>
+<h3>2. Layering</h3>
+<p>The repo's own convention, stated in <code>xtask/src/consistency_run_runner.rs:8-12</code>: everything
+decision-shaped is pure and Check-tested; the runner owns &quot;only the I/O.&quot;</p>
+<pre><code>┌─ crates/validate ──────────── package + binary: wyrd-validate ──────────┐
+│  deps: aws-sdk-s3, tokio, sha2, serde  —  NO wyrd-* (enforced, §9)      │
+│                                                                          │
+│  pure, Check-tested        matrix.rs     the capability table            │
+│                            scenario.rs   the five declared shapes        │
+│                            oracle.rs     model + verification            │
+│                            payload.rs    seed → deterministic bytes      │
+│                            verdict.rs    coverage floor → PASS/FAIL/INC  │
+│                                                                          │
+│  I/O only                  client.rs     aws-sdk-s3 calls                │
+│                            flow.rs       cp / ls / rm -r / sync          │
+│                            state.rs      checkpoint save + restore       │
+│                            emit.rs       event stream + verdict artifact │
+│                            main.rs       arg parsing, pool supervision   │
+└──────────────────────────────────────────────────────────────────────────┘
+              ▲                                    ▲
+              │ exec                               │ exec (nothing between)
+┌─────────────┴───────────────────┐   ┌────────────┴────────────────────────┐
+│ xtask/src/s3_blackbox.rs        │   │ Hetzner: run by hand, or a systemd  │
+│ compose up → wait healthy       │   │ unit on its own node. Faults are    │
+│ → run wyrd-validate             │   │ manual (`hcloud server delete`).    │
+│ → compose down (always)         │   │ Substrate provisioned separately.   │
+│ ALSO owns fault injection (§11) │   └─────────────────────────────────────┘
+│ loopback + fleet ONLY           │
+└─────────────────────────────────┘
+</code></pre>
+<p><code>wyrd-validate</code> <strong>ships in the operator tarball</strong> (<a href="https://github.com/getwyrd/wyrd/issues/570">#570</a>'s <code>cargo xtask dist</code> pipeline),
+so an operator can validate their own deployment. That makes it the tarball's second binary:
+<code>deploy/dist/README.md</code> currently opens &quot;One <code>wyrd</code> binary serves every role as a subcommand&quot;,
+which stays true — it describes Wyrd's <em>roles</em>. The validation tool is deliberately not one of
+them, and must not become a <code>wyrd</code> subcommand: sharing a binary would share a dependency
+closure and destroy the property §9 exists to enforce.</p>
+<p><strong>Shipping it is a larger change than &quot;the staging grows an entry&quot;, which an earlier revision
+implied.</strong> <code>cargo xtask dist</code> does not assemble a tarball from build outputs — it &quot;extracts the
+binary out of the image (<code>docker create</code> + <code>docker cp</code>), so the tarball's <code>bin/wyrd</code> is
+bit-identical to the image's <code>/usr/local/bin/wyrd</code>&quot; (<code>xtask/src/dist.rs:6-7</code>). The production
+Dockerfile builds <code>--bin wyrd</code> and describes itself as hosting &quot;just the <code>wyrd</code> binary&quot;;
+<code>install.sh</code> installs one path and uninstalls one path; <code>.github/workflows/release.yml</code>
+smoke-tests <code>/usr/local/bin/wyrd</code> and asserts its absence after uninstall. So a second binary
+touches the Dockerfile, the dist extraction, the installer, the uninstaller and the release
+workflow.</p>
+<p>It also poses a question this proposal does not answer: <strong>should the production OCI image carry a
+validation tool at all?</strong> Shipping it in the tarball and keeping it out of the image is coherent —
+operators install from the tarball — but it breaks the bit-identical guarantee dist currently
+relies on, so the two artifacts would need separate assembly paths. That is a packaging decision
+for whoever owns the release pipeline.</p>
+<p>One further caveat: <code>xtask/tests/dist_templates.rs</code> is &quot;container-free by design … every template
+assertion is a file read + substring check&quot;, with the real build deferred to the release workflow.
+So it can pin <em>templates</em> naming a second binary, but it cannot observe a tarball. Any
+definition of done phrased as &quot;the tarball contains both binaries&quot; is unverifiable by the gate it
+would name.</p>
+<h3>3. The capability matrix</h3>
+<p>The centrepiece. Every operation carries a <strong>declared expected state</strong>, and the state is
+asserted — not just the success path.</p>
+<ul>
+<li><code>required</code> — must succeed, and its result must satisfy the oracle.</li>
+<li><code>unsupported(#NNN)</code> — must fail, <strong>with the declared status and S3 error code</strong>. Not a 500,
+not a hang, and emphatically not a success.</li>
+</ul>
+<p>An <code>unsupported</code> operation that succeeds is a failure of class <code>unexpected-support</code>, and it is
+fatal. That is <a href="https://github.com/getwyrd/wyrd/issues/504">#504</a> generalised: the day an unimplemented operation starts half-working
+is the day you want to hear about it, not the day you find the empty objects.</p>
+<p><strong>Protocol operations</strong> (state as of <code>c824243</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>State</th>
+<th>Reference</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PutObject</code></td>
+<td>required</td>
+<td>floor, <a href="https://github.com/getwyrd/wyrd/issues/364">#364</a></td>
+</tr>
+<tr>
+<td><code>GetObject</code> (+ <code>Range</code>, conditional)</td>
+<td>required</td>
+<td><a href="https://github.com/getwyrd/wyrd/issues/510">#510</a></td>
+</tr>
+<tr>
+<td><code>HeadObject</code></td>
+<td>required</td>
+<td><a href="https://github.com/getwyrd/wyrd/issues/506">#506</a></td>
+</tr>
+<tr>
+<td><code>DeleteObject</code></td>
+<td>required</td>
+<td>floor</td>
+</tr>
+<tr>
+<td><code>DeleteObjects</code> (bulk <code>POST ?delete</code>)</td>
+<td>required</td>
+<td><a href="https://github.com/getwyrd/wyrd/issues/509">#509</a>; body cap 8 MiB, <code>lib.rs:439</code></td>
+</tr>
+<tr>
+<td><code>ListObjectsV2</code> (+ v1 shim, prefix/delimiter/pagination)</td>
+<td>required</td>
+<td><a href="https://github.com/getwyrd/wyrd/issues/507">#507</a></td>
+</tr>
+<tr>
+<td><code>CopyObject</code></td>
+<td><code>unsupported(#766)</code></td>
+<td>rejected at <code>lib.rs:1730</code>; <a href="https://github.com/getwyrd/wyrd/issues/504">#504</a> closed the <em>reject</em>, <a href="https://github.com/getwyrd/wyrd/issues/766">#766</a> is the feature</td>
+</tr>
+<tr>
+<td><code>CreateMultipartUpload</code></td>
+<td><code>unsupported(#508)</code></td>
+<td>via <a href="https://github.com/getwyrd/wyrd/issues/668">#668</a></td>
+</tr>
+<tr>
+<td><code>UploadPart</code></td>
+<td><code>unsupported(#508)</code></td>
+<td>via <a href="https://github.com/getwyrd/wyrd/issues/669">#669</a></td>
+</tr>
+<tr>
+<td><code>CompleteMultipartUpload</code></td>
+<td><code>unsupported(#508)</code></td>
+<td>via <a href="https://github.com/getwyrd/wyrd/issues/670">#670</a></td>
+</tr>
+<tr>
+<td><code>AbortMultipartUpload</code> / <code>ListParts</code> / <code>ListMultipartUploads</code></td>
+<td><code>unsupported(#508)</code></td>
+<td>via <a href="https://github.com/getwyrd/wyrd/issues/668">#668</a></td>
+</tr>
+<tr>
+<td><code>CreateBucket</code> / <code>DeleteBucket</code> / <code>HeadBucket</code> / <code>ListBuckets</code> / <code>GetBucketLocation</code></td>
+<td><code>unsupported(#511)</code></td>
+<td>ADR-0046 accepted, unbuilt</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Workflows</strong>, implemented in the tool over those primitives — the <code>aws s3</code> level:</p>
+<table>
+<thead>
+<tr>
+<th>Workflow</th>
+<th>Decomposes to</th>
+<th>State</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cp</code> (upload)</td>
+<td><code>PutObject</code>, or multipart above threshold</td>
+<td>required (multipart leg gated on <a href="https://github.com/getwyrd/wyrd/issues/508">#508</a>)</td>
+</tr>
+<tr>
+<td><code>cp</code> (download)</td>
+<td><code>GetObject</code></td>
+<td>required</td>
+</tr>
+<tr>
+<td><code>ls</code></td>
+<td><code>ListObjectsV2</code> with <code>delimiter=/</code></td>
+<td>required</td>
+</tr>
+<tr>
+<td><code>rm --recursive</code></td>
+<td>paginated <code>ListObjectsV2</code> + <code>DeleteObjects</code> batched at 1000</td>
+<td>required</td>
+</tr>
+<tr>
+<td><code>sync</code></td>
+<td><code>ListObjectsV2</code> + size/mtime compare + <code>PutObject</code>/<code>GetObject</code></td>
+<td>required</td>
+</tr>
+<tr>
+<td><code>mv</code></td>
+<td><code>CopyObject</code> + <code>DeleteObject</code></td>
+<td><strong>blocked on <a href="https://github.com/getwyrd/wyrd/issues/766">#766</a></strong></td>
+</tr>
+<tr>
+<td><code>rb</code></td>
+<td><code>DeleteBucket</code></td>
+<td><strong>blocked on <a href="https://github.com/getwyrd/wyrd/issues/511">#511</a></strong></td>
+</tr>
+</tbody>
+</table>
+<p>Two operations the Alpha bar names in everyday terms map onto gaps, and the matrix is where
+that becomes visible rather than surprising. <strong>&quot;Rename&quot; is not an S3 operation</strong> — it is
+copy-then-delete, so <code>mv</code> cannot work until <a href="https://github.com/getwyrd/wyrd/issues/766">#766</a> lands. <a href="https://github.com/getwyrd/wyrd/issues/504">#504</a> closed the
+<em>safety</em> half (stop the silent overwrite); the implementation was never filed until this review
+found the gap, so an earlier revision of this proposal named a closed issue as a live blocker.
+<strong>&quot;Directory removal&quot; is not one either</strong> — it is list-then-bulk-delete, and both halves are
+built, so <code>rm --recursive</code> works today.</p>
+<p><strong>Negative authentication vectors</strong> — bad signature, wrong region scope, expired timestamp,
+missing <code>x-amz-content-sha256</code>, and <a href="https://github.com/getwyrd/wyrd/issues/491">#491</a>'s percent-encoded subresource bypass. These
+assert the gateway is fail-closed, which is exactly what an operator wants to know about their
+own deployment. <strong>Off by default</strong> so long runs do not spend operations on them; the <code>smoke</code>
+scenario declares them <strong>on</strong> as part of its shape, so the correctness sweep always includes
+them.</p>
+<p><strong><a href="https://github.com/getwyrd/wyrd/issues/491">#491</a> is currently a live defect, so this makes <code>smoke</code> red on every existing build.</strong>
+Its percent-encoded spelling of <code>partNumber</code> misses the raw-string denylist, falls through to the
+plain object PUT path, and overwrites the whole object instead of returning 501 — a data-loss bug,
+open against <em>Foundations</em>. A vector that asserts the correct behaviour therefore fails today, by
+design: that is the vector working.</p>
+<p>Two consequences, both stated rather than discovered later. <strong>#491 is a hard dependency of any
+graduation criterion that requires a green <code>smoke</code></strong> — see <em>Graduation criteria</em>, where criterion
+1 is scoped accordingly. And until it closes, a red <code>smoke</code> on that vector is the expected state,
+not a regression, so the run must distinguish &quot;known-open defect&quot; from &quot;new failure&quot; rather than
+reading as broken.</p>
+<p><strong>The matrix must be keyed to the server version.</strong> Expectations change as slices land, so a
+tool validating an older release would otherwise fail on rows naming issues fixed after that
+build. The gateway advertises no version today — no <code>Server:</code> header, nothing on the wire — so
+this needs the version header of <a href="https://github.com/getwyrd/wyrd/issues/736">#736</a> (<em>Dependencies</em>). Until it lands, <code>--server-version</code> is an
+operator-supplied parameter, with the honest weakness that a parameter can be silently wrong.</p>
+<p><strong>Profiles are versioned and retained — rows are never flipped in place.</strong> An earlier revision
+said &quot;when #508 lands, the change is flipping six rows&quot;, which contradicts the version-keying
+requirement two paragraphs up: flipping discards the expectations for every release where those
+operations <em>were</em> unsupported. A newer tool pointed at an older release would then classify its
+correct <code>NotImplemented</code> responses as failures, even when handed the right <code>--server-version</code>.</p>
+<p>So the matrix is a set of <strong>immutable per-release profiles</strong> keyed by the version range each
+applies to. Landing #508 adds a profile whose multipart rows are <code>required</code>; it does not edit the
+profile that preceded it. Selecting a server version selects a profile, which is what makes
+version-keying mean anything rather than being a flag the tool accepts and ignores.</p>
+<p>Each profile is a reviewed constant with citations, and the retained ones are how a validator
+shipped in an operator tarball stays useful against the release that operator actually runs.</p>
+<h3>4. Size classes</h3>
+<p>Chosen to straddle boundaries on both sides of the wire — S3's, and Wyrd's own.</p>
+<table>
+<thead>
+<tr>
+<th>Size</th>
+<th>Boundary it straddles</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0 B</td>
+<td>empty object</td>
+<td>S3 edge case</td>
+</tr>
+<tr>
+<td>1 B</td>
+<td>minimum non-empty</td>
+<td>—</td>
+</tr>
+<tr>
+<td>4 KiB, 64 KiB</td>
+<td>sub-chunk</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>C</code> − 1, <code>C</code>, <code>C</code> + 1</td>
+<td><strong>the configured chunk size</strong></td>
+<td><code>--chunk-size</code></td>
+</tr>
+<tr>
+<td>5 MiB</td>
+<td>S3 minimum part size</td>
+<td>S3 spec</td>
+</tr>
+<tr>
+<td>8 MiB</td>
+<td>stock SDK multipart threshold; bulk-delete body cap</td>
+<td><code>lib.rs:439</code></td>
+</tr>
+<tr>
+<td>64 × <code>C</code></td>
+<td>multi-chunk, many fragments</td>
+<td>—</td>
+</tr>
+<tr>
+<td>segmentation threshold ±</td>
+<td><strong>chunk-map segmentation boundary</strong></td>
+<td><code>--segment-threshold-bytes</code>; <strong>needs <a href="https://github.com/getwyrd/wyrd/issues/635">#635</a></strong></td>
+</tr>
+<tr>
+<td>5 GiB</td>
+<td>S3's largest accepted single PUT — <strong>must succeed</strong></td>
+<td>S3 spec</td>
+</tr>
+<tr>
+<td>5 GiB + 1</td>
+<td>first size past it — <strong>must fail <code>EntityTooLarge</code></strong></td>
+<td><a href="https://github.com/getwyrd/wyrd/issues/671">#671</a>; <strong>unimplemented today</strong></td>
+</tr>
+<tr>
+<td>&gt; 5 GiB</td>
+<td>multipart-only territory</td>
+<td>gated on <a href="https://github.com/getwyrd/wyrd/issues/508">#508</a></td>
+</tr>
+</tbody>
+</table>
+<p>Two corrections to an earlier revision, both material to what the matrix can assert:</p>
+<p><strong>The 5 GiB boundary is two rows, not one.</strong> It previously read &quot;S3 single-PUT maximum →
+<code>EntityTooLarge</code>&quot;, which is self-contradictory: 5 GiB is the largest single PUT S3 <em>accepts</em>, so
+it must <strong>succeed</strong>; 5 GiB + 1 is the first that must fail. Conflating them left the matrix
+unable to assign a required outcome at the boundary it exists to test. Note also that
+<code>EntityTooLarge</code> appears <strong>nowhere</strong> in <code>crates/gateway-s3/</code> today — the row is
+<code>unsupported(#671)</code> until that lands, not a required behaviour.</p>
+<p><strong>The segmentation class is multipart-only, and unreachable through <code>PutObject</code> by
+construction.</strong> Two revisions got this wrong — first omitting the dependency entirely, then
+naming <a href="https://github.com/getwyrd/wyrd/issues/635">#635</a> as the blocker. #635 is necessary but not sufficient, and the deeper
+constraint is a <em>decision</em>, not a missing implementation. Proposal 0016 settles it:</p>
+<blockquote>
+<p>A published map of <code>≤ MAX_MAP_CHUNKS</code> chunks stays a flat inline map (unchanged, today's
+shape); a larger map is produced <strong>only</strong> by a multipart session, and is segmented.</p>
+</blockquote>
+<p>A single <code>PutObject</code> publishes a <strong>flat</strong> map and reaches large sizes by <em>raising its chunk size</em>
+— <code>chunk_size_effective = max(DEFAULT_CHUNK_SIZE, ⌈Content-Length / MAX_MAP_CHUNKS⌉)</code> — because it
+carries a declared <code>Content-Length</code> and has &quot;no session record to fence, no epoch to key segments
+by, and so no anchor for the staged-publication protocol&quot;.</p>
+<p>Three consequences for this table:</p>
+<ul>
+<li>The <strong>segmentation threshold class must go through <code>CompleteMultipartUpload</code></strong>, so it is gated
+on <a href="https://github.com/getwyrd/wyrd/issues/508">#508</a>, not merely on #635. Driving it with a large <code>PutObject</code> would exercise a
+large <em>flat</em> map — a different code path wearing the same size label, which is worse than not
+testing it, because the run would report coverage it never had.</li>
+<li><strong><code>--chunk-size</code> does not describe large objects.</strong> The gateway overrides it above the flat-map
+ceiling, so the <code>C ± 1</code> classes are meaningful for small objects only. The tool cannot assume
+the configured value was the one used, and the verdict should not imply it was.</li>
+<li>The gateway's own <code>EntityTooLarge</code> guard fires when a PUT cannot fit even at <code>chunk_size_max</code>,
+which 0016 records as &quot;a guard, not a routine path&quot; since anything inside S3's 5 GiB range
+always fits. So the 5 GiB + 1 row tests <strong>S3's</strong> limit, not Wyrd's guard; the two share an error
+code and are different assertions.</li>
+</ul>
+<p>#635 remains a prerequisite for the resolver those objects need on read
+(<code>crates/core/src/metadata.rs:262-266</code>: the slice &quot;lands the shape … no resolver, no producer&quot;,
+and every existing consumer treats <code>ChunkMap::Segmented</code> as <code>SegmentedMapUnsupported</code>) — but it
+is the second gate, behind #508.</p>
+<p><strong>The tuning values are inputs, not assumptions.</strong> A blackbox tool cannot import
+<code>DEFAULT_CHUNK_SIZE</code> or <code>MAX_ROOT_VALUE_BYTES</code> — that is the price of §9. Rather than hardcode
+a table that goes stale when either moves, the tool takes them as parameters and computes the
+sizes at runtime:</p>
+<pre><code>--chunk-size BYTES                  the deployment's configured chunk size
+--max-root-value-bytes BYTES        the deployment's configured root budget
+--segment-threshold-bytes BYTES     object size at which the chunk map must segment
+                                    (optional; derived from the two above when omitted)
+</code></pre>
+<p>Both depend on becoming deployment configuration rather than compile-time constants — tracked
+separately (<em>Dependencies</em>). Until then the defaults mirror today's values and the verdict
+records what was used, so a run's size coverage is readable against the deployment it faced.</p>
+<p>The <strong>segmentation threshold</strong> is the one value the tool cannot compute from the other two,
+because the per-chunk record's encoded width is an internal detail. It is an explicit parameter
+with a derived default. The obligation is only to <em>cross</em> the boundary — segmentation is not
+observable over the S3 wire, so the tool exercises it, it does not assert it.</p>
+<p>Payloads are <strong>derived, never stored</strong>: <code>bytes = f(seed, key, size, generation)</code>. A checkpoint
+keeps the seed, size, generation and digest — not the object. Without this a months-long run would
+need disk proportional to everything it ever wrote.</p>
+<p><strong>The generation is load-bearing, not decoration.</strong> An earlier revision derived from
+<code>(seed, key, size)</code> alone, which regenerates <em>identical bytes</em> whenever a key is overwritten at
+the same size — the common case in the contention and churn pools. Identical bytes give an
+identical digest and an identical <code>ETag</code>, so a read that returned the <strong>prior generation</strong> would be
+indistinguishable from a correct one, and §6 declares exactly that read fatal. The oracle would
+have been structurally unable to detect the failure it names. Including the generation makes every
+overwrite a distinguishable value, which is what makes the assertion checkable at all.</p>
+<p>This matters beyond the oracle: rapid overwrites can also share a second-resolution wire timestamp
+(<a href="https://github.com/getwyrd/wyrd/issues/767">#767</a>), so content is the only reliable discriminator between generations.</p>
+<h3>5. Worker pools</h3>
+<p>Concurrency is structured so the oracle stays readable. The disjoint/contention split mirrors
+the <a href="/reviews/m4-checked-consistency-run.html">checked consistency run</a>, which kept its
+register and delete pools on deliberately disjoint keys for the same reason.</p>
+<table>
+<thead>
+<tr>
+<th>Pool</th>
+<th>Keyspace</th>
+<th>Exercises</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>disjoint</strong></td>
+<td>worker <code>n</code> owns <code>&lt;run&gt;/w{n}/</code></td>
+<td>parallel PUT/GET/HEAD/DELETE across size classes; single writer per key, so the model needs no locking</td>
+</tr>
+<tr>
+<td><strong>contention</strong></td>
+<td>one shared key, all workers</td>
+<td>last-writer-wins, monotonic reads, overwrite under concurrency</td>
+</tr>
+<tr>
+<td><strong>listing</strong></td>
+<td>reads the disjoint pool's keys</td>
+<td>pagination and delimiter rollups <strong>while the keyspace churns</strong></td>
+</tr>
+<tr>
+<td><strong>workflow</strong></td>
+<td><code>&lt;run&gt;/flow/</code></td>
+<td><code>cp</code> / <code>sync</code> / <code>rm --recursive</code> / <code>ls</code> over synthetic directory trees</td>
+</tr>
+<tr>
+<td><strong>multipart</strong></td>
+<td><code>&lt;run&gt;/mp/</code></td>
+<td>concurrent parts within an object <em>and</em> concurrent objects — gated on <a href="https://github.com/getwyrd/wyrd/issues/508">#508</a></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Every key is scoped by a run id.</strong> This is a safety requirement, not an isolation nicety: the
+tool ships to operators, deletes what it writes (§8), and must never delete anything it did not
+create. A run id in the prefix is what makes &quot;delete only mine&quot; mechanical, and it also lets two
+runs share a cluster. It is the primary defence; §15 adds the guards that sit behind it.</p>
+<p><strong>Global LIST reconciliation cannot run concurrently with the mutating pools</strong> — it would
+produce failures that are artefacts of timing. It happens at declared quiesce points, on a
+cadence that scales with duration. The consistency run reached the same conclusion: one composed
+full-set read after quiesce, not a continuous sweep.</p>
+<h3>6. The oracle</h3>
+<p>Per key, the model holds <code>{size, sha256, etag, content-type, last-modified, generation}</code>.</p>
+<p><strong>What the oracle may assert depends on whether the tool controls the write order</strong>, and
+conflating the two would make it report valid behaviour as failure. Two tiers:</p>
+<p><strong>Single-writer keys</strong> (the disjoint and workflow pools, §5 — one worker owns each key, and its
+own writes are sequential). Here the tool knows the serialization order because it created it, so
+the full set applies:</p>
+<ul>
+<li>bytes read back hash to the recorded digest — the whole object, and every <code>Range</code> slice</li>
+<li><code>Content-Length</code>, <code>ETag</code>, <code>Content-Type</code> match what was written (ADR-0047)</li>
+<li>a deleted key <code>404</code>s, and stays <code>404</code></li>
+<li>an overwritten key never serves a prior generation</li>
+<li>conditional requests answer per the recorded <code>ETag</code> / <code>Last-Modified</code></li>
+</ul>
+<p><strong>Concurrently-written keys</strong> (the contention pool). The tool observes <em>completion</em> order at the
+client, which is <strong>not</strong> commit order at the server. Two overlapping PUTs have no
+client-observable serialization, so &quot;last writer wins&quot; and &quot;never serves a prior generation&quot; are
+unassertable — asserting them would report correct linearizations as fatal <code>oracle</code> failures, and
+<code>oracle</code> stops the run. The contention pool therefore asserts only what is sound without an
+ordering model:</p>
+<ul>
+<li>every read returns bytes that hash to <strong>some</strong> value actually written to that key (never a
+torn, invented or foreign value — the atomicity property that matters)</li>
+<li>a read never returns a value written by a PUT that had not yet started when the read completed
+— causality, which needs no serialization order to check</li>
+</ul>
+<p><strong>And nothing about ordering, including per-session monotonicity.</strong> An earlier revision kept a
+monotonic-reads assertion here on the reasoning that both reads belong to the same worker, so the
+tool can order them. It can order the <em>reads</em>; it cannot order the <em>writes</em> they observe. Worker
+W reads generation 5, then reads again; meanwhile worker Y's PUT of generation 3 — issued before
+W's first read — commits between them. W's second read returns 3. That is a valid serialization
+in which Y simply committed last, and the assertion would call it a fatal failure. Client-assigned
+generation numbers do not order concurrent commits, so no rule built on them is sound while writes
+are in flight.</p>
+<p>Wyrd does contract monotonic reads (ADR-0015), and it is worth checking. But the tool can only
+check it where it can establish order, which is <strong>at quiesce</strong>: writes stopped, in-flight requests
+drained, and then the value is determinate. So the contention pool's ordering checks move there —
+the final value must be one of the written values, and repeated reads must agree on it. That is
+the same shape the consistency run uses when it takes &quot;ONE composed full-set read after heal +
+quiesce&quot; rather than sampling continuously.</p>
+<p><strong>Which means this tool does not cover monotonic reads <em>under concurrency</em>, and should not claim
+to.</strong> Quiesced checks confirm the value settles; they cannot exercise ADR-0015's guarantee while
+commits are in flight, which is the only interesting case. That coverage belongs to
+<code>cargo xtask consistency-run</code>, where a checker we did not write judges a recorded history — and
+losing it here is the price of not inventing false failures. The contention pool's contribution is
+narrower than an earlier revision implied: atomicity and causality under concurrency, plus a
+determinate settle at quiesce.</p>
+<p>Establishing a total order over genuinely concurrent writes needs a real linearizability checker,
+which is what <code>cargo xtask consistency-run</code> already does with Elle. Duplicating it here in
+hand-rolled form is how a validator invents its own false failures.</p>
+<p><strong>At quiesce</strong>, with mutation stopped: the full <code>ListObjectsV2</code> sweep equals the model's live set
+exactly — no extra key, no missing key, correct <code>CommonPrefixes</code> rollups under <code>delimiter=/</code>.</p>
+<p><strong><code>Last-Modified</code> is real wall-clock but not directly comparable across surfaces.</strong>
+<code>now_millis()</code> reads <code>SystemTime::now()</code> (<code>crates/server/src/lib.rs:756</code>) and objects are stamped
+at <code>:197</code> and <code>:348</code>. But the value the wire returns differs by surface and is not ordered across
+a fleet:</p>
+<ul>
+<li>A listing renders <code>&lt;LastModified&gt;</code> through <code>iso8601</code>, keeping milliseconds; <code>GET</code>/<code>HEAD</code> render
+the header through <code>http_date</code>, which is IMF-fixdate and second-granular. The same object
+therefore reports two different times, up to 999 ms apart (<a href="https://github.com/getwyrd/wyrd/issues/767">#767</a>).</li>
+<li>Each gateway stamps from its own clock with no monotonicity guard at overwrite commit, so on
+the blueprinted N-gateway fleet <code>Last-Modified</code> can go <strong>backwards</strong> across an overwrite
+(<a href="https://github.com/getwyrd/wyrd/issues/768">#768</a>).</li>
+</ul>
+<p>So the oracle verifies the timestamp <strong>per surface</strong> — a listing time against the listing format,
+a header time against the header format — and never compares one to the other or assumes ordering.
+<code>sync</code>'s comparison (§7 workflows) inherits the same limit and is discussed there.
+(madsim virtualises the read under DST, so the stamp is deterministic in simulation and real
+everywhere else.)</p>
+<p>Verification is where the CPU goes. Every downloaded byte is hashed and every payload is
+generated. That is the load the tool must sustain without becoming the bottleneck, and the
+reason this is a compiled binary.</p>
+<h3>7. Failure taxonomy</h3>
+<p>A months-long run must not abort at hour three because one request timed out. It must abort
+instantly when a byte comes back wrong.</p>
+<table>
+<thead>
+<tr>
+<th>Class</th>
+<th>Meaning</th>
+<th>Disposition</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>integrity</code></td>
+<td>bytes, digest, or size differ</td>
+<td><strong>fatal</strong> — stop, preserve state and the object</td>
+</tr>
+<tr>
+<td><code>oracle</code></td>
+<td>model and server disagree (deleted key readable, stale generation, listing mismatch)</td>
+<td><strong>fatal</strong></td>
+</tr>
+<tr>
+<td><code>unexpected-support</code></td>
+<td>an <code>unsupported</code> operation succeeded</td>
+<td><strong>fatal</strong></td>
+</tr>
+<tr>
+<td><code>protocol</code></td>
+<td>wrong status, error code, or XML shape</td>
+<td><strong>fatal</strong>, in every scenario</td>
+</tr>
+<tr>
+<td><code>availability</code></td>
+<td>transport failure, connection reset, 5xx</td>
+<td><strong>budgeted</strong> — counted, rate-limited, fails only above a declared threshold</td>
+</tr>
+</tbody>
+</table>
+<p><strong><code>protocol</code> is fatal everywhere.</strong> An earlier revision budgeted it in long scenarios, which is
+incoherent: a wrong status or malformed XML is a <em>correctness</em> violation, not transient
+unavailability. Under a budget, a rare malformed response during a week-long run could stay below
+threshold and the run could still report <code>PASS</code> — while the verdict claims to cover correctness
+and while <code>smoke</code> treats the identical response as fatal. Only transport-shaped failures are
+budgeted. Rarity is not a defence for a wrong answer.</p>
+<p><strong>Every operation is bounded, and unbounded waits are not an availability class at all.</strong> A peer
+that accepts a request or body stream and then stops producing data cannot be <em>classified</em> by the
+budget, because no error is ever returned — the worker simply stays pending, and with it quiesce,
+checkpointing, shutdown and the verdict. So the tool imposes explicit deadlines on connect, on the
+operation, and on the response-body stream, and cancels outstanding worker tasks rather than
+waiting for them. This is a standing rule in the target repo, not a preference of this proposal —
+<code>AGENTS.md</code> requires that &quot;every await on external work is bounded (timeout, fail-closed);
+spawned helper tasks are aborted on drop; shutdown never joins a potentially infinite stream.&quot;
+Classifying returned timeouts is what the taxonomy does; <em>producing</em> them is a precondition for
+the taxonomy applying at all.</p>
+<p><strong>A timed-out mutation leaves the model wrong, and must be resolved rather than budgeted.</strong> If a
+PUT, overwrite or delete times out <em>after</em> the server committed it, counting the timeout as
+budgeted availability and continuing leaves the oracle holding the pre-request state. The next
+read — or the next quiesce sweep — then reports a fatal <code>integrity</code> or <code>oracle</code> failure even
+though the server performed exactly one valid operation. That is a false failure manufactured by
+the tool's own bookkeeping.</p>
+<p>So an indeterminate mutation triggers an <strong>outcome-resolution step</strong>: probe the key, compare
+against both the pre- and post-request expectations, and record whichever the server actually
+holds. Where the probe cannot settle it — the key is unreadable, or a concurrent writer makes the
+observation ambiguous — the run goes <strong>INCONCLUSIVE</strong> rather than continuing against a state the
+client no longer knows. Continuing on a guess is how a validator produces confident nonsense.</p>
+<h3>8. Scenarios</h3>
+<p>A scenario fixes the <strong>shape</strong> of a run: which pools are active and at what weight, how sizes
+are distributed, whether the working set is bounded or growing, the quiesce cadence, and the
+coverage floor. Scale is orthogonal — <code>--duration</code>, <code>--workers</code> and substrate apply to any of
+them, and any scenario runs at any length, from minutes to months.</p>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Shape</th>
+<th>Catches what the others structurally cannot</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>smoke</code></td>
+<td>every required op × every size class, once; every unsupported op asserted to fail correctly; auth-negative vectors on</td>
+<td>nothing time-related — a correctness sweep with no time axis</td>
+</tr>
+<tr>
+<td><code>endurance</code></td>
+<td>all pools, moderate weights, realistic size mix, <strong>bounded</strong> working set</td>
+<td>leaks, unbounded growth, listing degradation, reclamation falling behind over time</td>
+</tr>
+<tr>
+<td><code>large-object</code></td>
+<td>few objects, enormous bytes; sizes weighted to the top of the table</td>
+<td>single-write paths: lease renewal during one long write, chunk-map segmentation, <code>EntityTooLarge</code></td>
+</tr>
+<tr>
+<td><code>churn</code></td>
+<td>small objects, very high delete and overwrite rate, keys reused, working set flat</td>
+<td>reclamation under pressure: tombstone accumulation, staged-byte reclaim, custodian repair load</td>
+</tr>
+<tr>
+<td><code>listing</code></td>
+<td>grows to millions of small keys, then lists them under churn</td>
+<td>keyspace-scale effects: pagination, continuation tokens, delimiter rollups, <a href="https://github.com/getwyrd/wyrd/issues/674">#674</a></td>
+</tr>
+</tbody>
+</table>
+<p><code>endurance</code> is the Alpha gating scenario. Its <strong>bounded working set</strong> is what makes it a
+stability test rather than a capacity test: each worker holds N live objects and deletes as it
+creates, alongside a slowly growing archive set so long-lived data exists. Unbounded growth
+would measure how fast you fill disks.</p>
+<p><code>large-object</code> exists because <code>endurance</code>'s realistic mix — mostly small, occasionally large —
+would take weeks to accumulate the same coverage. <code>churn</code> is deliberately hostile to
+reclamation in a way a stable set with gentle turnover never is. <code>listing</code> is the only long
+scenario that grows unbounded on purpose, because every other one bounds its working set and so
+never builds a keyspace large enough for pagination to matter.</p>
+<p><strong>Cleanup.</strong> Delete on success; <strong>retain on failure</strong>. The object whose bytes came back wrong is
+the evidence. Only run-id-scoped keys are ever deleted (§5).</p>
+<p><strong>The vacuity gate.</strong> The Elle run refuses a verdict unless the history it judged was genuinely
+concurrent — a run that proved nothing must not read as a pass. Same discipline: a run is
+<strong>INCONCLUSIVE</strong> (non-zero exit, never PASS) unless it clears the scenario's declared floor —
+every required operation exercised N times, every size class touched, a minimum byte volume, at
+least one quiesce reconciliation, and wall-clock within tolerance of <code>--duration</code>. A run meant
+to last seven days that lost its substrate at hour 40 is inconclusive: not a pass, and not a
+failure of the system under test.</p>
+<h3>9. The blackbox property, as a lint</h3>
+<p><code>crates/validate</code> is a workspace member — so <code>fmt</code>, <code>clippy -D warnings</code>, <code>cargo deny</code> and
+<code>#![forbid(unsafe_code)]</code> all cover it — but the <strong>normal</strong> dependency closure of its binary
+target must contain <strong>no</strong> <code>wyrd-*</code> crate.</p>
+<p>Normal, not total: <code>cargo metadata</code> walks dev-dependencies too, and the §14 fixtures are
+dev-only. Nothing that ships in the binary may reach a workspace crate; what the test harness
+links is unconstrained.</p>
+<p><code>xtask/src/repo_guard.rs</code> gains this as a third invariant, alongside the stray-gitlink and
+<code>forbid(unsafe_code)</code> checks. It uses the same discovery route as the existing scan — <code>cargo metadata</code>, chosen there specifically &quot;so no manifest override or unconventional layout can hide
+a root&quot; (<code>repo_guard.rs:26-31</code>).</p>
+<p>This is what makes &quot;blackbox&quot; a property rather than a promise in a doc comment, and it is why
+the tool must stay a separate binary rather than becoming a <code>wyrd</code> subcommand.</p>
+<h3>10. Driver placement, and what a number is worth</h3>
+<p>Recorded, not assumed. <code>--driver-placement internal|external</code>:</p>
+<ul>
+<li><strong>internal</strong> — its own small node on the private vSwitch (blueprint §B.1's network split). No
+CPU contention with the roles under measurement, no billed egress on verification downloads,
+no WAN in the latency figures. Costs one server.</li>
+<li><strong>external</strong> — from a laptop or CI runner over the public endpoint. Nothing to provision, and
+it is the path a real user takes — but every verification download is billed egress and every
+latency number carries WAN noise.</li>
+</ul>
+<p>The verdict states which. A latency figure that travels without its placement will eventually be
+quoted wrongly. This matters more here than usual because the tool reports performance without
+judging it (see the summary's <em>settles by exclusion</em>): the reader does the judging, so the
+reader needs the context.</p>
+<p>Related, worth knowing before a Hetzner run: the S3 endpoint is the only publicly exposed
+surface in §B.1, and TLS on it is blocked — binding a real listener needs a rustls crypto
+provider outside the <code>deny.toml</code> allowlist, flagged NEEDS-HUMAN at
+<code>crates/gateway-s3/src/lib.rs:50-57</code>. Until that is decided the endpoint is plain HTTP behind an
+operator's own terminator.</p>
+<h3>11. Faults belong to the launcher — because of §9, not because the legs are stuck</h3>
+<p>An earlier revision of this proposal argued that fault injection had to live in the launcher
+because the existing legs could not be driven independently of a workload. <strong>That was wrong</strong>,
+and the correction matters because it changes what the launcher is for.</p>
+<p>The legs <strong>do</strong> detach, and cleanly. <code>crates/metadata-fault-conformance/src/nemesis.rs:250</code>
+declares <code>pub trait NemesisLeg</code>, whose <code>apply()</code> (<code>:267</code>) injects a fault and runs no workload at
+all. <code>:305</code> provides</p>
+<pre><code class="language-rust">pub fn drive_leg&lt;L, W, T&gt;(leg: &amp;L, workload: W) -&gt; Result&lt;T, String&gt;
+where L: NemesisLeg, W: FnOnce() -&gt; T
+</code></pre>
+<p>— the workload is a caller-supplied closure, so fault and workload are decoupled by
+construction. Legs take container names as constructor arguments rather than compose project
+names, and the seam is already consumed outside the metadata crates:
+<code>crates/server/tests/consistency_run_fdb.rs:118</code> imports <code>PartitionLeg</code> / <code>ClockSkewLeg</code> /
+<code>ProcessPauseLeg</code> and drives an S3 workload under them.</p>
+<p>So the real constraint is <strong>§9, not reusability</strong>. <code>wyrd-metadata-fault-conformance</code> is a
+<code>wyrd-*</code> crate. A tool that linked it to drive its own faults would forfeit the blackbox property
+that is this tool's entire premise — the lint would have to be scoped away, and once scoped away
+it stops meaning anything.</p>
+<p>The placement is therefore unchanged and the reasoning is replaced: <strong>fault injection lives in
+the launcher, which links the seam the tool may not.</strong> <code>cargo xtask s3-blackbox --nemesis &lt;leg&gt;</code>
+calls <code>drive_leg</code> with a workload closure that runs <code>wyrd-validate</code> as a subprocess — using the
+real seam rather than reimplementing it, and keeping the tool's dependency closure clean. The
+tool never knows a fault happened; it reports what it saw. Correlation happens in the sink, where
+both timestamped streams land (§13).</p>
+<p>On <strong>hetzner</strong> there is no launcher, so faults are manual. Blueprint §B.2 names the honest one:
+<code>hcloud server delete d&lt;n&gt;</code> destroys a real machine, which is what a rack loss looks like and what
+no single-host container cluster can imitate. That is a <strong>Cloud</strong> capability — Server Auction
+bare-metal is monthly with a minimum term, so a machine cannot be destroyed and replaced as a test
+action. Bare-metal remains faultable (<code>systemctl stop</code>, a firewall rule); the fault set is smaller,
+not empty. Since long runs are driven by hand, manual faults fit.</p>
+<h3>12. Resumability</h3>
+<p>A months-long run cannot die with an SSH session.</p>
+<ul>
+<li>oracle state checkpoints to disk at every quiesce point</li>
+<li><code>--resume</code> restores from checkpoint and continues to the original deadline</li>
+<li>ships as a systemd unit for long runs, mirroring the three role units in <code>deploy/dist/systemd/</code></li>
+</ul>
+<p><strong>Resuming from a checkpoint alone is not safe, and an earlier revision advertised it as if it
+were.</strong> Operations that completed after the last checkpoint are real on the server and absent from
+the restored model. Continuing directly from that state reports failures against a <strong>correct</strong>
+server: an upload since the checkpoint appears as an extra key at the next quiesce sweep, a delete
+appears as a key that should be present and is not, and an overwrite leaves the model holding a
+generation the server no longer has — a fatal <code>integrity</code> mismatch on the next read.</p>
+<p>Two mechanisms, and the run needs both:</p>
+<ul>
+<li><strong>A mutation journal</strong>, appended <em>before</em> each mutation is issued and marked on completion, so a
+restart knows which operations were in flight and which keys are therefore indeterminate. This
+is the same intent-then-act ordering the mutation-resolution rule in §7 relies on.</li>
+<li><strong>Reconciliation into a well-defined model at resume</strong>, not blind continuation: enumerate the run
+prefix, resolve every key the journal marks indeterminate through the §7 outcome-resolution step,
+and only then start issuing new work. Keys that resolve are adopted with their observed state;
+keys that cannot be resolved are excluded from the oracle and reported, never guessed at.</li>
+</ul>
+<p>That ordering also keeps §15's ownership invariant intact: the journal can only make the model a
+<em>better</em> lower bound on what the run wrote — it never causes the tool to claim a key it did not
+create.</p>
+<p><strong>Checkpoints are bounded by format, not by hoping the workload stays small.</strong> §4's derived
+payloads keep object <em>bodies</em> off disk, but the model still holds metadata for every live key —
+and the <code>listing</code> scenario deliberately grows to millions of them. A whole-file rewrite at every
+quiesce would reach hundreds of megabytes, rewritten repeatedly, distorting the very workload
+being measured. So the on-disk form is an <strong>incremental ledger</strong>: append mutations, compact on a
+declared schedule, and bound the resident model by the scenario's own working-set budget. A
+scenario whose keyspace is unbounded by design (§8, <code>listing</code>) declares how its ledger is bounded
+as part of its shape, rather than inheriting a promise the format cannot keep.</p>
+<h3>13. Two outputs, one source of truth</h3>
+<p><strong>The stream</strong> is primary: structured events and metrics emitted as the run proceeds, to
+whatever sink the environment provides. Watch it, alert on it, and correlate it with the roles'
+own telemetry — and with the launcher's fault window (§11) — wherever both land. This follows
+the existing convention: <code>ExporterConfig::{Prometheus, Both}</code> is how <code>cmd_s3</code> and <code>cmd_custodian</code>
+already choose their export surface (<code>cli.rs:2165-2170</code>), under ADR-0012.</p>
+<p><strong>The verdict artifact</strong> is the durable summary, because a release gate cannot hang on a log
+stream that scrolled past. One small file, <strong>rewritten at every quiesce point</strong> so a run killed
+at week six still leaves a current verdict rather than nothing:</p>
+<ul>
+<li><strong>identity</strong> — tool version, <code>aws-sdk-s3</code> version, server version, substrate, driver
+placement, seed, run id</li>
+<li><strong>deployment tuning</strong> — chunk size, root-value budget, segmentation threshold (§4). A size
+coverage claim is unreadable without them: &quot;crossed the segmentation boundary&quot; means nothing
+unless the verdict says where that boundary was.</li>
+<li><strong>what ran</strong> — scenario, requested and actual duration, workers, op counts, bytes moved,
+size-class coverage</li>
+<li><strong>performance</strong> — latency percentiles and throughput, <strong>reported, not judged</strong></li>
+<li><strong>failures</strong> — every one, with class, key, expected, observed</li>
+<li><strong>coverage</strong> — the §8 vacuity floor, item by item</li>
+<li><strong>verdict</strong> — <code>PASS</code> | <code>FAIL</code> | <code>INCONCLUSIVE</code>, on correctness only, keyed on the coverage
+floor and the failure classes, never on the exit code alone</li>
+<li><strong>what this does not license</strong> — prose, per run shape. A loopback PASS licenses no distributed
+claim. A fleet PASS licenses no failure-domain claim. A no-fault PASS licenses no recovery
+claim. And no PASS licenses a performance claim at all.</li>
+</ul>
+<p>Both outputs are derived from the same events, so nothing is counted twice. <strong>Output paths are
+configurable</strong> (<code>--out DIR</code>, sink configuration) — the environments this runs in differ, and the
+tool must not assume a repo layout. Where a <em>gating</em> run's artifact gets committed is a
+convention for that run, not a property of the tool.</p>
+<h3>14. Proving the tool works</h3>
+<p>A validator nobody has shown can fail is worth nothing. If the byte comparison silently
+regressed to &quot;these match&quot;, every run would pass forever and a passing run would be
+indistinguishable from a real one — while gating a release. So the tool proves itself against a
+<strong>second S3 implementation</strong>, in both directions.</p>
+<p><strong>The positive half — is our reading of S3 correct?</strong> A <strong>MinIO</strong> container is the reference.
+Running <code>smoke</code> against it checks that the expectations — status codes, XML shapes, ETag rules,
+<code>sync</code>'s size-and-mtime comparison — match an independent implementation rather than our own
+reading of the spec. It also runs in CI with no Wyrd present at all, which catches regressions
+in the tool itself quickly.</p>
+<p>Against MinIO the operations Wyrd marks <code>unsupported</code> actually <strong>work</strong>, so the matrix carries a
+<strong>reference profile</strong> where those rows are expected to succeed. That inversion is a proof rather
+than a nuisance: a row that passes against MinIO and fails against Wyrd genuinely describes
+<em>Wyrd's</em> gap, not our misunderstanding of S3.</p>
+<p>Two size classes collapse in this profile — the chunk-size and segmentation boundaries (§4) are
+Wyrd internals and mean nothing to another implementation, so they degrade to ordinary
+large-object cases.</p>
+<p><em>Honest limit:</em> MinIO is not canonical S3. Where MinIO and AWS disagree, AWS is right. A
+protocol misreading we happen to share with MinIO would pass unnoticed. That is a smaller gap
+than having no reference at all, and it is free; a periodic run against real AWS would close it
+and is deliberately out of scope here.</p>
+<p><strong>The negative half — does our detection work?</strong> A small <strong>corrupting proxy</strong> sits between the
+tool and MinIO and misbehaves on demand: flip one byte in a returned object, report a wrong
+<code>Content-Length</code> or <code>ETag</code>, still serve a deleted key, succeed at an operation the matrix marks
+<code>unsupported</code>, truncate a <code>Range</code>. Each fixture is fed through the <strong>same oracle</strong> that judges
+live runs, and each <strong>must</strong> come back as the matching failure class (§7). A fixture that comes
+back clean means the checker is broken.</p>
+<p>This is the consistency run's discipline applied to a different checker: it feeds known-good,
+known-bad and degraded histories through the same jar that judged the real one and requires
+<code>true</code>, <code>false</code> and <code>:unknown</code> respectively — &quot;a checker build that blessed the known-bad fixture
+would fail the run before its verdict was trusted.&quot;</p>
+<p><strong>One fixture needs the Wyrd profile, not the reference profile.</strong> A third review round caught
+that <code>unexpected-support</code> cannot be tested against a plain MinIO backend: MinIO genuinely
+<em>implements</em> the operations Wyrd marks unsupported, and §14's reference profile expects exactly
+those successes — so a real success proves nothing about detecting an unexpected one. That fixture
+therefore runs MinIO under the <strong>Wyrd</strong> profile, where <code>CopyObject</code> succeeding is a declared
+failure. The proxy is not needed for it; the profile mismatch is the fixture.</p>
+<p><strong>It gates the build, not each run.</strong> An earlier revision said the fixture set &quot;executes before
+every live run, including the Alpha gating run&quot;. That is incompatible with keeping the fixtures
+dev-only: a hand-run Hetzner execution has no launcher, and an operator's installed binary has
+neither MinIO nor the proxy. Requiring a preflight nobody can perform would make the requirement
+decorative.</p>
+<p>So the self-check is a <strong>release gate on the tool itself</strong>, run in CI: no <code>wyrd-validate</code> build
+ships without its fixture set passing. Each live run then records the tool build it used, and
+inherits the guarantee from that build rather than re-proving it in the field. A build whose
+detection has stopped working never reaches a substrate — which is the property that was wanted,
+placed where it can actually hold.</p>
+<p>Both MinIO and the proxy are <strong>test fixtures</strong>, not dependencies: containers and a dev-only
+binary, never linked into <code>wyrd-validate</code>. §9's lint is scoped accordingly.</p>
+<p><strong>A licensing note.</strong> MinIO's server is, to the best of the author's knowledge, AGPL-licensed,
+and <code>deny.toml</code> denies AGPL/BSL/SSPL under ADR-0003 §2. That wall governs <strong>dependencies linked
+into a binary</strong>; a separate server process run as a test fixture is not one, exactly as the
+existing container fixtures are not. Confirm before adoption anyway — &quot;any new dependency or
+license&quot; is a declared NEEDS-HUMAN item (<a href="http://INTEGRATION.md">INTEGRATION.md</a> §4), and this is the kind of distinction
+worth recording rather than assuming.</p>
+<h3>15. Safety — it deletes things, on someone else's cluster</h3>
+<p>The tool writes objects and deletes them (§8), and it ships to operators who will point it at
+their own storage. The failure that matters is silent and permanent: someone runs it against a
+bucket holding real data. Deleted storage does not come back.</p>
+<p>Run-id-scoped keys (§5) are the primary defence and the right design — but they are a <em>single</em>
+line, effective only while the code is correct. Three guards sit behind them:</p>
+<p><strong>Refuse an occupied namespace.</strong> Scoped to the <strong>run prefix</strong>, not to the bucket — which is what
+makes it both sound and cheap. <code>&lt;run-id&gt;/</code> is a namespace the tool is about to create, so one
+<code>ListObjectsV2</code> with <code>prefix=&lt;run-id&gt;/</code> and <code>max-keys=1</code> returning anything at all is conclusive:
+something is already there, and the run exits without writing a byte.</p>
+<p>An earlier revision listed one page of the whole configured prefix and read an absence of foreign
+keys as proof the target was clean. That is unsound and was removed: one page establishes nothing
+about later pages, and on <code>--resume</code> the run's own keys can fill page one while foreign content
+sits past the boundary. A guard that looks like a proof and is not is worse than no guard, because
+it gets trusted.</p>
+<p>Scoping to the run prefix proves the property that actually matters — <em>nothing of mine is already
+here, so nothing of anyone else's can be mistaken for mine</em> — in one request. The tool makes <strong>no
+claim</strong> about the rest of the bucket, and says so rather than implying safety it never
+established. <code>--allow-non-empty</code> overrides, for a deliberate <code>--resume</code> onto an existing run id.</p>
+<p><strong><code>--dry-run</code>.</strong> Enumerate every key the run would create and every key it would delete, print
+them, touch nothing, exit. An operator gets to look before committing, and it doubles as the
+cheapest possible smoke test of a new deployment's credentials and endpoint.</p>
+<p><strong>Delete-time ownership verification — membership, not name shape.</strong> Before issuing any delete,
+require that the key is <strong>present in this run's model as something this run wrote</strong>. Checking only
+that the key carries the run id is not an ownership proof, and an earlier revision made exactly
+that mistake: if <code>--allow-non-empty</code> admitted pre-existing objects under <code>&lt;run-id&gt;/</code>, those objects
+also carry the run id, so a prefix-shape check passes and <code>rm --recursive</code> or cleanup deletes data
+the tool never wrote. The name proves where a key lives; only the model proves who put it there.</p>
+<p>That also narrows <code>--allow-non-empty</code> to what it should always have meant. It permits the run to
+<strong>start</strong> over an occupied namespace; it never adopts what it found. Pre-existing keys are absent
+from the model, so they are never reported as oracle failures and never counted as coverage.</p>
+<p><strong>But &quot;absent from the model&quot; is not enough on its own</strong>, and a third review round caught why:
+nothing stopped a <em>generated</em> key from colliding with a pre-existing one. The tool would overwrite
+it, that key would then legitimately enter the model, and cleanup would delete it — destroying
+data the run did not create, through the guard rather than around it. So under
+<code>--allow-non-empty</code>, <strong>cleanup is disabled for the whole run</strong> (<code>--cleanup never</code> is forced, not
+merely defaulted). A run that starts over occupied space leaves everything it wrote behind, and
+says so in the verdict. Deleting nothing is a recoverable inconvenience; deleting someone else's
+object is not.</p>
+<p><strong>Ownership may under-approximate. It must never over-approximate.</strong> A checkpoint is written at
+quiesce, so a crash leaves writes that succeeded after the last one absent from the restored
+model. Those orphans are indistinguishable from foreign keys, and the tool therefore treats them
+as foreign: it does not delete them, and it reports them as an orphan set for a human to clear.
+That direction leaks storage, which is visible and fixable. The opposite direction — inferring
+ownership to reclaim them — would delete data on a guess. The invariant is stated deliberately
+because the two failure modes are not symmetric.</p>
+<p>On <code>--resume</code> the model is restored from the checkpoint, so membership up to that point is known
+exactly and the previous run's own keys are legitimately owned.</p>
+<p>Belt and braces against the write path and the delete path disagreeing — the one bug class where
+run-id scoping fails exactly when it matters.</p>
+<p>Together with retain-on-failure (§8), the invariant is: <em>the tool never removes a byte it did
+not write, and never writes into occupied space it was not explicitly pointed at.</em></p>
+<p>What none of this protects against is an operator who passes <code>--allow-non-empty</code> at a bucket of
+production data. That is their call to make, and the flag's name is chosen so it cannot be made
+by accident.</p>
+<h2>Dependencies</h2>
+<p>Three product changes the tool's coverage wants. None blocks a first slice — defaults mirror
+today's values and the verdict records what was used — but each makes it accurate against a real
+deployment rather than against the tree.</p>
+<p><strong>The gateway advertises no version.</strong> No <code>Server:</code> header, nothing on the wire
+(<code>crates/gateway-s3/src/lib.rs</code>). A shipped tool cannot discover what it is validating, so the
+capability matrix cannot key its expectations to a release. <code>Server: wyrd/&lt;version&gt;</code>, sourced
+from the same <code>normalize_describe</code> over <code>git describe</code> that <code>cargo xtask dist</code> already uses
+(<code>xtask/src/dist.rs:119,356</code>) rather than the <code>version = &quot;0.0.0&quot;</code> placeholder. Interim:
+<code>--server-version</code>. Tracked as <a href="https://github.com/getwyrd/wyrd/issues/736">#736</a> (0.1 Alpha — a gateway change, not tooling).</p>
+<p><strong>The <code>s3</code> role does not expose <code>--chunk-size</code>.</strong> The seam exists —
+<code>Gateway::with_chunk_size</code> (<code>crates/server/src/lib.rs:145</code>, doc-commented &quot;mainly so tests can
+force multi-chunk objects&quot;) — and <code>wyrd put</code> already takes the flag (<code>cli.rs:555</code>). <code>cmd_s3</code>
+never wires one, so every deployed gateway chunks at the 1 MiB default. Tracked as <a href="https://github.com/getwyrd/wyrd/issues/738">#738</a>.</p>
+<p><strong>The chunk-map budget constants are compile-time.</strong> <code>MAX_ROOT_VALUE_BYTES</code> (50,000) and
+<code>MAX_ROOT_SEGMENTS</code> (512), <code>crates/core/src/metadata.rs</code>. Tracked as <a href="https://github.com/getwyrd/wyrd/issues/739">#739</a>.</p>
+<p>An earlier revision of this section called the blast radius small and cited four supporting
+facts. <strong>Two of the four were wrong</strong>, and the corrected scope is materially larger:</p>
+<ul>
+<li><code>:688</code> is <strong>not</strong> an enforcement site. It is the <code>Display</code> arm for
+<code>ChunkMapError::TooManySegments</code>, interpolating <code>{MAX_ROOT_SEGMENTS}</code> by inline format capture —
+so with a runtime value it <em>fails to compile</em>. The fix is a <code>ceiling</code> field on a <strong>public</strong> error
+variant, the shape <code>SegmentValueOverCeiling { ceiling }</code> already uses. The only true enforcement
+site is <code>:2450</code>.</li>
+<li>&quot;Already patch-aware&quot; is <strong>backwards</strong>. <code>crates/core/tests/segmented_map_record.rs</code> text-greps
+the source for <code>pub const &lt;name&gt;: … = &lt;integer literal&gt;;</code> and <strong>panics</strong> when that declaration
+stops being a literal — which is exactly what making it configurable does, taking the whole
+Criterion-3 suite with it.</li>
+<li>The load-bearing invariant — proposal 0016's <code>max_segref_bytes × MAX_ROOT_SEGMENTS ≤ V/2</code> —
+exists <strong>only as a measurement</strong>: the test encodes worst-case tables and asserts on
+<code>encode(...).len()</code>. No production function computes that bound, so nothing can be &quot;moved&quot; to
+startup validation; a closed-form must be newly derived. Concretely, an operator setting
+<code>MAX_ROOT_SEGMENTS = 4096</code> passes the <code>:354</code> assertion and still produces roots around 400 KB,
+four times <code>MAX_VALUE_BYTES</code> — objects that can never be re-written, and therefore never
+repaired.</li>
+<li>Enforcement at <code>:2450</code> sits inside private <code>read_group_range</code>, reached through
+<code>metadata::resolve_chunk_map</code> from six call sites across three crates. Threading configuration
+there is a signature change with a wide blast radius; a process-global instead breaks tests that
+exercise both sides of the ceiling in one binary.</li>
+</ul>
+<p>What <strong>did</strong> survive checking: the custodian is genuinely insulated (its checks go through
+<code>metadata::flat_value_ceiling_crossed</code> against <code>MAX_VALUE_BYTES</code>, which is not changing), multipart
+derives nothing from the knob (every reference in <code>multipart.rs</code> is a doc comment), and
+<code>MAX_ROOT_VALUE_BYTES</code> has no production consumer beyond its own assertion.</p>
+<p><strong>And one design question this raises, which is not the tool's to answer.</strong> If the ceiling is
+per-gateway configuration, a root published under a raised value becomes permanently unresolvable
+the moment any gateway runs a lower one — decode is deliberately liberal, so the failure surfaces
+at resolve time on a durable object. Multipart already solved the same problem by <strong>storing</strong> its
+budget profile in the <code>mpuctl</code> record rather than deriving it per gateway, precisely so &quot;a rolling
+configuration change cannot leave two gateways enforcing different bounds&quot;
+(<code>crates/core/src/multipart.rs:1139-1144</code>). Whether a segmented root must likewise carry its own
+ceiling is an architecture decision, and #739 should not be built until it is settled.</p>
+<p><strong><code>aws-sdk-s3</code> moves from a dev-dependency into a shipped artifact.</strong> It is currently dev-only
+(<code>crates/server/Cargo.toml:120-129</code>, noted there as &quot;not compiled into the production binary&quot;).
+Making it a <em>normal</em> dependency of a shipped workspace member brings roughly a hundred crates
+inside <code>deny.toml</code>'s frame — whose own header states it &quot;guards the default feature graph — the
+artifact we ship&quot;. <a href="http://INTEGRATION.md">INTEGRATION.md</a> §4 names &quot;any new dependency or license&quot; a human-only
+NEEDS-HUMAN item, so this needs the ADR-0003 three-test audit before the crate lands, not after.
+It is a larger item than §14's MinIO note and lands earlier.</p>
+<p><strong>The tool cannot speak HTTPS, and the endpoint it is meant to validate is TLS-terminated.</strong>
+§10 and blueprint §B.1 make the S3 port the only public exposure, behind an operator's own
+terminator. Nothing in this proposal adds a TLS client, and adding one meets the same wall the
+gateway already sits behind: a rustls crypto provider outside the <code>deny.toml</code> allowlist
+(<code>crates/gateway-s3/src/lib.rs:50-57</code>), a declared NEEDS-HUMAN dependency decision. Until that is
+resolved the tool validates the plain-HTTP configuration — which is a real limitation of the Alpha
+evidence artifact, not a detail: a 7-day run proving correctness over plain HTTP with static
+credentials has not exercised the transport an operator is told to deploy. Resolve the provider
+decision, or state in the verdict that transport is out of scope for what the run licenses.</p>
+<p><strong><code>MAX_VALUE_BYTES</code> (100,000) is explicitly not in scope.</strong> It is FoundationDB's hard limit,
+inherited by every backend so the tightest governs, and decimal rather than <code>100 * 1024</code> for
+that reason. A knob there only lets a deployment mint writes the backend rejects at commit. If
+it should change, the change is to make it backend-derived — each <code>MetadataStore</code> declaring its
+ceiling, the seam taking the minimum — which is different work.</p>
+<h2>Alternatives considered</h2>
+<p><strong>Python with boto3 and aws-cli.</strong> The truest blackbox — the exact clients users run — and what
+<a href="https://github.com/getwyrd/wyrd/issues/512">#512</a> names. Rejected as the foundation on three grounds: verification is CPU-bound
+(every downloaded byte hashed, every payload generated), so a long run's load generator would be
+fighting the GIL to keep the cluster busy; a months-long run wants a single binary to copy onto
+a node, not an interpreter and a venv; and it would introduce a Python toolchain and CI lane to
+a workspace with two Python files, both in the docs pipeline. Not rejected as a complement.</p>
+<p><strong>Shelling out to <code>aws-cli</code> for the workflow layer.</strong> Dropped in favour of one clean Rust client
+at both levels. The cost, stated honestly: the workflow semantics have no specification outside
+aws-cli's source. <code>mv</code> is copy-then-delete, <code>rm --recursive</code> is paginated list plus
+<code>DeleteObjects</code> batched at 1000, <code>sync</code> compares size and mtime. Writing our own means we can be
+correct against <em>our reading</em> of <code>sync</code> and still diverge from a user's actual aws-cli.
+Mitigation: each workflow's algorithm carries a comment pinning it to observed aws-cli
+behaviour, and the layer is described as &quot;our reading of aws-cli&quot;, never as &quot;aws-cli
+compatible&quot;. An optional differential leg remains available later.</p>
+<p><strong>A <code>wyrd</code> subcommand instead of a second binary.</strong> Rejected. It would share a dependency
+closure with the roles and make §9's lint meaningless — the blackbox property is the whole point,
+and a tarball can carry two binaries.</p>
+<p><strong>A performance pass bar.</strong> Rejected. The right threshold depends on hardware the tool cannot
+know, and a wrong bar is worse than none: it either fails good deployments or blesses bad ones.
+The tool reports; the operator compares.</p>
+<p><strong>Folding this into <a href="https://github.com/getwyrd/wyrd/issues/512">#512</a>.</strong> Partly rejected, and an earlier revision overstated the case.</p>
+<p>The claim was &quot;different things — #512 is one pass with stock tooling, this is endurance.&quot; That
+holds for <code>endurance</code>, <code>churn</code>, <code>listing</code> and <code>large-object</code>, which have no counterpart in #512.
+It does <strong>not</strong> hold for <code>smoke</code>. #512's own scope reads: &quot;exercise the Alpha operation set end to
+end with aws-cli and boto3 (put/head/get/list/copy/delete, multipart, range, bulk-delete),
+asserting <strong>byte-identical round-trips and correct S3 XML/error responses</strong>&quot;, it folds in
+<a href="https://github.com/getwyrd/wyrd/issues/491">#491</a>'s bypass vectors, and it says &quot;<strong>Define the pass bar as the Alpha S3 gate</strong>&quot;. That is
+the same work as this proposal's matrix, <code>smoke</code>, and auth-negative vectors, with a different
+client. Two issues currently both claim to be the Alpha S3 gate.</p>
+<p>The honest boundary, proposed here for #512's owner to accept or reject:</p>
+<ul>
+<li><strong>#512 owns client diversity.</strong> Does <em>stock aws-cli and boto3</em> work — the tooling a user
+actually runs. That is the question this proposal explicitly declined to answer when it chose
+one Rust client, and nothing here replaces it.</li>
+<li><strong>This proposal owns the time axis and the operator-facing tool.</strong> Endurance, churn, listing at
+scale, resumability, the shipped binary. None of that is in #512.</li>
+<li><strong>The overlap is the correctness matrix itself</strong>, and it should be single-sourced rather than
+written twice. The declared operation/status/error-code table is the artifact both need; #512's
+client matrix and this tool's <code>smoke</code> should assert the <em>same</em> table through different clients.</li>
+</ul>
+<p>Until that is settled with #512's owner, this proposal duplicates #512's correctness pass. Saying
+so is better than the earlier claim that they were simply different.</p>
+<p><strong>Extending <code>cargo xtask consistency-run</code>.</strong> Rejected. That run exists so a checker <em>we did not
+write</em> judges a history under a fault. Bolting endurance onto it would dilute a credibility
+artifact whose value is its narrowness.</p>
+<p><strong>Making a long run a throughput benchmark.</strong> Rejected. <code>cargo xtask bench</code> exists and is
+deliberately outside CI because runner wall-clock is noisy (<code>xtask/src/main.rs:159-163</code>), and
+§B.3 is explicit that trustworthy numbers need bare-metal while fault campaigns want
+hourly-billed cloud.</p>
+<h2>Graduation criteria</h2>
+<ol>
+<li>
+<p><code>cargo xtask s3-blackbox --scenario smoke</code> passes against loopback and against
+<code>deploy/small-multi-node-fdb</code>, wired as an advisory Tier-2 job — <strong>with the <a href="https://github.com/getwyrd/wyrd/issues/491">#491</a>
+vector recorded as a known-open defect rather than a failure</strong>, since asserting the correct
+behaviour is red until #491 closes. &quot;Passes&quot; means: no failure outside the declared
+known-open set, and that set is named in the verdict. When #491 closes, the entry is removed
+and the criterion tightens automatically.</p>
+</li>
+<li>
+<p>The matrix asserts every <code>unsupported</code> row's declared status and error code — including
+<a href="https://github.com/getwyrd/wyrd/issues/504">#504</a>'s <code>CopyObject</code> rejection, a standing regression guard against the
+silent-overwrite class — and the auth-negative vectors under <code>smoke</code>.</p>
+</li>
+<li>
+<p><strong>The §14 self-check passes</strong>: <code>smoke</code> is clean against MinIO under the reference profile,
+and every corrupting-proxy fixture comes back as its matching failure class. Wired as a
+preflight that must pass before any live run, including the gating one.</p>
+</li>
+<li>
+<p>A 24-hour <code>endurance</code> run completes against the fleet. <strong>Its availability-failure budget is
+set by that run, not before it</strong> — the first clean run establishes the threshold (Open
+question 1), so this criterion reads &quot;completes, and the observed failure rate becomes the
+declared budget&quot;, not &quot;completes below a budget nobody has computed&quot;. Only the second such run
+can be gated on a number.</p>
+</li>
+<li>
+<p>A <strong>7-day <code>endurance</code> run completes against the Hetzner substrate</strong>, verdict committed. This
+is the Alpha evidence artifact.</p>
+<p><strong>Where &quot;0.1 Alpha does not tag without it&quot; is enforced.</strong> As prose it is unfalsifiable:
+tagging runs <code>.github/workflows/release.yml</code> on a <code>v*</code> push, and nothing in <code>cargo xtask ci</code>,
+<code>xtask dist</code> or any checklist reads a verdict artifact. This proposal does not add a machine
+gate — a release-blocking check on a hand-run week-long job is the wrong shape. It names a
+<strong>release-runbook step</strong> instead: the tag procedure requires the committed verdict, its
+substrate recorded as <code>hetzner</code>, and its scenario as <code>endurance</code>. That is a human step, and
+calling it one is more honest than implying automation that does not exist.</p>
+<p><strong>What this run does and does not license</strong> (§13's prose, applied here): endurance of the
+build it ran, over plain HTTP, on the substrate named. It licenses no claim about TLS
+transport (<em>Dependencies</em>), no failure-domain claim unless faults were injected, and no
+performance claim at all.</p>
+</li>
+<li>
+<p><code>wyrd-validate</code> ships in the operator tarball, and <code>xtask/tests/dist_templates.rs</code> pins the
+two-binary layout.</p>
+</li>
+<li>
+<p>Every failure found is filed; deterministic ones land seeded DST regressions (ADR-0009).</p>
+</li>
+<li>
+<p>§9's dependency lint is green in <code>cargo xtask ci</code>.</p>
+</li>
+<li>
+<p>The pure modules (matrix, scenario, oracle, payload, verdict) carry flippable unit tests —
+the <code>consistency_run</code> split, where the decision-shaped core is Check-tested and the runner is
+thin I/O.</p>
+</li>
+</ol>
+<h2>Backward compatibility</h2>
+<p>No on-disk format change, no consistency-contract change, no public API change. The tool is
+additive and reads only the S3 wire. The tarball gains a second binary — an addition to its
+layout, not a change to the existing one.</p>
+<p>Two forward couplings, both deliberate:</p>
+<ul>
+<li>The <strong>capability matrix</strong> must be updated when <a href="https://github.com/getwyrd/wyrd/issues/504">#504</a>, <a href="https://github.com/getwyrd/wyrd/issues/508">#508</a> or <a href="https://github.com/getwyrd/wyrd/issues/511">#511</a>
+land. That is the mechanism working: the matrix failing loudly on a newly-supported operation
+is the signal it exists to give.</li>
+<li>The <strong>size table</strong> (§4) takes the deployment's tuning as input rather than importing it, so it
+cannot go stale — but it is only as accurate as what it is passed. The verdict records the
+values used, which is what makes a wrong one visible after the fact rather than silent.</li>
+</ul>
+<h2>Open questions</h2>
+<ol>
+<li><strong>What is the availability-failure budget?</strong> §7 needs a number, and it should differ by
+substrate — a shared-vCPU fleet is not bare metal. Derive it from a first clean 24-hour run
+rather than guessing now.</li>
+<li><strong>Quiesce cadence per duration.</strong> Hourly at 24h, six-hourly at a week, daily beyond is a
+starting proposal, not a measured one.</li>
+<li><strong>The segmentation-threshold default.</strong> Derivable in principle from chunk size and root
+budget, but the per-chunk encoded width makes it approximate. Needs one measurement.</li>
+<li><strong>Can the container fleet sustain a long run?</strong> Disk growth across nine D-server volumes plus
+FDB over days is unmeasured. It no longer blocks the design — the Alpha gate is the Hetzner
+run — but it decides whether the fleet is useful past 24 hours.</li>
+<li><strong>Where does a gating verdict get committed?</strong> <code>docs/design/reviews/</code> alongside the
+consistency run, or <code>docs/design/runbooks/drills/</code> where <a href="https://github.com/getwyrd/wyrd/issues/485">#485</a> puts its drill record.
+A convention for the gating run, not a property of the tool.</li>
+<li><strong>The <a href="https://github.com/getwyrd/wyrd/issues/512">#512</a> boundary needs its owner's agreement.</strong> <em>Alternatives considered</em> proposes
+single-sourcing the correctness matrix and splitting client-diversity from the time axis.
+Until that is accepted, two issues both claim to be the Alpha S3 gate and the correctness pass
+is written twice.</li>
+<li><strong>Must a segmented root carry its own ceiling?</strong> Raised by <em>Dependencies</em>: a per-gateway
+<code>MAX_ROOT_SEGMENTS</code> makes a root published under a high value unresolvable to a gateway running
+a lower one, on a durable object. Multipart stores its budget in the record rather than deriving
+it per gateway, for exactly this reason. An architecture decision, and <a href="https://github.com/getwyrd/wyrd/issues/739">#739</a> should not be
+built before it is settled.</li>
+<li><strong>The rustls provider decision gates whether the tool can ever validate a real endpoint.</strong>
+Until it is made (<em>Dependencies</em>), every run — including the Alpha gating run — exercises plain
+HTTP, which is not the transport operators are told to deploy.</li>
+<li><strong>Does the production OCI image carry the validation tool?</strong> §2: dist extracts the tarball
+binary from the image, so shipping a second binary in the tarball but not the image breaks the
+bit-identical guarantee and needs separate assembly. A release-pipeline decision.</li>
+</ol>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>
