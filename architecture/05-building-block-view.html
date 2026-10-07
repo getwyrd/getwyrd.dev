@@ -402,9 +402,15 @@ the L4 mechanics it touches:</p>
 <td>wires all concretes</td>
 <td><code>server</code></td>
 </tr>
+<tr>
+<td>Blackbox validation</td>
+<td>separate <code>wyrd-validate</code> binary, no <code>wyrd-*</code> dependency</td>
+<td><code>validate</code> (proposal 0017)</td>
+</tr>
 </tbody>
 </table>
 <p>The dependency rule (ADR-0010): implementations and consumers depend on <code>traits</code>, never on each other's concretes. Only <code>server</code> knows the concrete backends, which is what makes &quot;swap redb for FoundationDB&quot; or &quot;in-memory for etcd&quot; a composition change rather than a refactor. The seam earned its keep in M4: swapping the production backend from TiKV to FoundationDB (ADR-0042) touched the <code>server</code> wiring and added a crate, and changed no consumer.</p>
+<p><code>validate</code> sits outside that rule on purpose: it is a client of a running deployment, not a part of one, and depends on no <code>wyrd-*</code> crate (proposal 0017 §9). Its command-line surface is ten required flags — <code>--endpoint</code>, <code>--region</code>, <code>--bucket</code>, <code>--scenario</code>, <code>--duration</code>, <code>--workers</code>, <code>--seed</code>, <code>--out</code>, <code>--run-id</code>, <code>--driver-placement</code> — with S3 credentials taken from <code>AWS_ACCESS_KEY_ID</code>/<code>AWS_SECRET_ACCESS_KEY</code>, else <code>WYRD_S3_ACCESS_KEY</code>/<code>WYRD_S3_SECRET_KEY</code>, else refused; half a pair, or a variable whose value is not UTF-8, is refused by name rather than skipped over to the next pair (an empty variable counts as unset). Parsing is strict, unlike <code>wyrd</code>'s: an unknown flag, a repeated flag, an empty value, a stray positional, or a <code>--</code>-prefixed token in a value slot is refused by name rather than absorbed. Today the binary echoes its resolved configuration (the access-key id, never the secret) and exits without issuing a request; the S3 client arrives with #741.</p>
 
     </article>
   </main>
