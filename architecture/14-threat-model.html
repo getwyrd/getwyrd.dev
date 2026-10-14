@@ -172,7 +172,7 @@ adversary, section 8.6).</p>
 <tr>
 <td><strong>Information disclosure</strong></td>
 <td>ciphertext-only at rest (ADR-0021)</td>
-<td>ACL-gated reads, version-fenced</td>
+<td>ACL-gated reads, version-fenced. <strong>Accepted disclosure:</strong> every response the S3 gateway service produces — the pre-auth <code>403</code> included — carries <code>Server: wyrd/&lt;build identity&gt;</code>, so an unauthenticated caller learns the exact build. For a release that is the version <code>cargo xtask dist</code> wrote to the tarball's <code>VERSION</code> (<code>0.1.0</code> on a tag, <code>0.1.0+git.3.abc12de</code> past one), which also carries a <code>dirty</code> marker — <code>0.1.0+git.dirty</code>, <code>0.1.0+git.3.abc12de.dirty</code> — when the release was cut from a modified tree, so that fact is disclosed too; a hand-built binary names the commit it was built on and says nothing about edits on top of it. Intended: it keys version-specific client behaviour and bug reports to the build (proposal 0017 §3). An operator who must not disclose it rewrites or strips <code>Server</code> at a fronting proxy; there is no knob in the gateway. Responses hyper answers before the service runs (a malformed request line, an oversized header section) carry no <code>Server</code></td>
 <td>envelope encryption; tenant partition (ADR-0020, ADR-0022)</td>
 </tr>
 <tr>
