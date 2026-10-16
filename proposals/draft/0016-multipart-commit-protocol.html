@@ -1439,9 +1439,10 @@ to ~302 B (worst-case <code>u64</code> ids), so a 100 KB value at V/2 headroom h
 at large chunks (traded against gateway memory). This is <em>pre-existing</em> (a 5 GiB single PUT
 at 1 MiB chunks already crosses it), routine under multipart, and it is why the flat map alone
 cannot meet the &gt;10 GiB launch requirement — decision 7 lifts it <strong>for multipart</strong>, while a
-single <code>PutObject</code> stays flat by choosing a chunk size that fits its declared <code>Content-Length</code>
-inside <code>MAX_MAP_CHUNKS</code> (or is refused past <code>chunk_size_max</code>), because segmentation's staged
-publication needs a session/epoch a single PUT has not got (decision 7, the finding-4 carve-out).</li>
+single <code>PutObject</code> stays flat at the deployment's chunk size and is refused past
+<code>MAX_MAP_CHUNKS × chunk_size</code> (#671, which dropped per-PUT chunk-size selection), because
+segmentation's staged publication needs a session/epoch a single PUT has not got (decision 7,
+the finding-4 carve-out).</li>
 <li><strong>Part value ceiling — the same rule, one record class down.</strong> A <code>part:</code> record's <code>chunks: Vec&lt;ChunkRef&gt;</code> is <em>also</em> one value, so <code>MAX_PART_CHUNKS</code> obeys the <strong>identical</strong> rule:
 <code>MAX_PART_CHUNKS = ⌊50000 / b_ref⌋</code> = <strong>165–381 chunks</strong>, i.e. a maximum part of
 <code>max_part_bytes = MAX_PART_CHUNKS × chunk_size</code> = <strong>165–381 MiB at the default 1 MiB chunk</strong>.
@@ -2986,17 +2987,23 @@ epoch the protocol requires. Instead:</p>
 <ul>
 <li><strong>A multipart Complete</strong> whose assembled map exceeds <code>MAX_MAP_CHUNKS</code> is <strong>segmented</strong> (this
 decision).</li>
-<li><strong>A single <code>PutObject</code></strong> publishes a <strong>flat</strong> map, and reaches large sizes by <strong>choosing a
-chunk size that fits its declared <code>Content-Length</code> inside <code>MAX_MAP_CHUNKS</code></strong>:
-<code>chunk_size_effective = max(DEFAULT_CHUNK_SIZE, ⌈Content-Length / MAX_MAP_CHUNKS⌉)</code>. <code>PutObject</code>
-carries a declared <code>Content-Length</code> (enforced, the rubric's <em>Protocol input</em> rule), so the
-gateway knows the size up front and picks the chunk size deterministically. S3's 5 GiB single-PUT
-maximum fits a flat map once <code>chunk_size ≥ 5 GiB / MAX_MAP_CHUNKS ≈ 13.4–31 MiB</code> — reachable, and
-the only cost is gateway memory (<code>chunk_size × max_concurrent_encodes</code>), registered honestly.</li>
-<li><strong>A single <code>PutObject</code> that cannot fit <code>MAX_MAP_CHUNKS</code> even at <code>chunk_size_max</code></strong> is <strong>refused</strong>
-with <code>400 EntityTooLarge</code> (the client must use multipart) — never silently segmented against a
-session that does not exist. In the S3 range (<code>Content-Length ≤ 5 GiB</code>) a sane <code>chunk_size_max</code>
-always fits, so the refusal is a guard, not a routine path (X50).</li>
+<li><strong>A single <code>PutObject</code></strong> publishes a <strong>flat</strong> map at the <strong>deployment's chunk size</strong> <code>c</code> (the
+<code>wyrd s3 --chunk-size</code> setting, 1–16 MiB), so it holds at most <code>MAX_MAP_CHUNKS × c</code> bytes
+(<code>max_single_put_bytes</code>, the same derivation as <code>max_part_bytes</code>): 158 MiB at 1 MiB, about
+2.47 GiB at 16 MiB. <strong>Revised by #671:</strong> an earlier draft picked a chunk size per PUT,
+<code>max(DEFAULT_CHUNK_SIZE, ⌈Content-Length / MAX_MAP_CHUNKS⌉)</code>. That was dropped: PR #848 made the
+chunk size a deployment property (the erasure-coding unit and the per-object fan-out), which
+per-PUT selection would quietly turn into a minimum, and the 16 MiB chunk ceiling the D servers'
+4 MiB gRPC message limit sets means no deployment could reach <code>⌈5 GiB / MAX_MAP_CHUNKS⌉ ≈ 32.4 MiB</code> anyway. A <code>PutObject</code> must <strong>declare its object length</strong> — <code>Content-Length</code> for a
+single-shot body, <code>x-amz-decoded-content-length</code> for every <code>aws-chunked</code> variant, as S3
+requires — or it is refused <code>411 MissingContentLength</code> from its headers; the body is held to
+the declared length while it streams.</li>
+<li><strong>A single <code>PutObject</code> whose declared length is past <code>MAX_MAP_CHUNKS × c</code></strong> is <strong>refused</strong> with
+<code>400 EntityTooLarge</code> from its headers, before any of its bytes are written — never silently
+segmented against a session that does not exist (X50). Objects above the ceiling are
+multipart's; until multipart ships, the operator's way to accept larger objects is a larger
+<code>--chunk-size</code>. S3's own 5 GiB single-PUT limit is unreachable while the ceiling is at most about
+2.47 GiB, which a compile-time assertion pins.</li>
 </ul>
 <p>A published map of <code>≤ MAX_MAP_CHUNKS</code> chunks stays a flat inline map (unchanged, today's shape);
 a larger map is produced <strong>only</strong> by a multipart session, and is segmented.</p>
@@ -3604,9 +3611,9 @@ tested against; every row states what actually happens and what makes it so.</p>
 <td>D5 (rule 1), D6, clock table</td>
 </tr>
 <tr>
-<td>X50 (finding 4)</td>
-<td>A single <code>PutObject</code> whose object cannot fit <code>MAX_MAP_CHUNKS</code> even at <code>chunk_size_max</code></td>
-<td>Refused with <code>400 EntityTooLarge</code> (the client must use multipart) — <strong>never</strong> silently segmented, because segmentation's staged publication needs an upload-id / <code>Completing@E</code> / epoch a single PUT has not got; in the S3 range (<code>≤ 5 GiB</code>) chunk-size selection always fits, so this is a guard, not a routine path</td>
+<td>X50 (finding 4; revised by #671)</td>
+<td>A single <code>PutObject</code> whose declared length cannot fit <code>MAX_MAP_CHUNKS</code> at the deployment's chunk size <code>c</code></td>
+<td>Refused from its headers with <code>400 EntityTooLarge</code>, naming the <code>MAX_MAP_CHUNKS × c</code> limit, before any byte is written — <strong>never</strong> silently segmented, because segmentation's staged publication needs an upload-id / <code>Completing@E</code> / epoch a single PUT has not got. There is no per-PUT chunk-size selection (PR #848 made the chunk size a deployment property), so this is the routine answer for any PUT past the ceiling; larger objects are multipart's</td>
 <td>D7 (finding 4 carve-out)</td>
 </tr>
 <tr>
@@ -3910,9 +3917,9 @@ tested against; every row states what actually happens and what makes it so.</p>
 <td>D6, X78</td>
 </tr>
 <tr>
-<td>X102 (iteration-13 finding 9)</td>
-<td>A lengthless <code>aws-chunked</code> streaming PUT reaches the single-PUT chunk-sizing rule</td>
-<td><code>x-amz-decoded-content-length</code> is optional (<code>sigv4.rs:579-584</code>) and the handler forwards only the decoded stream (<code>gateway-s3/src/lib.rs:1742-1764</code>), so the size the formula needs may not exist — the encoded body length is not the decoded size, and <code>DEFAULT_CHUNK_SIZE</code> would overflow <code>MAX_MAP_CHUNKS</code> well inside S3's 5 GiB limit. Since re-chunking mid-stream is not available, such a stream uses the <strong>size-independent</strong> <code>⌈5 GiB / MAX_MAP_CHUNKS⌉</code> — the value the formula yields for a maximal declared PUT — so it cannot overflow anywhere inside S3's own limit. The alternative, a mid-stream refusal, is a compatibility change for streams that work today and is recorded as rejected rather than made silently</td>
+<td>X102 (iteration-13 finding 9; revised by #671)</td>
+<td>A lengthless <code>aws-chunked</code> streaming PUT reaches the single-PUT ceiling check</td>
+<td>Refused <code>411 MissingContentLength</code> from its headers, before any body byte is read: every <code>aws-chunked</code> variant must declare <code>x-amz-decoded-content-length</code>, as S3 requires and AWS's SDKs and CLI always do, and the decoder holds the stream to it (refused as soon as it passes the declared length, and if it ends short). <strong>Withdrawn:</strong> the earlier size-independent <code>⌈5 GiB / MAX_MAP_CHUNKS⌉</code> chunk for lengthless streams — there is no per-PUT chunk size (PR #848), and ≈ 32.4 MiB is past the 16 MiB chunk ceiling every deployment runs under</td>
 <td>D7 (finding 4), accepted costs</td>
 </tr>
 <tr>
@@ -3940,9 +3947,9 @@ tested against; every row states what actually happens and what makes it so.</p>
 <td>D6 (F10), clock table</td>
 </tr>
 <tr>
-<td>X107 (iteration-14 finding 4)</td>
-<td>A deployment sets <code>chunk_size_max</code> below <code>⌈5 GiB / MAX_MAP_CHUNKS⌉</code> and accepts a lengthless <code>aws-chunked</code> PUT</td>
-<td>X102's fixed size then exceeds the operator's own gateway-memory limit, while clamping to <code>chunk_size_max</code> lets a near-5 GiB lengthless stream overflow the flat map — <strong>neither branch is safe</strong>, and nothing in the &gt;10 GiB multipart requirement forbids that configuration. Resolved before any stream starts rather than mid-stream: accepting lengthless PUTs <strong>requires</strong> <code>chunk_size_max ≥ ⌈5 GiB / MAX_MAP_CHUNKS⌉</code>, checked at configuration load, and a deployment below that bound refuses lengthless PUTs <strong>at the header</strong> with a stated error</td>
+<td>X107 (iteration-14 finding 4; revised by #671)</td>
+<td>A lengthless <code>aws-chunked</code> PUT reaches a deployment whose chunk size cannot hold a 5 GiB flat map</td>
+<td>Resolved before any stream starts, now unconditionally: <strong>every</strong> deployment refuses lengthless PUTs <strong>at the header</strong> (<code>411 MissingContentLength</code>, X102). The start-time precondition <code>chunk_size_max ≥ ⌈5 GiB / MAX_MAP_CHUNKS⌉</code> is withdrawn: at 158 refs and a 16 MiB chunk ceiling no deployment could meet it</td>
 <td>D7 (finding 4), X102, accepted costs</td>
 </tr>
 <tr>
@@ -4364,15 +4371,15 @@ refutation outcome. <code>V = 100 KB</code>; headroom keeps an encoded value <co
 <td>none required (documented operator behaviour)</td>
 </tr>
 <tr>
-<td><strong>A lengthless <code>aws-chunked</code> streaming PUT cannot evaluate the sizing formula</strong> (iteration-13 finding 9): <code>x-amz-decoded-content-length</code> is optional (<code>crates/gateway-s3/src/sigv4.rs:579-584</code>) and the handler forwards only the decoded stream (<code>gateway-s3/src/lib.rs:1742-1764</code>), so the gateway may know no object size before it starts writing — while the encoded body length is not the decoded size, and keeping <code>DEFAULT_CHUNK_SIZE</code> would overflow <code>MAX_MAP_CHUNKS</code> well inside S3's 5 GiB single-PUT limit</td>
-<td>such a stream is written at the <strong>size-independent</strong> chunk size <code>⌈5 GiB / MAX_MAP_CHUNKS⌉</code> — the same value the formula yields for a <em>maximal</em> declared PUT — so no lengthless stream can overflow the flat map anywhere inside S3's own limit, and one exceeding 5 GiB is refused as S3 requires anyway. <strong>That size must be legal for the deployment, which is a configuration precondition, not an assumption (iteration-14 finding 4):</strong> <code>chunk_size_max</code> may be set below <code>⌈5 GiB / MAX_MAP_CHUNKS⌉</code> — nothing in the &gt;10 GiB multipart requirement forbids it — and then the prescribed size exceeds the operator's own gateway-memory limit while <em>clamping</em> to <code>chunk_size_max</code> would let a near-5 GiB lengthless stream overflow the flat map. Neither branch is safe, so the conflict is resolved <strong>before</strong> any stream starts: accepting lengthless <code>aws-chunked</code> PUTs requires <code>chunk_size_max ≥ ⌈5 GiB / MAX_MAP_CHUNKS⌉</code>, checked at configuration load, and a deployment that does not meet it <strong>refuses lengthless PUTs at the header, before streaming</strong>, with a stated error rather than a mid-stream failure</td>
-<td>re-chunking mid-stream is not available (chunks are written as they arrive), so the choice is a fixed size that is always safe or a mid-stream refusal; refusing would be a <strong>compatibility change</strong> for streams that succeed today, and this proposal is not the place to make one silently. The cost is that small lengthless PUTs use larger chunks than they need — read amplification, not correctness</td>
-<td><strong>FU-5</strong>/operator <code>chunk_size</code> tuning, and telemetry on the lengthless-stream share</td>
+<td><strong>A lengthless <code>aws-chunked</code> streaming PUT is refused</strong> (iteration-13 finding 9; revised by #671): a PUT that declares no object length — no <code>x-amz-decoded-content-length</code> on an <code>aws-chunked</code> upload, or a <code>Transfer-Encoding</code> body with no <code>Content-Length</code> — answers <code>411 MissingContentLength</code> from its headers. S3 itself requires the declared length, and AWS's SDKs and CLI always send it</td>
+<td>only non-standard clients that omit the length; they were accepted before #671</td>
+<td>a length the gateway cannot see up front is one it cannot hold to the single-PUT ceiling, and the earlier alternatives (a size-independent ≈ 32.4 MiB chunk, or a start-time precondition on <code>chunk_size_max</code>) are past the 16 MiB chunk ceiling every deployment runs under</td>
+<td>none required (S3-conforming)</td>
 </tr>
 <tr>
-<td><strong>Single-PUT chunk size scales with object size</strong> (segmentation is multipart-only, finding 4): a large single <code>PutObject</code> uses <code>chunk_size_effective = max(DEFAULT_CHUNK_SIZE, ⌈Content-Length/MAX_MAP_CHUNKS⌉)</code> to stay flat; a <code>PutObject</code> that cannot fit <code>MAX_MAP_CHUNKS</code> at <code>chunk_size_max</code> is refused; a <strong>lengthless</strong> <code>aws-chunked</code> stream, which cannot evaluate the formula at all, uses the size-independent <code>⌈5 GiB / MAX_MAP_CHUNKS⌉</code> (iteration-13 finding 9)</td>
-<td>S3's 5 GiB single-PUT max fits once <code>chunk_size ≥ 5 GiB/MAX_MAP_CHUNKS ≈ **13.4–31 MiB**</code>; the gateway-memory cost is <code>chunk_size × max_concurrent_encodes</code> (bounded, and only for large single PUTs)</td>
-<td>segmentation needs a session/epoch a single PUT has not got; chunk-size selection is the simple, sessionless way to reach S3's single-PUT ceiling, and refusal past it is a safe guard, never a silent unanchored segmentation (X50)</td>
+<td><strong>A single PUT is capped at <code>MAX_MAP_CHUNKS × c</code></strong> (segmentation is multipart-only, finding 4; revised by #671): a single <code>PutObject</code> is one flat map at the deployment's chunk size <code>c</code>, so one past <code>max_single_put_bytes(c)</code> is refused <code>400 EntityTooLarge</code> from its headers. There is no per-PUT chunk-size selection: PR #848 made <code>c</code> a deployment property</td>
+<td>158 MiB at the default 1 MiB, about 2.47 GiB at the 16 MiB maximum; S3's 5 GiB single-PUT limit is not reachable as a single PUT. Larger objects are multipart's (up to <code>MAX_STAGED_CHUNKS × c</code>, about 79 GiB at 1 MiB); until multipart ships, a larger <code>--chunk-size</code> is the only way to accept them</td>
+<td>segmentation needs a session/epoch a single PUT has not got, and per-PUT selection would turn the deployment's chunk size into a minimum while still not reaching 5 GiB under the 16 MiB chunk ceiling; refusal past the ceiling is a safe guard, never a silent unanchored segmentation (X50)</td>
 <td><strong>FU-5</strong>/operator <code>chunk_size</code> tuning (same trade as the max-part-size row)</td>
 </tr>
 <tr>
@@ -4585,10 +4592,11 @@ pass in the existing custodian loop, dispatched from the same fenced control poi
 unchanged, with three deliberate internal changes — a superseding publication installs a
 retirement obligation instead of expanding orphan records inline (decision 4); a <code>DeleteObject</code>
 or bulk <code>DeleteObjects</code> of a large/segmented object does the same instead of orphaning every
-fragment inline (decision 4, finding 5); and a large single PUT is published as a <strong>flat</strong> map
-with an object-sized chunk size (segmentation is <strong>multipart-only</strong>; a single PUT that cannot fit
-<code>MAX_MAP_CHUNKS</code> even at <code>chunk_size_max</code> is refused with <code>EntityTooLarge</code>, never segmented
-against a session it has not got — decision 7, finding 4). Reclamation of a superseded or deleted
+fragment inline (decision 4, finding 5); and a single PUT is published as a <strong>flat</strong> map at the
+deployment's chunk size (segmentation is <strong>multipart-only</strong>; a single PUT that must declare its
+length and whose declared length cannot fit <code>MAX_MAP_CHUNKS</code> at that chunk size is refused with
+<code>EntityTooLarge</code>, never segmented against a session it has not got — decision 7, finding 4;
+per-PUT chunk-size selection was dropped by #671 after PR #848). Reclamation of a superseded or deleted
 generation is asynchronous, and the reader-safe grace guarantee is unchanged (reclamation is
 never <em>earlier</em> than today, and a GET during a DELETE is untorn exactly as before). A GET of a
 <strong>segmented</strong> object is reader-safe by the <strong>resolve-retry rule</strong> (decision 7h): a reader that
@@ -4637,10 +4645,10 @@ cadence), <strong>#508</strong> (<code>MAX_MAP_CHUNKS</code>, <code>MAX_SEG_CHUN
 the iteration-4 mechanical-enforcement fix).</li>
 <li><strong>Whether the single-PUT flat-map committer shares code with the multipart flat-map path.</strong>
 Decision 7 <strong>settles the design</strong> (it is not parked): segmentation is <strong>multipart-only</strong>, and a
-single <code>PutObject</code> publishes a <strong>flat</strong> map sized by chunk-size selection
-(<code>chunk_size_effective = max(DEFAULT_CHUNK_SIZE, ⌈Content-Length / MAX_MAP_CHUNKS⌉)</code>), or is
-refused with <code>400 EntityTooLarge</code> past <code>chunk_size_max</code> — it never segments, because staged
-publication needs a session/epoch it has not got (finding 4). What remains is only the code
+single <code>PutObject</code> publishes a <strong>flat</strong> map at the deployment's chunk size <code>c</code>, or is refused with
+<code>400 EntityTooLarge</code> past <code>MAX_MAP_CHUNKS × c</code> (per-PUT chunk-size selection was dropped by #671,
+since PR #848 made <code>c</code> a deployment property) — it never segments, because staged publication
+needs a session/epoch it has not got (finding 4). What remains is only the code
 factoring (whether one flat-map committer serves both callers), an implementation choice that
 gates nothing. Owner: <strong>#508</strong>.</li>
 <li><strong>Whether <code>ExpiredPendingPolicy::Defer</code> can be retired once every producer stamps live leases</strong>
