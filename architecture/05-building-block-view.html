@@ -315,7 +315,9 @@ client's declared <code>content_type</code>, and the content-publication time (<
 is optional with a serde default <em>and</em> skipped when absent, so a record written before
 the fields decodes, degrades on the wire to the pre-metadata behaviour, and re-encodes
 byte-identically — the latter load-bearing because every commit is a full-value CAS on
-the record's stored bytes.</li>
+the record's stored bytes. The store keeps <code>modified</code> in epoch milliseconds, and every
+S3 surface reports it at whole seconds: a listing's <code>&lt;LastModified&gt;</code> always ends <code>.000Z</code>,
+so it names the same instant as the <code>Last-Modified</code> header, as S3's own listings do.</li>
 <li><code>dirent:&lt;parent_id&gt;/&lt;name&gt;</code> → child inode id.</li>
 </ul>
 <p>Object metadata is stamped only at <strong>content publication</strong> (create / overwrite, in the

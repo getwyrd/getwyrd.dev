@@ -617,21 +617,25 @@ which is what <code>cargo xtask consistency-run</code> already does with Elle. D
 hand-rolled form is how a validator invents its own false failures.</p>
 <p><strong>At quiesce</strong>, with mutation stopped: the full <code>ListObjectsV2</code> sweep equals the model's live set
 exactly — no extra key, no missing key, correct <code>CommonPrefixes</code> rollups under <code>delimiter=/</code>.</p>
-<p><strong><code>Last-Modified</code> is real wall-clock but not directly comparable across surfaces.</strong>
-<code>now_millis()</code> reads <code>SystemTime::now()</code> (<code>crates/server/src/lib.rs:756</code>) and objects are stamped
-at <code>:197</code> and <code>:348</code>. But the value the wire returns differs by surface and is not ordered across
-a fleet:</p>
+<p><strong><code>Last-Modified</code> is real wall-clock, agrees across surfaces to the second, and is not ordered
+across a fleet.</strong> <code>now_millis()</code> reads <code>SystemTime::now()</code> (<code>crates/server/src/lib.rs:756</code>) and
+objects are stamped at <code>:197</code> and <code>:348</code>. The store keeps milliseconds (ADR-0047); the wire does
+not:</p>
 <ul>
-<li>A listing renders <code>&lt;LastModified&gt;</code> through <code>iso8601</code>, keeping milliseconds; <code>GET</code>/<code>HEAD</code> render
-the header through <code>http_date</code>, which is IMF-fixdate and second-granular. The same object
-therefore reports two different times, up to 999 ms apart (<a href="https://github.com/getwyrd/wyrd/issues/767">#767</a>).</li>
+<li>A listing renders <code>&lt;LastModified&gt;</code> through <code>iso8601</code> truncated to the whole second (<code>.000Z</code>),
+and <code>GET</code>/<code>HEAD</code> render the header through <code>http_date</code>, which is IMF-fixdate and
+second-granular. Both name the same instant for every stored value, which is what S3 itself
+does (<a href="https://github.com/getwyrd/wyrd/issues/767">#767</a>).</li>
 <li>Each gateway stamps from its own clock with no monotonicity guard at overwrite commit, so on
 the blueprinted N-gateway fleet <code>Last-Modified</code> can go <strong>backwards</strong> across an overwrite
 (<a href="https://github.com/getwyrd/wyrd/issues/768">#768</a>).</li>
 </ul>
-<p>So the oracle verifies the timestamp <strong>per surface</strong> — a listing time against the listing format,
-a header time against the header format — and never compares one to the other or assumes ordering.
-<code>sync</code>'s comparison (§7 workflows) inherits the same limit and is discussed there.
+<p>So the oracle checks each timestamp against its own surface's format, <strong>and</strong> checks that a
+listing's <code>LastModified</code> and a <code>HEAD</code> of the same object, at the same generation, agree at
+whole-second precision. A mismatch there is a failure, not noise: it is exactly what makes a
+sync tool that caches a listing and revalidates with <code>HEAD</code> see every object as changed. What the
+oracle does not assume is ordering: two stamps of different generations are never compared for
+&quot;later than&quot;. <code>sync</code>'s comparison (§7 workflows) inherits that limit and is discussed there.
 (madsim virtualises the read under DST, so the stamp is deterministic in simulation and real
 everywhere else.)</p>
 <p>Verification is where the CPU goes. Every downloaded byte is hashed and every payload is
