@@ -281,6 +281,11 @@ adversary, section 8.6).</p>
 <td>ADR-0008</td>
 </tr>
 <tr>
+<td>Prompt injection through issue text into the triage bot (mislabel, abusive comment, spend)</td>
+<td>the model gets no tools and no token; its answer is validated against the label sets and the priority computed by code; reasons that echo the issue, a single identifier-like token included, are withheld and markup neutralised; the job holds <code>contents: read</code>, <code>issues: write</code> and <code>id-token: write</code> only, and calls just the label, assignee and comment endpoints (the wider <code>issues: write</code> reach, editing or closing issues, needs a compromise of the job's hash-pinned code or dependencies); the Claude API token is federated, short-lived and accepted only from <code>main</code>; a workspace spending limit caps cost</td>
+<td>ADR-0048</td>
+</tr>
+<tr>
 <td>Multi-language client divergence (corrupt / non-atomic data)</td>
 <td>spec-first on-disk format + conformance vectors; a Rust core with FFI is the reserved alternative to reimplementation</td>
 <td>ADR-0002, section 8.6, 8.7</td>
@@ -403,6 +408,9 @@ half-done; correctness outranks admission (section 8.9).</li>
 <li><strong>Single-provider operator trust</strong> — operators are trusted within the provider (no
 cross-operator verify-everything, ADR-0005); insider risk is bounded by the append-only
 audit log and envelope encryption (the operator cannot read a tenant's directory).</li>
+<li><strong>Issue text sent to the model provider</strong> — the triage bot sends each issue's title and
+description to Anthropic's API. The text is already public; a secret a reporter pasted is
+the residual exposure, and the bot asks for it to be rotated (ADR-0048).</li>
 </ul>
 <h2>14.9 Gaps and their disposition</h2>
 <p>The threat model records its own holes and tracks them to closure.</p>

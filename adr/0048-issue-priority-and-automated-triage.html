@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0048. Issue priority and automated triage: severity and reach set P0–P3, and a GitHub Action applies it with one Claude API call per issue — Wyrd</title>
+<meta name="description" content="Wyrd has over two hundred open issues, from the maintainer, from review findings deferred out of pull requests, from the PDCA loop and from the nightly quality jobs, which file ...">
+<meta property="og:title" content="0048. Issue priority and automated triage: severity and reach set P0–P3, and a GitHub Action applies it with one Claude API call per issue — Wyrd">
+<meta property="og:description" content="Wyrd has over two hundred open issues, from the maintainer, from review findings deferred out of pull requests, from the PDCA loop and from the nightly quality jobs, which file ...">
+<meta property="og:type" content="article">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@300;400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/assets/style.css">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#211e1a">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/"><svg class="mark" viewBox="0 0 48 48" aria-hidden="true"><polygon class="lz-outer" points="24,3 45,24 24,45 3,24"/><polygon class="lz-inner" points="24,14 34,24 24,34 14,24"/></svg>Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Proposed · 22.10.2026 23:50</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>0048. Issue priority and automated triage: severity and reach set P0–P3, and a GitHub Action applies it with one Claude API call per issue</h1>
+<h2>Context</h2>
+<p>Wyrd has over two hundred open issues, from the maintainer, from review findings deferred out of pull requests, from the PDCA loop (wyrd-pdca) and from the nightly quality jobs, which file their own failures. An issue gets <code>bug</code>, <code>enhancement</code>, <code>documentation</code> or <code>research</code>, and the <code>new</code> label while it has no milestone. Nothing records how urgent it is, so ordering the backlog means rereading issues one by one.</p>
+<p>Triage needs the rules written down, so that two people, or the same person on different days, put the same issue at the same priority, and so that a bot can apply them with the maintainer making the final call. The structure is the one Stemma's issue-priority and automated-triage decisions and nl-shell already use: severity and reach give a priority from a fixed table, and a short list of overrides moves some issues up. The severity meanings, area labels and overrides below are Wyrd's own, taken from what Wyrd promises and what its threat model protects (architecture §14).</p>
+<p>Four things shape the scheme and how it is run.</p>
+<ul>
+<li><strong>What Wyrd promises.</strong> Its reason to exist is that a write is atomic and, once acknowledged, durable (architecture §5.1, ADR-0015). A lost acknowledged write, a torn write that becomes visible, or a chunk that cannot be reconstructed breaks that promise outright. Such bugs mostly need a combination of faults and timing that normal use rarely produces, so a plain impact-times-likelihood table would rank them low; the deterministic simulation exists precisely because these are the bugs that matter (ADR-0009).</li>
+<li><strong>What an attacker can reach.</strong> The threat model's attack catalog (§14.5) lists attacks that only happen when someone sets them up: a crafted fragment, a compromised D server, a hostile tenant. They are rare by construction and still the attacks the design is built against.</li>
+<li><strong>The repository is public.</strong> Anyone can open an issue, so whatever reads issues reads text written by strangers, and whatever an issue triggers, a stranger can trigger. Issue text is already public, so sending it to a model provider exposes little that was not already exposed. But a report can carry a credential pasted from a log, or describe a vulnerability that belongs in private disclosure (<a href="http://SECURITY.md">SECURITY.md</a>).</li>
+<li><strong>Whoever sets the milestone starts the work.</strong> The PDCA loop picks up issues on the open milestone, so the milestone must stay a human decision.</li>
+</ul>
+<h2>Decision</h2>
+<p>We will qualify every issue with three labels, derive a priority from two of them with a fixed table, and apply a short list of overrides (sections 1–3). Section 4 says what an automated triager may and may not do, and section 5 how ours runs.</p>
+<h3>1. Labels describing the issue</h3>
+<p><strong>Severity: how bad it is when it happens</strong></p>
+<table>
+<thead>
+<tr>
+<th>Label</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sev:critical</code></td>
+<td>An acknowledged write is lost; a torn or half-committed write becomes visible, or a stale or lost write is read back as current (ADR-0015); a chunk can no longer be reconstructed; stored bytes are silently altered; data or keys reach a principal not entitled to them, across tenants included (ADR-0021, ADR-0022); authentication or authorisation is bypassed; crafted input reaches code execution or memory corruption</td>
+</tr>
+<tr>
+<td><code>sev:major</code></td>
+<td>A safety mechanism is off or bypassable without data loss yet: checksum verification, fencing, lease or grace-window checks, admission control, mTLS without fallback (ADR-0006, ADR-0019, ADR-0025); a server crashes or panics; scrub, repair or GC fails or stops silently; fault tolerance is below the configured <em>k+m</em>; an on-disk or wire format diverges from its spec; an S3 operation the gateway claims to support is wrong with no workaround</td>
+</tr>
+<tr>
+<td><code>sev:minor</code></td>
+<td>Wrong behaviour with a workaround, a performance or resource regression, or misleading telemetry or errors</td>
+</tr>
+<tr>
+<td><code>sev:trivial</code></td>
+<td>Cosmetic, wording, docs, or a test-only gap</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Reach: how likely someone hits it</strong></p>
+<table>
+<thead>
+<tr>
+<th>Label</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>reach:common</code></td>
+<td>Normal operation with a default or documented configuration triggers it</td>
+</tr>
+<tr>
+<td><code>reach:edge</code></td>
+<td>Needs an unusual configuration, workload, fault combination or timing</td>
+</tr>
+<tr>
+<td><code>reach:adversarial</code></td>
+<td>Only triggers when someone sets it up on purpose: a hostile client or tenant, crafted fragments or requests, a compromised D server or internal node (§14.3)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Area: where the issue lives</strong> (for routing and assignment)</p>
+<p>Following the components of the building block view (architecture §5.1, §5.3): <code>area:metadata</code> (the metadata store and its backends), <code>area:client</code> (erasure coding, commit, read), <code>area:dserver</code> (D servers and the <code>ChunkStore</code> seam), <code>area:custodian</code> (GC, scrub, reconstruct, rebalance), <code>area:replication</code>, <code>area:coordination</code>, <code>area:gateway</code> (L1, S3), <code>area:chunk-format</code> (the on-disk format and its spec), <code>area:proto</code>, <code>area:security</code> (identity, mTLS, CA, KMS and access control), <code>area:telemetry</code>, <code>area:testkit</code> (simulation and the conformance suites), <code>area:validate</code>, <code>area:server</code> (composition and the binary), <code>area:deploy</code>, plus <code>area:docs</code> and <code>area:ci</code>. An issue gets one or two.</p>
+<h3>2. Priority from severity and reach</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>common</th>
+<th>edge</th>
+<th>adversarial</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>critical</strong></td>
+<td>P0</td>
+<td>P1</td>
+<td>P1</td>
+</tr>
+<tr>
+<td><strong>major</strong></td>
+<td>P1</td>
+<td>P2</td>
+<td>P2</td>
+</tr>
+<tr>
+<td><strong>minor</strong></td>
+<td>P2</td>
+<td>P3</td>
+<td>P3</td>
+</tr>
+<tr>
+<td><strong>trivial</strong></td>
+<td>P3</td>
+<td>P3</td>
+<td>P3</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>P0:</strong> drop other work, fix now, block the release.</li>
+<li><strong>P1:</strong> goes on the current milestone.</li>
+<li><strong>P2:</strong> next milestone, or whenever it fits.</li>
+<li><strong>P3:</strong> backlog.</li>
+</ul>
+<p>The labels are <code>priority:P0</code> to <code>priority:P3</code>, the same names as in Stemma, so a priority means the same in both repositories. P1 and P2 line up roughly with Codex's review badges, so the meaning is the same whether a review finding or a bug report produced the issue.</p>
+<h3>3. Overrides</h3>
+<ul>
+<li><strong>Security bugs get at least P1, even when <code>reach:adversarial</code>.</strong> The attacks in the threat model's catalog (§14.5) all need someone to set them up; that is what makes them attacks.</li>
+<li><strong>Durability and consistency bugs get at least P1, even when <code>reach:edge</code>.</strong> Anything that can lose an acknowledged write, make a torn write visible, read a stale write as current, or leave a chunk unrecoverable. Fault combinations are edge cases by nature, and they are what Wyrd exists to survive.</li>
+<li><strong><code>release-gating</code> means at least P1</strong>, whatever the table says.</li>
+<li><strong>Deferred review findings</strong> keep the review's priority, unless the triager can show the pull request changed the impact.</li>
+<li><strong>When unsure, leave the priority off.</strong> If the triager cannot place severity or reach, they set <code>needs-triage</code> and say what is missing. Never guess a lower priority.</li>
+</ul>
+<h3>4. Automated triage</h3>
+<p>A bot that triages does this on each new issue:</p>
+<ol>
+<li>Set type (<code>bug</code>, <code>enhancement</code>, <code>documentation</code> or <code>research</code>) unless one is already set, plus severity, reach, area and priority. The issue templates set <code>bug</code> or <code>enhancement</code>, so most issues arrive typed; the bot keeps that label, and says in its comment when the issue reads as a different type.</li>
+<li>Post one comment with a line of reasoning per label, so the maintainer can check the call quickly and correct it by changing a label.</li>
+<li>Assign from a fixed owner table by area, unless someone is already assigned.</li>
+<li>Leave the milestone empty. The <code>new</code> label therefore stays until the maintainer sets one.</li>
+</ol>
+<p>Issue text is untrusted input. The bot's job MUST hold only <code>contents: read</code>, <code>issues: write</code> and <code>id-token: write</code>; it gets no write access to code and no secret beyond its own short-lived tokens. GitHub has no narrower permission than <code>issues: write</code>, and that one allows more than the bot uses: it can also edit an issue's title and body, close, reopen or lock it, set its milestone, and edit or delete comments. The bot's code calls only the label, assignee and comment endpoints, with arguments it builds itself, so the model's answer cannot reach the rest. The wider capability is reachable only by compromising the job's code or its dependencies, which are hash-pinned (section 5). Such a compromise could rewrite, close or re-milestone issues, which shows in each issue's history and can be undone; it cannot touch code, releases or secrets. A milestone set this way would start the PDCA loop on that issue, behind the loop's own review gates. What the model returns MUST be validated against the label sets before anything is written, and the priority MUST be computed by code from sections 2 and 3, not taken from the model.</p>
+<p>The bot MUST NOT quote the issue in its comment: no log lines, hostnames, keys or identifiers, only descriptions in general terms. When an issue appears to contain a credential or other secret, the comment SHOULD say so and ask the reporter to rotate it and edit it out. When an issue appears to report an undisclosed vulnerability, the bot still sets the labels, but its comment MUST NOT restate the details; it points to <a href="http://SECURITY.md">SECURITY.md</a> so the maintainer can move the report to a private advisory.</p>
+<p>The bot skips pull requests, closed issues, issues opened by bots (the nightly jobs file theirs with their own <code>nightly-failure</code> label), and issues that already carry a priority.</p>
+<h3>5. How the bot runs</h3>
+<p>We will run triage as a GitHub Action, <code>.github/workflows/triage-priority.yml</code>, with a Python script, <code>.github/triage/triage_priority.py</code>. It runs when an issue is opened, reopened or edited and has no <code>priority:*</code> label, and on demand to back-fill open issues.</p>
+<ul>
+<li><strong>One request per issue.</strong> Claude Sonnet 5.5 at low effort, with no tools, structured JSON output, and the issue title and description capped at fixed lengths; the comment says when it cut the text. The static rules are sent as a cached system prompt, so a run of issues pays for them mostly at the cache rate. An issue is classified once; an edit triggers a new call only while it carries <code>needs-triage</code>.</li>
+<li><strong>The model classifies; the script decides.</strong> The model returns type, severity, reach, area, the override flags, the secret and vulnerability flags, and one reason per label. Each reason field in the output schema says what it should explain, because a bare string field is sometimes filled with a single word. The script validates the answer, computes the priority, and applies labels, assignee and comment with the workflow's own <code>GITHUB_TOKEN</code>; <code>id-token: write</code> lets the job fetch its identity token and nothing more. A reason that repeats from the issue a run of five words, a number of three or more digits, or any single token that looks like an identifier (eight characters or more, containing a digit, one of <code>. / _ : = @ +</code>, or two hyphens, such as a key, hostname, path or bucket name; a word with one hyphen does not count) is withheld whole, so a copied secret never reaches the comment and does not outlive the reporter's edit, one under three words is shown as &quot;(no reason given)&quot;, and mentions and markup are neutralised.</li>
+<li><strong>A decline or a malformed answer sets <code>needs-triage</code></strong> and a short comment; nothing is guessed. A safety-classifier decline, which a security-heavy report can trip, is first retried server-side on Anthropic's recommended fallback model.</li>
+<li><strong>No stored API key.</strong> The job authenticates by Workload Identity Federation: it fetches GitHub's OIDC identity token (audience <code>https://api.anthropic.com</code>) and the Anthropic SDK exchanges it for a Claude API token that acts as a dedicated service account. The federation rule accepts only subject <code>repo:getwyrd/wyrd:ref:refs/heads/main</code> and requires the claims <code>repository_owner_id: 293332526</code>, <code>repository_id: 1268237817</code> and <code>ref: refs/heads/main</code>. The numeric IDs matter because the default subject format names the repository, and a renamed or re-created repository could otherwise reuse the name. That covers issue events and manual runs from main, and no pull request, fork or other branch. The rule grants <code>workspace:developer</code> for 600 seconds; GitHub's token can be exchanged once, so a run must finish within about eight minutes. The rule, organisation, service-account and workspace IDs are repository variables, not secrets, and the workflow does nothing until they are set. A manual run with <code>check</code> ticked makes one 16-token request to test the sign-in.</li>
+<li><strong>Cost is capped outside the bot as well as inside it.</strong> Anyone can open an issue on a public repository, so the service account acts in a workspace with its own spending limit; that limit, not the script, is the backstop against a flood of issues. Each comment states its token use.</li>
+<li><strong>Dependencies are pinned and hash-checked.</strong> The SDK and everything it pulls in are compiled with hashes and installed with <code>--require-hashes</code>, each version at least two weeks old when chosen. This is the supply-chain care that ADR-0003 and the <code>cargo-deny</code> wall give Rust crates, applied to the one Python tool that holds a credential.</li>
+<li><strong>The label set lives in <code>.github/triage/labels.json</code></strong>, with descriptions under GitHub's 100-character limit, and the workflow creates missing labels.</li>
+<li><strong>Back-fill is batched and checked first.</strong> The open issues are triaged by manual runs in batches with a limit, the first as a dry run that prints each plan without writing.</li>
+</ul>
+<p>We reject running a model on a subscription in the Action (Codex on a ChatGPT plan, for example): its credential is a whole personal account, exposed to every issue author's prompt injection. We reject a stored <code>ANTHROPIC_API_KEY</code> secret: it lasts until someone revokes it, while a federated token expires within minutes and works only from this repository's main branch. We reject an agent that reads the code to triage: one judgement per issue does not need it, and reading code is what would make the cost grow.</p>
+<h3>6. The threat model's catalog run through it</h3>
+<p>As a check of the scheme rather than real triage, here are attacks from the catalog (§14.5) classified as if each had been reported as a bug, plus ordinary ones:</p>
+<table>
+<thead>
+<tr>
+<th>Issue</th>
+<th>Severity / reach</th>
+<th>Priority</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A PUT is acknowledged before its commit, and a crash loses it</td>
+<td>critical / edge, plus the durability override</td>
+<td>P1</td>
+</tr>
+<tr>
+<td>GC reclaims a fragment a reader still references</td>
+<td>critical / edge, plus the durability override</td>
+<td>P1</td>
+</tr>
+<tr>
+<td>A crafted fragment with an oversized payload length overruns the reader</td>
+<td>critical / adversarial, plus the security override</td>
+<td>P1</td>
+</tr>
+<tr>
+<td>A compromised D server substitutes a fragment and the read accepts it</td>
+<td>critical / adversarial, plus the security override</td>
+<td>P1</td>
+</tr>
+<tr>
+<td>The S3 gateway lists another tenant's bucket under default config</td>
+<td>critical / common</td>
+<td>P0</td>
+</tr>
+<tr>
+<td>Scrub stops after the first checksum mismatch and never reports it</td>
+<td>major / common</td>
+<td>P1</td>
+</tr>
+<tr>
+<td>A <code>ListObjectsV2</code> continuation token is ignored past 1,000 keys</td>
+<td>major / common</td>
+<td>P1</td>
+</tr>
+<tr>
+<td>A telemetry counter double-counts retried writes</td>
+<td>minor / common</td>
+<td>P2</td>
+</tr>
+</tbody>
+</table>
+<h2>Consequences</h2>
+<p>Every issue carries a priority that says why it has it, and the backlog can be sorted by label instead of by rereading issues. Manual and automated triage use the same rules, so either can check the other, and a priority means the same in Wyrd, Stemma and nl-shell.</p>
+<p>The durability and security overrides move more issues up than any other rule. They are chosen deliberately: rare data loss and attacker-only bugs compete with common crashes for the current milestone. Leaving the milestone to the maintainer keeps the PDCA loop from starting work on the bot's judgement alone, at the cost of one manual step per issue.</p>
+<p>Every issue's title and description is sent to Anthropic's API. For a public repository that adds little exposure; what it does add is any secret a reporter pasted, which the bot asks them to rotate. A vulnerability reported in a public issue is labelled but not restated.</p>
+<p>The rules exist twice, in this ADR and in <code>.github/triage/prompt.md</code>, and the table and overrides a third time in the script. A change to this ADR has to update both files; the script's tests pin the table, so a drift shows up as a failing test. The model is a constant in the script, so moving to a cheaper or stronger one is a one-line change, to be judged on the comments it produces.</p>
+<p>Running the same bot on Stemma, the first runs used about 2,800 to 3,100 input and 140 to 290 output tokens per issue, much of the input read from the cache. Wyrd's prompt is similar in size, so back-filling the open issues should cost a few dollars; that is an estimate until the first batch reports its use. A comment can lack a reason for a label or two, when the model's reason is too short or the check withholds one that repeats the issue; the labels are unaffected.</p>
+<p>The bot's credentials and its handling of issue text belong in the threat model; this change adds them to architecture §14.</p>
+<p>Follow-on work: create the federation rule and repository variables, run the connection check, back-fill the open issues in batches, and review the first comments before relying on the bot.</p>
+<p>Left open:</p>
+<ul>
+<li><strong>[OPEN]</strong> Whether issues filed by the nightly jobs should be triaged by the bot too, with a fixed severity, rather than skipped.</li>
+<li><strong>[OPEN]</strong> Whether P3 issues ever close automatically, or stay open until the maintainer closes them.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>
