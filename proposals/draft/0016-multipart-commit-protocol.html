@@ -2228,12 +2228,12 @@ slots, and a run of metadata timeouts would exhaust <code>MAX_INFLIGHT_PARTS</co
 a permanent <code>503</code> with no crash to blame. So on an ambiguous outcome the reserver <strong>retries the
 same index with the same <code>attempt_id</code></strong>, never a different one: the two batches are mutually
 exclusive through <code>require_absent(slot:&lt;id&gt;:&lt;k&gt;)</code>, so at most one lands and both would carry the
-same <code>attempt_id</code>, making either outcome the same observable slot. It probes onward only once it
-reads that index carrying <em>another</em> attempt's id (its own reserve definitively lost), and refuses
-<code>503</code> after a bounded number of ambiguous retries — leaving any slot the ambiguous batch may yet
-install as ordinary residue the reaper reclaims with the session (F11a). Blindly probing a fresh
-index after an unknown outcome would leak the landed one for the session's whole life — the
-same accounting hazard the release side avoids with <code>require(slot == prior)</code>.</li>
+same <code>attempt_id</code>, making either outcome the same observable slot. Nor does another attempt's id
+there prove a loss (it may release the index, and the batch then land), so it never probes onward:
+it refuses <code>503</code> on reading one, or after a bounded number of ambiguous retries — leaving any slot
+the batch may yet install as residue the reaper reclaims with the session (F11a). Blindly probing
+a fresh index after an unknown outcome would leak the landed one for the session's whole life —
+the same accounting hazard the release side avoids with <code>require(slot == prior)</code>.</li>
 <li><strong>The request quiesces its own renewal before committing the part (normative; iteration-11
 finding 3).</strong> Once every liveness batch rewrites the slot (above), this request's <em>own</em> renewal
 loop becomes a writer of the very key its part commit preconditions on
