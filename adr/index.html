@@ -41,6 +41,35 @@
     <article class="prose">
 <h1>Architecture Decision Records</h1>
 <p>Numbered, immutable records of significant decisions and <em>why</em> they were made. An ADR is never edited after acceptance; it is superseded by a later ADR that references it. Format follows the lightweight Nygard template (see ADR-0001).</p>
+<h2>How an ADR is made</h2>
+<p>The rules are in ADR-0001 (lifecycle), ADR-0037 (proposals and specs), ADR-0038
+(supersession) and
+<a href="/governance.html">GOVERNANCE.md</a> (who accepts). In order:</p>
+<ol>
+<li><strong>Open an issue</strong> that states the question. Every pull request needs one, and the
+discussion before there is a draft belongs there.</li>
+<li><strong>Take the next number.</strong> One more than the highest number in the index and in any open
+pull request that adds an ADR. Numbers are never reused, not even for an ADR that was
+dropped.</li>
+<li><strong>Write it from the template.</strong> Copy <code>../templates/adr.md</code> to
+<code>NNNN-short-title.md</code>, keep <code>status: Proposed</code> with nothing after it on that line, and
+write Context, Decision and Consequences. Mark anything still undecided <strong>[OPEN]</strong>.</li>
+<li><strong>Add it to the index</strong> below, with status <code>Proposed</code>, in the same pull request.</li>
+<li><strong>Open the pull request</strong> with <code>Refs #N</code> for the issue. Discussion happens there; a
+Proposed ADR may be edited freely, before and after it merges.</li>
+<li><strong>Accept it.</strong> When the architecture board (<a href="http://GOVERNANCE.md">GOVERNANCE.md</a>) agrees and no <strong>[OPEN]</strong>
+items are left, change <code>status:</code> to <code>Accepted</code> and the index row to match, then merge.
+This edit is the act of acceptance; only a maintainer makes it, never an agent. From
+here the file is frozen (<code>docs-immutability</code>).</li>
+<li><strong>Change it later only by superseding it</strong> (ADR-0038): a new ADR with
+<code>supersedes: NNNN</code>, and the old index row changed to <code>Superseded by NNNN</code>, in one pull
+request. The old file stays byte-for-byte untouched.</li>
+</ol>
+<p>ADR-0001 has no Rejected status: if the board does not agree, close the pull request
+without merging it.</p>
+<p><code>docs-check</code> keeps this index honest: every ADR is listed once, its status here matches its
+frontmatter, and both sides of every supersession agree. Run
+<code>python3 -I .github/docs-check/adr_index.py</code> before pushing.</p>
 <h2>Index</h2>
 <table>
 <thead>
