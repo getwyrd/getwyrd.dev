@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0049. Pinned advisory database: the PR gate audits a RustSec database commit recorded in the repository, Dependabot moves it daily, and release and a daily run on `main` audit the newest one — Wyrd</title>
+<meta name="description" content="The dependency wall fails a pull request when a crate in the dependency graph has a RustSec advisory. Until now every cargo deny run downloaded the newest advisory database firs...">
+<meta property="og:title" content="0049. Pinned advisory database: the PR gate audits a RustSec database commit recorded in the repository, Dependabot moves it daily, and release and a daily run on `main` audit the newest one — Wyrd">
+<meta property="og:description" content="The dependency wall fails a pull request when a crate in the dependency graph has a RustSec advisory. Until now every cargo deny run downloaded the newest advisory database firs...">
+<meta property="og:type" content="article">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@300;400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/assets/style.css">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#211e1a">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><a href="/"><svg class="mark" viewBox="0 0 48 48" aria-hidden="true"><polygon class="lz-outer" points="24,3 45,24 24,45 3,24"/><polygon class="lz-inner" points="24,14 34,24 24,34 14,24"/></svg>Wyrd</a></div>
+    <nav class="topnav" aria-label="primary">
+      <a href="/governance.html">governance</a>
+      <a href="/architecture/">architecture</a>
+      <a href="/adr/">decisions</a>
+      <a href="https://github.com/getwyrd/wyrd">github</a>
+    </nav>
+  </header>
+</div>
+
+<!-- DOC_HEADER: doc-class + optional status/meta line. render_site.py emits the
+     whole block, or nothing when there is neither a class label nor meta. -->
+<div class="wrap">
+  <header class="doc-header">
+    <p class="doc-class">Architecture Decision Record</p>
+    <p class="doc-meta">Status: Proposed · 29.10.2026 13:08</p>
+  </header>
+</div>
+
+<div class="wrap">
+  <main>
+    <!-- CONTENT: rendered Markdown body (includes its own <h1>). -->
+    <article class="prose">
+<h1>0049. Pinned advisory database: the PR gate audits a RustSec database commit recorded in the repository, Dependabot moves it daily, and release and a daily run on <code>main</code> audit the newest one</h1>
+<h2>Context</h2>
+<p>The dependency wall (ADR-0003 §2, <code>deny.toml</code>, <code>deny-all-features.toml</code>) fails a pull request when a crate in the dependency graph has a RustSec advisory. Until now every <code>cargo deny</code> run downloaded the newest advisory database first. The result of the <code>gate</code> check therefore depended on the day it ran, not only on the change under review.</p>
+<p>When an advisory is published for a crate that is already on <code>main</code>, the <code>gate</code> check of every open pull request turns red at once, including pull requests that touch no dependencies. That happened on #979 with RUSTSEC-2026-0414 (<code>pulldown-cmark</code>): unrelated work stopped until #981 bumped the crate. The same run on a laptop could also disagree with CI, depending on when each copy of the database was last fetched, which breaks the promise of ADR-0009 that <code>cargo xtask ci</code> is the gate's local equivalent.</p>
+<p>The advisory check itself must stay. A pull request that adds or changes a dependency onto a version with a known advisory must still fail, and a release must not ship one.</p>
+<h2>Decision</h2>
+<h3>1. The PR gate audits a pinned database</h3>
+<p>The commit of the RustSec advisory database (<a href="https://github.com/RustSec/advisory-db">https://github.com/RustSec/advisory-db</a>) that the wall audits against is recorded in the repository as the gitlink of the <code>.github/advisory-db</code> submodule. Only the gitlink is used; nothing needs to check the submodule out.</p>
+<p>Both deny configs set <code>db-path = &quot;target/advisory-dbs&quot;</code>. Before the wall runs, <code>cargo xtask ci</code> moves cargo-deny's clone there to the pinned commit (fetching only that commit), downloads the crates in <code>Cargo.lock</code> with <code>cargo fetch --locked</code>, and runs every wall invocation with <code>--offline</code>. A pull request now fails the advisory check only when the dependencies it brings, or the pin it moves, carry an advisory. CI and a laptop audit the same database.</p>
+<p><code>cargo xtask advisories</code> runs the advisory part of the wall alone, against the pin.</p>
+<h3>2. Dependabot moves the pin</h3>
+<p>A <code>gitsubmodule</code> entry in <code>.github/dependabot.yml</code> opens a pull request every day that moves <code>.github/advisory-db</code> to the newest database commit. The full gate runs on it. When a new advisory affects Wyrd, that one pull request is red and names the crate, and every other pull request stays green. That pull request is where the fix lands: a bump of the crate, or a justified exception in the deny config, as before. The entry has no cooldown, because the database has no releases to let settle.</p>
+<h3>3. Release and a daily run audit the newest database</h3>
+<p><code>cargo xtask advisories --latest</code> audits the newest database instead of the pin.</p>
+<ul>
+<li><code>release.yml</code> runs it in an <code>advisories</code> job that the <code>release</code> job needs, so a release never ships with a known advisory just because the pin has not moved yet.</li>
+<li><code>advisories.yml</code> runs it on <code>main</code> every day. When it fails, it opens an issue titled &quot;RustSec advisory affects main&quot;, or comments on the open one when it finds an advisory the issue does not name yet. A red pin update therefore cannot sit unnoticed.</li>
+</ul>
+<h2>Consequences</h2>
+<ul>
+<li>A newly published advisory no longer stops unrelated work. It shows up in one place, the pin update, plus the daily issue.</li>
+<li>An advisory reaches the PR gate up to a day later than before, and only once the pin update merges. Dependabot's security updates are unaffected: they open as soon as an advisory names a crate Wyrd uses.</li>
+<li>The gate's result depends only on the commit under review, so re-running an old pull request gives the same answer.</li>
+<li><code>cargo xtask ci</code> refuses a pin whose commit is more than 90 days old. If the pin updates are left unmerged that long, the gate fails until one merges, which is the intended pressure. xtask checks the commit's date itself: cargo-deny's <code>maximum-db-staleness</code> dates the database by its last fetch, and a fresh CI runner fetches the pin every time, so that check alone would never fire.</li>
+<li><code>git clone --recursive</code> or <code>git submodule update --init</code> downloads the advisory database into <code>.github/advisory-db</code>. Nothing in the build needs it there.</li>
+<li><code>xtask/tests/advisory_db.rs</code> holds the pieces in place: the gitlink and its <code>.gitmodules</code> entry, <code>db-path</code> in both configs, <code>--offline</code> on every wall invocation, and the <code>--latest</code> runs in <code>release.yml</code> and <code>advisories.yml</code>.</li>
+</ul>
+
+    </article>
+  </main>
+</div>
+
+<div class="wrap">
+  <footer>
+    <div class="foot-row">
+      <nav class="foot-links" aria-label="footer">
+        <a href="https://github.com/getwyrd/wyrd">github</a>
+        <a href="/architecture/">architecture</a>
+        <a href="/adr/">decisions</a>
+        <a href="/references.html">prior art</a>
+        <a href="/name.html">the name</a>
+      </nav>
+      <div class="foot-meta">Apache-2.0 · built in Rust</div>
+    </div>
+  </footer>
+</div>
+
+<!-- SCRIPTS: render_site.py injects the Mermaid include only on pages that
+     contain a diagram; empty otherwise. -->
+
+</body>
+</html>

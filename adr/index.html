@@ -291,6 +291,11 @@
 <td>Issue priority and automated triage: severity × reach set P0–P3 with security and durability overrides; a GitHub Action applies it with one Claude API call per issue, authenticated by Workload Identity Federation</td>
 <td>Proposed</td>
 </tr>
+<tr>
+<td><a href="/adr/0049-pinned-advisory-database.html">0049</a></td>
+<td>Pinned advisory database: the PR gate audits a RustSec database commit recorded as the <code>.github/advisory-db</code> submodule, Dependabot moves it daily, and release and a daily run on <code>main</code> audit the newest one (#986)</td>
+<td>Proposed</td>
+</tr>
 </tbody>
 </table>
 <h2>Why not ... ?</h2>
