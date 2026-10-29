@@ -282,7 +282,7 @@ adversary, section 8.6).</p>
 </tr>
 <tr>
 <td>Prompt injection through issue text into the triage bot (mislabel, abusive comment, spend)</td>
-<td>the model gets no tools and no token; its answer is validated against the label sets and the priority computed by code; reasons that echo the issue, a single identifier-like token included, are withheld and markup neutralised; the job holds <code>contents: read</code>, <code>issues: write</code> and <code>id-token: write</code> only, and calls just the label, assignee and comment endpoints (the wider <code>issues: write</code> reach, editing or closing issues, needs a compromise of the job's hash-pinned code or dependencies); the Claude API token is federated, short-lived and accepted only from <code>main</code>; a workspace spending limit caps cost</td>
+<td>the model gets no tools and no token; its answer is validated against the label sets and the priority computed by code; reasons that echo the issue, a single identifier-like token included, are withheld and markup neutralised; the work is split into two jobs: <code>classify</code> runs the model with <code>contents: read</code>, <code>issues: read</code> and <code>id-token: write</code> and only writes a plan artifact, and <code>apply</code> holds <code>contents: read</code> and <code>issues: write</code>, runs no model, checks the plan against the label set and owner table, and calls just the label, assignee and comment endpoints (the wider <code>issues: write</code> reach, editing or closing issues, needs a compromise of the <code>apply</code> job's hash-pinned code or dependencies); the Claude API token is federated, short-lived and accepted only from <code>main</code>; a workspace spending limit caps cost</td>
 <td>ADR-0048</td>
 </tr>
 <tr>
